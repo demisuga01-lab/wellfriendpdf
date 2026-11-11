@@ -1384,10 +1384,57 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
         }
     }
 
+    /// EAN-8, EAN-13 and UPC-A as PDFium draws them: bars over the full
+    /// height in the quiet-zone-padded symbol, the digits in white boxes at
+    /// the bottom between the guard bars (which keep their full length),
+    /// the leading/trailing digits beside the bars.
+    fn paint_ean(
+        &mut self,
+        node: &FormNode<'t>,
+        spec: &super::barcode::BarcodeSpec,
+        layout: &super::barcode::EanText,
+        runs: &[(bool, f64)],
+        text: &str,
+        rect: Rect,
+    ) {
+        let scale = rect.w / layout.total_modules;
+        let mut x = rect.x + layout.left_pad * scale;
+        self.out.push_str("0 0 0 rg\n");
+        for (dark, width) in runs {
+            let w = width * scale;
+            if *dark {
+                let _ = writeln!(self.out, "{}", rect_op(Rect::new(x, rect.y, w, rect.h)));
+            }
+            x += w;
+        }
+        self.out.push_str("f\n");
+        if spec.text == super::barcode::TextLocation::None || text.is_empty() {
+            return;
+        }
+        let font = node_font_for(self.tpl, node);
+        let text_h = (font.size.abs().floor() + 1.0).min(rect.h / 2.0);
+        let text_y = rect.y + rect.h - text_h;
+        let mut para = ParaSpec::default();
+        para.h_align = HAlign::Center;
+        for (range, module_x, module_w) in &layout.groups {
+            let Some(digits) = text.get(range.clone()) else {
+                continue;
+            };
+            let group_x = rect.x + module_x * scale;
+            let white = Rect::new(group_x, text_y, (module_w - 0.5).max(0.0) * scale, text_h);
+            let _ = writeln!(self.out, "1 1 1 rg {} f", rect_op(white));
+            let paragraphs = plain_paragraphs(digits, &font, &para);
+            let width = (module_w * scale).max(1.0);
+            let block = layout_paragraphs(self.book, &paragraphs, Some(width));
+            let text_rect = Rect::new(group_x, text_y, width, text_h);
+            self.emit_text(&block, text_rect, VAlign::Top, Some(rect));
+        }
+    }
+
     /// `CXFA_FFBarcode::RenderWidget`: the symbol for the field's value on a
     /// white background, linear symbols with their human-readable text.
     fn paint_barcode(&mut self, node: &FormNode<'t>, widget: Option<&'t XmlNode>, rect: Rect) {
-        use super::barcode::{self, Symbol, Symbology, TextLocation};
+        use super::barcode::{self, Symbol, TextLocation};
         let tpl = self.tpl;
         let Some(widget) = widget else {
             return;
@@ -1412,6 +1459,10 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
         };
         let _ = writeln!(self.out, "q 1 1 1 rg {} f", rect_op(rect));
         match symbol {
+            Symbol::Linear { runs, text } if barcode::ean_text_layout(spec.kind).is_some() => {
+                let layout = barcode::ean_text_layout(spec.kind).expect("EAN layout");
+                self.paint_ean(node, &spec, &layout, &runs, &text, rect);
+            }
             Symbol::Linear { runs, text } => {
                 let font = node_font_for(tpl, node);
                 let show_text = spec.text != TextLocation::None && !text.is_empty();
@@ -1442,20 +1493,6 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
                 if show_text {
                     let mut para = ParaSpec::default();
                     para.h_align = HAlign::Center;
-                    let text = match spec.kind {
-                        Symbology::Ean13 => {
-                            format!("{} {} {}", &text[..1], &text[1..7], &text[7..])
-                        }
-                        Symbology::Ean8 => format!("{} {}", &text[..4], &text[4..]),
-                        Symbology::UpcA => format!(
-                            "{} {} {} {}",
-                            &text[..1],
-                            &text[1..6],
-                            &text[6..11],
-                            &text[11..]
-                        ),
-                        _ => text,
-                    };
                     let paragraphs = plain_paragraphs(&text, &font, &para);
                     let block = layout_paragraphs(self.book, &paragraphs, Some(rect.w.max(1.0)));
                     let text_y = if text_above {
@@ -1473,7 +1510,7 @@ impl<'a, 't, 'r> Painter<'a, 't, 'r> {
                 height,
                 cells,
             } => {
-                let (width, height, cells) = if spec.kind == Symbology::Pdf417 {
+                let (width, height, cells) = if spec.kind == barcode::Symbology::Pdf417 {
                     barcode::landscape(width, height, cells)
                 } else {
                     (width, height, cells)

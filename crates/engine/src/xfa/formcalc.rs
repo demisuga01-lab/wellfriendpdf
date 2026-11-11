@@ -32,6 +32,8 @@ enum Tok {
     Ident(String),
     /// `$`, `$form`, ... (the text after `$`).
     Dollar(String),
+    /// `!name`: a child of `xfa.datasets` (the text after `!`).
+    Bang(String),
     Hash(String),
     LParen,
     RParen,
@@ -224,6 +226,20 @@ fn lex(source: &str) -> SResult<Vec<Tok>> {
             out.push(Tok::Dollar(chars[start..pos].iter().collect()));
             continue;
         }
+        if ch == '!'
+            && chars
+                .get(pos + 1)
+                .is_some_and(|next| next.is_alphabetic() || *next == '_')
+        {
+            // PDFium's lexer reads `!` as an identifier start.
+            pos += 1;
+            let start = pos;
+            while pos < chars.len() && ident_char(chars[pos]) {
+                pos += 1;
+            }
+            out.push(Tok::Bang(chars[start..pos].iter().collect()));
+            continue;
+        }
         if ch.is_alphabetic() || ch == '_' {
             let start = pos;
             while pos < chars.len() && ident_char(chars[pos]) {
@@ -316,6 +332,8 @@ struct PSeg {
 enum Head {
     Ident(String, Option<Box<Index>>),
     Dollar(String),
+    /// `!name`.
+    Bang(String),
     Call(String, Vec<Expr>),
     Paren(Box<Expr>),
 }
@@ -717,6 +735,7 @@ impl Parser {
                 }
             }
             Tok::Dollar(name) => Head::Dollar(name),
+            Tok::Bang(name) => Head::Bang(name),
             other => return err(format!("FormCalc syntax error near {other:?}")),
         };
         let mut segs = Vec::new();
@@ -1309,12 +1328,29 @@ impl Interp<'_> {
                 };
                 objs_val(self.dom.start(Some(this), &seg)?)
             }
+            Head::Bang(name) => objs_val(self.bang(name)?),
         };
         if segs.is_empty() {
             return Ok(current);
         }
         current = self.continue_path(current, segs)?;
         Ok(current)
+    }
+
+    /// `!name`: the child `name` of `xfa.datasets`.
+    fn bang(&mut self, name: &str) -> SResult<Vec<Obj>> {
+        let bang = Seg {
+            desc: false,
+            name: SomName::Bang,
+            index: SomIndex::Default,
+        };
+        let datasets = self.dom.start(Some(self.this), &bang)?;
+        let seg = Seg {
+            desc: false,
+            name: SomName::Name(name.to_string()),
+            index: SomIndex::Default,
+        };
+        self.dom.step(&datasets, &seg, Some(self.this))
     }
 
     fn continue_path(&mut self, mut current: Val, segs: &[PSeg]) -> SResult<Val> {
@@ -1425,6 +1461,10 @@ impl Interp<'_> {
                     };
                     let objs = self.dom.start(Some(self.this), &seg)?;
                     return self.assign_objs(objs, value, "$");
+                }
+                Head::Bang(name) => {
+                    let objs = self.bang(name)?;
+                    return self.assign_objs(objs, value, name);
                 }
                 _ => return err("FormCalc: invalid assignment target"),
             }

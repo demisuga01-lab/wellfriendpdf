@@ -1030,6 +1030,48 @@ pub(crate) fn parse_value_in(
     None
 }
 
+/// Whether the raw `value` satisfies `picture` (a `<validate><picture>`
+/// format test, PDFium `CXFA_LocaleValue::ValidateValue`): some
+/// alternative parses the value or can format it.
+pub(crate) fn validate_value_in(
+    value: &str,
+    picture: &str,
+    kind: &str,
+    locales: &LocaleSet,
+    locale: Option<&str>,
+) -> bool {
+    let base = locales.get(locale);
+    for alternative in split_alternatives(picture.trim()) {
+        let clause = categorize(alternative, kind);
+        let locale = clause
+            .locale
+            .map(|name| locales.get(Some(name)))
+            .unwrap_or(base);
+        let pattern = clause.pattern(locale);
+        let ok = match clause.category {
+            Category::Null => value.trim().is_empty(),
+            Category::Zero => value.trim().parse::<f64>().is_ok_and(|v| v == 0.0),
+            Category::Num => pattern.split('|').any(|pattern| {
+                parse_number(value, pattern, locale).is_some()
+                    || format_number(value, pattern, locale).is_some()
+            }),
+            Category::Text => format_text(value, &pattern).is_some(),
+            Category::Date => {
+                parse_iso_date(value).is_some_and(|(y, m, d)| d <= days_in_month(y, m))
+                    || parse_date(value, &pattern, locale).is_some()
+            }
+            Category::Time => {
+                parse_iso_time(value).is_some() || parse_time(value, &pattern, locale).is_some()
+            }
+            Category::DateTime => format_date_time(value, &pattern, locale).is_some(),
+        };
+        if ok {
+            return true;
+        }
+    }
+    false
+}
+
 /// Text-picture tokens: one per symbol character (`9 A O X 0`) or literal.
 fn text_tokens(pattern: &str) -> Vec<(char, usize, String)> {
     let mut out = Vec::new();

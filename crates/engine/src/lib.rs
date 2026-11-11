@@ -759,7 +759,7 @@ pub use xfa::{
     XfaRuntimeReport, XfaSandboxAuditEntry, XfaSandboxReport, XfaSanitizerMode,
     XfaSanitizerOptions, XfaSanitizerReport, XfaScriptPolicy, XfaScriptRecord, XfaSecurityReport,
     XfaSemanticIntegrationReport, XfaSignatureImpact, XfaSubformRecord, XfaSupportStatus,
-    XfaXmlMetrics, XfaXmlSafetyReport, XFA_SCHEMA_VERSION,
+    XfaValidationResult, XfaXmlMetrics, XfaXmlSafetyReport, XFA_SCHEMA_VERSION,
 };
 
 /// The curated high-level embedding surface.

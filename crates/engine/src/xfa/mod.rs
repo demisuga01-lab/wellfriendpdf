@@ -26,7 +26,7 @@ mod style;
 mod text;
 pub(crate) mod xml;
 
-pub use self::render::XfaFormType;
+pub use self::render::{XfaFormType, XfaValidationResult};
 
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]

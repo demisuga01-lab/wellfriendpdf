@@ -68,7 +68,7 @@ PDF page with the overlay forced on.
 **Not drawn** (reported by `ContentEngine::xfa_render_unsupported` where
 applicable): GIF/TIFF images, barcode types PDFium does not render either
 (Code 93, Code 11, Interleaved 2 of 5, postal codes, Aztec, MaxiCode, RSS),
-interactive events, validation, highlight and focus.
+interactive events, validation messages, highlight and focus.
 
 ## Form scripts
 
@@ -84,8 +84,28 @@ presence, captions, choice-list items, fill/border/font colours and
 repeating-subform instances (`instanceManager` `setInstances`,
 `addInstance`, `insertInstance`, `removeInstance`, `moveInstance`, `count`,
 `_name` shorthand); new instances run their initialize scripts. Interactive
-events (click, enter, exit, change...), `validate` and `runAt="server"`
-scripts never run.
+events (click, enter, exit, change...) and `runAt="server"` scripts never
+run.
+
+**Validation** runs without a user interface. After the initialize and
+calculate scripts (PDFium's `InitValidate`), every field, exclusion group
+and subform with a `<validate>` runs its validate script (`scriptTest`:
+a false result fails), its `nullTest` (`warning`/`error` on an empty
+value) and its `formatTest` (the raw value must parse or format with
+`<validate><picture>`, PDFium `CXFA_LocaleValue::ValidateValue`); values
+that scripts change later (docReady, layout:ready, `execCalculate`...) are
+validated again. Failures are recorded, never shown:
+`ContentEngine::xfa_validation_results` lists the container's SOM
+expression, the test, its severity and the `<message><text
+name="nullTest|formatTest|scriptTest">` text or PDFium's default message
+("Name cannot be blank.", "The value you entered for Name is invalid.").
+`execValidate()` and a field's `execEvent("validate")` return whether the
+null and format tests pass (true before the initial pass, as PDFium skips
+them until then) and run the validate scripts after the calling script;
+`xfa.host.validationsEnabled = false` turns validation off. Validation
+never changes what is drawn. Unlike PDFium (which runs them anyway),
+`scriptTest="disabled"` scripts do not run; `inactive` containers are not
+validated.
 
 The scripting object model (`crates/engine/src/xfa/som.rs`) resolves SOM
 expressions: `a.b[2].c`, `[*]`, relative `[+1]`/`[-1]`, `..name`, `#class`,
@@ -102,8 +122,28 @@ instance from the referencing node). Properties: `rawValue`,
 `getSaveItem`, `boundItem`, `getItemState`/`setItemState`;
 `xfa.host` (`messageBox`, `name`, `numPages`...), `xfa.layout` (`page`,
 `pageCount`, `absPage`, `absPageCount`, `sheet`, `h`/`w`/`x`/`y`) and
-`<variables>` script objects. The datasets DOM (`$data`, `$record`, `!`)
-is not exposed to scripts.
+`<variables>` script objects.
+
+**Data DOM**: the datasets packet is loaded like PDFium's
+`CXFA_DocumentBuilder::ParseDataGroup` (elements with element children are
+`dataGroup`s, others `dataValue`s, `xfa:dataNode` and `xfa:contentType`
+honoured, attributes become `metaData` data values) and reached through
+`$data` (`xfa.datasets.data`), `$record` (its first data group), `!name`
+(`xfa.datasets.name`, FormCalc) and `xfa.datasets`; JavaScript also
+resolves the `$data`, `$record`, `$form`, `$host`, `$layout`, `$event`
+and `$template` identifiers. Data nodes offer `value`, `isNull`,
+`contains`, `name`, `className`, `parent`, `index`, `classIndex`,
+`somExpression`, `all`, `nodes` (live: `item`, `namedItem`, `append`,
+`insert`, `remove`, `length`), `model`, `getAttribute`, `setAttribute`,
+`isRecordGroup`, `saveXML`, `resolveNode(s)` and `xfa.datasets.createNode`
+(`dataGroup`, `dataValue`); children win over properties of the same
+name, as in SOM resolution. Fields, exclusion groups and subforms expose
+the data node they were merged with as `dataNode`; named containers
+without data get new data nodes (PDFium's data merge creates them).
+Values stay in sync both ways: writing a bound field updates its data
+value and every other field bound to it, and writing a data value
+(`$record.name.value = "x"`, FormCalc `$data.a.b = 1`) updates the fields
+bound to it. The data DOM is capped at 50,000 nodes.
 
 **FormCalc** (`formcalc.rs`) is a complete interpreter: literals, null
 semantics, arithmetic/logical/relational operators, `var`, `if`/`elseif`,
@@ -147,7 +187,12 @@ cycle budget. Script errors stop only that script; they are listed by
 `<ui><barcode>` fields draw their value as PDFium's `CFWL_Barcode` does:
 Code 39 (`code3Of9`, optional mod-43 check, wide/narrow ratio), Code 128
 (`code128` choosing set B or C, `code128B`, `code128C`), Codabar (start and
-end characters), EAN-8, EAN-13 and UPC-A (check digits computed), QR Code
+end characters), EAN-8, EAN-13 and UPC-A (check digits computed; drawn as
+PDFium's `ShowChars` lays them out: 7-module quiet zones (left for
+EAN-13, both sides for UPC-A), bars over the full height, the digit
+groups in white boxes at the bottom between the guard bars, which keep
+their full length, and the EAN-13 leading digit and the UPC-A
+number-system and check digits beside the bars), QR Code
 (error-correction levels L/M/Q/H from `errorCorrectionLevel` 0-3), PDF417
 (text/byte/numeric compaction, error-correction level 0-8, columns and rows
 from the widget size) and Data Matrix (ECC 200). Linear symbols fill the
@@ -164,13 +209,21 @@ Flowed (`tb`) subforms honour `<overflow leader trailer target>` (and the
 legacy `<break overflowLeader overflowTrailer overflowTarget>`): when the
 subform splits, the trailer ends the old content area (its height is
 reserved), the leader starts the new one, and `target` picks the content
-area or page area to continue in. `<bookend leader trailer>` places a
-leader before and a trailer after the subform's content. `breakBefore` and
+area or page area to continue in. When a nested subform splits, every
+splitting ancestor places its overflow leader and trailer too (as
+PDFium's content layout processors do, level by level): the trailers end
+the old area innermost first, the leaders start the new one outermost
+first, all their heights are reserved, and the innermost `target` wins; a
+nested subform without its own `<overflow>` carries its ancestors'.
+`<bookend leader trailer>` places a leader before and a trailer after the
+subform's content. `breakBefore` and
 `breakAfter` `leader`/`trailer` (legacy `beforeLeader`...) are placed
 around the break; `targetType="contentArea"` with a `target` jumps to that
 content area. `<keep intact>` keeps a subform in one content area;
 `keep next` / `keep previous` chains move to the next content area together
-when they fit there. Leader and trailer subforms are resolved by `#id` or by
+when they fit there (chains of up to 512 siblings; measuring stops once a
+chain is taller than an empty content area, where it cannot move as a
+unit). Leader and trailer subforms are resolved by `#id` or by
 name and are instantiated with their template defaults.
 
 ## Locales

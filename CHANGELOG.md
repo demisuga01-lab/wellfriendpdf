@@ -17,11 +17,27 @@ stability policy in `docs/stability.md`.
   instances. Scripts have no network, file or host access and run within a
   per-document time and instruction budget; `ContentEngine::xfa_script_log`
   and `xfa_script_errors` report their messages and failures.
+- XFA form scripts see the data DOM: `$data`, `$record`, `!name` and
+  `xfa.datasets` reach the datasets packet's data groups and values from
+  FormCalc and JavaScript, fields expose their bound `dataNode`, and writes
+  stay in sync between bound fields and data values (PDFium's data DOM and
+  `SyncValue`). Named containers without data get data nodes, as PDFium's
+  data merge creates them.
+- XFA validation runs without a user interface: validate scripts,
+  `nullTest` and `formatTest` (`<validate><picture>`) run after the
+  calculations and again for values changed later; failures are recorded
+  in `ContentEngine::xfa_validation_results` (SOM expression, test,
+  severity, message) instead of being shown. `execValidate` returns the
+  outcome and `xfa.host.validationsEnabled` turns validation off.
 - XFA barcode fields draw their symbols: Code 39, Code 128, Codabar, EAN-8,
-  EAN-13, UPC-A, QR Code, PDF417 and Data Matrix.
+  EAN-13, UPC-A, QR Code, PDF417 and Data Matrix. EAN and UPC human-readable
+  digits are split around the full-length guard bars as PDFium lays them
+  out.
 - XFA dynamic layout places overflow and bookend leaders and trailers,
   break leaders/trailers and overflow/break targets for specific content
-  areas, and keeps `keep next`/`keep previous` chains together.
+  areas, and keeps `keep next`/`keep previous` chains together (up to 512
+  siblings). When a nested subform splits, its ancestors place their
+  overflow leaders and trailers too.
 - XFA picture clauses and default number/date formats follow the field's
   locale: the document's `localeSet` and PDFium's 15 built-in locales
   (de_DE, fr_FR, ja_JP, zh_CN, ...), with `date.long{}`-style locale

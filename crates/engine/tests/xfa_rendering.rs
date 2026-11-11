@@ -577,3 +577,253 @@ fn locale_pictures_format_numbers_and_dates() {
         );
     }
 }
+
+const DATA_DOM_TEMPLATE: &str = r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form1" layout="tb">
+  <pageSet><pageArea name="P"><contentArea w="200pt" h="200pt"/><medium short="200pt" long="200pt"/></pageArea></pageSet>
+  <field name="name" w="180pt" h="14pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/></field>
+  <field name="copy" w="180pt" h="14pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/>
+    <calculate><script>$record.name</script></calculate></field>
+  <field name="city" w="180pt" h="14pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/>
+    <calculate><script contentType="application/x-javascript">xfa.datasets.data.form1.address.city.value + "/" + $record.address.city.value</script></calculate></field>
+  <field name="zip" w="180pt" h="14pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/>
+    <calculate><script>!data.form1.address.zip</script></calculate></field>
+  <field name="kind" w="180pt" h="14pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/>
+    <calculate><script contentType="application/x-javascript">"kind-" + $data.form1.address.getAttribute("kind")</script></calculate></field>
+  <field name="target" w="180pt" h="14pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/></field>
+  <field name="nick" w="180pt" h="14pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/>
+    <event activity="initialize"><script contentType="application/x-javascript">this.rawValue = "Robert";</script></event></field>
+  <field name="nickCopy" w="180pt" h="14pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/>
+    <calculate><script contentType="application/x-javascript">"nick-" + this.parent.nick.dataNode.value</script></calculate></field>
+  <field name="xml" w="180pt" h="14pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/>
+    <event activity="docReady" ref="$host"><script contentType="application/x-javascript">
+      var g = xfa.datasets.createNode("dataGroup", "extra");
+      var v = xfa.datasets.createNode("dataValue", "note");
+      v.value = "N1";
+      g.nodes.append(v);
+      xfa.datasets.data.nodes.append(g);
+      this.rawValue = xfa.datasets.data.extra.note.value + ":" + xfa.datasets.data.nodes.length + ":" + xfa.resolveNode("$data.extra.note").className;
+    </script></event></field>
+  <event activity="initialize"><script contentType="application/x-javascript">
+    $record.name.value = "Renamed";
+    $record.target.value = "Created";
+  </script></event>
+</subform></template>"#;
+
+const DATA_DOM_DATA: &str = r#"<xfa:datasets xmlns:xfa="http://www.xfa.org/schema/xfa-data/1.0/"><xfa:data><form1><name>Ann</name><address kind="home"><city>Oslo</city><zip>0150</zip></address><nick>Bob</nick></form1></xfa:data></xfa:datasets>"#;
+
+/// The data DOM (`$data`, `$record`, `!`, `xfa.datasets.data`) is visible
+/// to FormCalc and JavaScript, and data writes reach the bound fields.
+#[test]
+fn data_dom_is_visible_to_form_scripts() {
+    let pdf = xfa_pdf(
+        DYNAMIC_CONFIG,
+        DATA_DOM_TEMPLATE,
+        DATA_DOM_DATA,
+        None,
+        false,
+    );
+    let engine = ContentEngine::open_bytes(pdf).unwrap();
+    assert!(
+        engine.xfa_script_errors().is_empty(),
+        "{:?}",
+        engine.xfa_script_errors()
+    );
+    let words = layout_words(&engine, 1);
+    for expected in [
+        "Renamed",
+        "Oslo/Oslo",
+        "0150",
+        "kind-home",
+        "Created",
+        "nick-Robert",
+        "N1:2:dataValue",
+    ] {
+        assert!(
+            words.iter().any(|w| w == expected),
+            "{expected} in {words:?}"
+        );
+    }
+    // `name` and its calculated copy both show the renamed value.
+    assert_eq!(words.iter().filter(|w| *w == "Renamed").count(), 2);
+    assert!(!words.iter().any(|w| w == "Ann"), "{words:?}");
+}
+
+/// Validation runs non-interactively and is recorded, not shown.
+#[test]
+fn validations_are_recorded_without_ui() {
+    let template = r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form1" layout="tb">
+  <pageSet><pageArea name="P"><contentArea w="200pt" h="200pt"/><medium short="200pt" long="200pt"/></pageArea></pageSet>
+  <field name="req" w="180pt" h="14pt"><ui><textEdit/></ui><caption><value><text>Name</text></value></caption><validate nullTest="error"/></field>
+  <field name="ssn" w="180pt" h="14pt"><ui><textEdit/></ui><value><text>12-345</text></value>
+    <validate formatTest="error"><picture>text{999-99-9999}</picture><message><text name="formatTest">SSN looks wrong</text></message></validate></field>
+  <field name="qty" w="180pt" h="14pt"><ui><numericEdit/></ui><value><decimal>3</decimal></value>
+    <validate><script contentType="application/x-javascript">this.rawValue &gt;= 5</script></validate></field>
+  <field name="probe" w="180pt" h="14pt"><ui><textEdit/></ui><font typeface="Helvetica" size="9pt"/>
+    <event activity="docReady" ref="$host"><script contentType="application/x-javascript">
+      app.alert("form:" + xfa.form.execValidate());
+      app.alert("qty:" + qty.execValidate());
+      app.alert("enabled:" + xfa.host.validationsEnabled);
+    </script></event></field>
+</subform></template>"#;
+    let pdf = xfa_pdf(DYNAMIC_CONFIG, template, EMPTY_DATA, None, false);
+    let engine = ContentEngine::open_bytes(pdf).unwrap();
+    assert!(
+        engine.xfa_script_errors().is_empty(),
+        "{:?}",
+        engine.xfa_script_errors()
+    );
+    // execValidate reports the null and format tests; validate scripts run
+    // after the calling script.
+    assert_eq!(
+        engine.xfa_script_log(),
+        vec!["form:false", "qty:true", "enabled:true"]
+    );
+    let results: Vec<(String, String, String, String)> = engine
+        .xfa_validation_results()
+        .into_iter()
+        .map(|r| (r.som, r.test, r.severity, r.message))
+        .collect();
+    let row = |name: &str, test: &str, message: &str| {
+        (
+            format!("xfa[0].form[0].form1[0].{name}[0]"),
+            test.to_string(),
+            "error".to_string(),
+            message.to_string(),
+        )
+    };
+    assert_eq!(
+        results,
+        vec![
+            row("req", "nullTest", "Name cannot be blank."),
+            row("ssn", "formatTest", "SSN looks wrong"),
+            row(
+                "qty",
+                "scriptTest",
+                "The value you entered for qty is invalid."
+            ),
+        ]
+    );
+    // Rendering is unaffected: the form still lays out and paints.
+    assert_eq!(engine.xfa_page_count().unwrap(), 1);
+    assert!(engine.render_xfa_page(1, 72).is_ok());
+}
+
+/// Checks from PDFium's `xfa_specific` tests about validation and data
+/// nodes: `xfa_field.in` (`dataNode`, `execEvent('validate')`),
+/// `xfa_exclgroup.in` (`execValidate`, `execEvent('validate')` during
+/// `initialize`, with `nullTest="error"` on an empty group) and
+/// `xfa_form.in` / `xfa_subform.in` (`execValidate` arguments).
+#[test]
+fn pdfium_validate_and_data_node_checks_pass() {
+    let helpers = format!(
+        "{}\n{}",
+        pdfium_fixture("expect.js"),
+        pdfium_fixture("property_test_helpers.js"),
+    );
+    let template = format!(
+        r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+  <subform layout="tb" name="subform1">
+    <pageSet><pageArea id="Page1" name="Page1"><contentArea h="100mm" w="200mm" x="0.25in" y="0.25in"/><medium long="297mm" short="210mm" stock="a4"/></pageArea></pageSet>
+    <subform layout="tb" name="subform2">
+      <field name="field1" h="10mm" w="40mm"><items><text>and a one</text><text>and a two</text></items></field>
+    </subform>
+    <exclGroup name="RadioButtonList" layout="lr-tb">
+      <field w="30mm" h="6mm" name="yes"><ui><checkButton shape="round"/></ui><items><text>Agree</text></items></field>
+      <field w="30mm" h="6mm" name="no"><ui><checkButton shape="round"/></ui><items><text>Disagree</text></items></field>
+      <validate nullTest="error"/>
+    </exclGroup>
+    <event activity="initialize"><script contentType="application/x-javascript"><![CDATA[{helpers}
+      expect("RadioButtonList.className", "exclGroup");
+      expect("RadioButtonList.execEvent('validate')", null);
+      expectError("RadioButtonList.execValidate('badarg')");
+      expect("RadioButtonList.execValidate()", true);
+      expect("RadioButtonList.rawValue", null);
+    ]]></script></event>
+    <event activity="docReady"><script contentType="application/x-javascript"><![CDATA[{helpers}
+      var field = xfa.resolveNode("field1");
+      expect("field.dataNode.className", "dataValue");
+      expect("field.dataNode.somExpression", "xfa[0].datasets[0].data[0].subform1[0].subform2[0].field1[0]");
+      expect("field.execEvent('validate')", true);
+      var my_form = xfa.form;
+      expect("typeof my_form.execValidate", "function");
+      expectError("my_form.execValidate('nonesuch')");
+      var my_doc = xfa.resolveNode("subform2");
+      expectError("my_doc.execValidate('foo')");
+      expect("my_doc.execValidate()", true);
+      // After the initial validation pass the empty group fails its null test.
+      expect("RadioButtonList.execValidate()", false);
+      expect("my_form.execValidate()", false);
+    ]]></script></event>
+  </subform>
+</template>"#
+    );
+    let pdf = xfa_pdf(DYNAMIC_CONFIG, &template, EMPTY_DATA, None, false);
+    let engine = ContentEngine::open_bytes(pdf).unwrap();
+    let log = engine.xfa_script_log();
+    let failures: Vec<&String> = log
+        .iter()
+        .filter(|line| line.starts_with("FAIL") || line.starts_with("ERROR"))
+        .collect();
+    assert!(failures.is_empty(), "{failures:#?}\n{log:#?}");
+    assert_eq!(
+        log.iter().filter(|line| line.starts_with("PASS")).count(),
+        14,
+        "{log:#?}"
+    );
+    let results = engine.xfa_validation_results();
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert_eq!(
+        results[0].som,
+        "xfa[0].form[0].subform1[0].RadioButtonList[0]"
+    );
+    assert_eq!(results[0].message, "RadioButtonList cannot be blank.");
+}
+
+/// EAN-13 digits are split around the guard bars as PDFium draws them.
+#[test]
+fn ean_digits_are_split_around_the_guard_bars() {
+    let template = r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+<subform name="form1" layout="position">
+  <pageSet><pageArea name="P"><contentArea w="200pt" h="200pt"/><medium short="200pt" long="200pt"/></pageArea></pageSet>
+  <field name="ean" x="10pt" y="10pt" w="180pt" h="60pt"><ui><barcode type="ean13"/></ui><value><text>400638133393</text></value><font typeface="Helvetica" size="9pt"/></field>
+  <field name="upc" x="10pt" y="100pt" w="180pt" h="60pt"><ui><barcode type="upcA"/></ui><value><text>03600029145</text></value><font typeface="Helvetica" size="9pt"/></field>
+</subform></template>"#;
+    let pdf = xfa_pdf(DYNAMIC_CONFIG, template, EMPTY_DATA, None, false);
+    let engine = ContentEngine::open_bytes(pdf).unwrap();
+    let layout = ContentEngine::open_bytes(engine.xfa_layout_pdf().unwrap()).unwrap();
+    let tsv = layout.get_text_tsv(&[1]).unwrap();
+    // (word, left x) pairs from the TSV (columns: ... left top ... text).
+    let header: Vec<&str> = tsv.lines().next().unwrap().split('\t').collect();
+    let left = header.iter().position(|h| *h == "left").unwrap();
+    let words: Vec<(String, f64)> = tsv
+        .lines()
+        .skip(1)
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .filter_map(|cols| {
+            let word = cols.last()?.trim().to_string();
+            let x = cols.get(left)?.parse::<f64>().ok()?;
+            (!word.is_empty()).then_some((word, x))
+        })
+        .collect();
+    let find = |word: &str| {
+        words
+            .iter()
+            .find(|(w, _)| w == word)
+            .map(|(_, x)| *x)
+            .unwrap_or_else(|| panic!("{word} in {words:?}"))
+    };
+    // EAN-13 4006381333931: the leading digit in the quiet zone, the two
+    // groups of six between the guard bars.
+    let (lead, left_group, right_group) = (find("4"), find("006381"), find("333931"));
+    assert!(lead < left_group && left_group < right_group, "{words:?}");
+    // The left group starts after the start guard (module 10 of 102).
+    assert!(left_group > 10.0 + 180.0 * 10.0 / 102.0 - 2.0, "{words:?}");
+    // UPC-A 036000291452: number system and check digits outside the
+    // two five-digit groups.
+    for word in ["0", "36000", "29145", "2"] {
+        find(word);
+    }
+    assert!(find("36000") < find("29145"));
+}
