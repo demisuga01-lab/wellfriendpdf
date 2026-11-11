@@ -397,3 +397,44 @@ Raw results are on the VPS under `/srv/wf-bench/results/`:
 | `summary.json`, `summary.md`, `summary-stdout.txt` | summary tables |
 | `corpus.tsv` | corpus list with page counts |
 | `wellfriend-base-b846-partial/` | the superseded binary's rows |
+
+## Re-run on the final build (main 8c53a5c, 2026-11-11)
+
+After rounds 6–8 (XFA data DOM/events, native CMYK fallbacks removed,
+SVG embedded fonts, additive spot overprint) the head-to-head was re-run on
+the test VPS with a release build of `8c53a5c`, Poppler `pdftoppm` 26.07,
+PDFium via pypdfium2 and MuPDF `mutool` 1.27. Same harness (`run_tool.py`),
+150 dpi, one process per document pinned to its own core, single-threaded.
+
+Timing set: the 93 small documents (`fixtures` + `corpus` sets, 629 pages).
+The large `realpdf`/`realpdf200` books were not re-timed (Poppler alone took
+about 12.6 CPU-hours on them in the first run); they are covered by the
+SSIM sample below.
+
+| Tool | Documents rendered | Pages | Total wall (s) | Median ms/page | Peak RSS max / median (MB) |
+|---|---:|---:|---:|---:|---:|
+| **Wellfriend** | 91/93 | 629 | **11.8** | **17.8** | 673 / 39 |
+| Poppler 26.07 | 90/93 | 628 | 101.8 | 66.6 | 64 / 28 |
+| PDFium | 91/93 | 629 | 26.8 | 93.2 | 99 / 41 |
+| MuPDF 1.27 | 90/93 | 628 | 14.6 | 24.6 | 92 / 23 |
+
+Failures: `issue15893_reduced` and `print_protection` fail in every tool
+(broken / password-protected). Poppler also fails `bug_jpx`; MuPDF also fails
+`encrypted-attachment`.
+
+Visual similarity (SSIM on the 157-page sample across all sets, books
+included):
+
+| Pair | Mean | Median |
+|---|---:|---:|
+| Wellfriend vs Poppler | 0.910 | 0.972 |
+| Wellfriend vs PDFium | 0.928 | 0.956 |
+| Wellfriend vs MuPDF | 0.956 | 0.987 |
+| PDFium vs Poppler (baseline) | 0.921 | 0.971 |
+| MuPDF vs Poppler (baseline) | 0.915 | 0.966 |
+
+Wellfriend agrees with Poppler as closely as PDFium and MuPDF do, and on
+this set renders about 8.6x faster than Poppler, 2.3x faster than PDFium and
+1.2x faster than MuPDF in total wall time. Its peak RSS is higher on one
+document (673 MB, a page with very large images); the median is in line with
+the other engines.
