@@ -75,6 +75,7 @@ fn options<'a>(
             memory: Some(budget),
             ..Default::default()
         },
+        plate: None,
     }
 }
 fn dictionary(space: PdfObject) -> PdfDictionary {

@@ -451,6 +451,7 @@ fn backend_output_surface(contract: &RenderContract) -> &'static str {
         super::contract::PixelFormat::Gray8 => "gray_raster",
         super::contract::PixelFormat::Rgb8 | super::contract::PixelFormat::Bgr8 => "rgb_raster",
         super::contract::PixelFormat::Rgba8 | super::contract::PixelFormat::Bgra8 => "rgba_raster",
+        super::contract::PixelFormat::Cmyk8 => "cmyk_raster",
     }
 }
 

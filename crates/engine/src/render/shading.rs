@@ -320,6 +320,16 @@ fn components_to_render_color_with_space(
         options.fail("Indexed shading function produced a non-integer palette index");
         return None;
     }
+    if let Some(plate) = options.plate {
+        return plate_shading_color(
+            plate,
+            components,
+            color_space,
+            color_space_obj,
+            reader,
+            options,
+        );
+    }
     if let Some(space_obj) = color_space_obj {
         match crate::render::colorspace::resolve_named_color_with_resources(
             space_obj,
@@ -351,6 +361,56 @@ fn components_to_render_color_with_space(
         options.fail("invalid shading colour components");
     }
     color
+}
+
+/// Plate pass: a shading colour as inverted plate ink (R/G/B carry the plates
+/// of the pass). Shadings paint every plate their space produces; overprint
+/// of whole shadings is decided by the caller.
+fn plate_shading_color(
+    plate: &crate::render::plate::PlateTarget,
+    components: &[f64],
+    color_space: &str,
+    color_space_obj: Option<&PdfObject>,
+    reader: &PdfReader,
+    options: ShadingRenderOptions<'_>,
+) -> Option<RenderColor> {
+    use crate::render::plate::InkResult;
+    let named;
+    let space = match color_space_obj {
+        Some(space) => space,
+        None => {
+            named = PdfObject::Name(color_space.to_string());
+            &named
+        }
+    };
+    match plate.resolve(
+        space,
+        options.source_color_space,
+        components,
+        reader,
+        options.color_transform,
+        options.function_resources(),
+        false,
+    ) {
+        InkResult::Ink(ink) => {
+            let [r, g, b] = plate.ink_bytes(&ink);
+            Some(RenderColor::new(
+                f32::from(r) / 255.0,
+                f32::from(g) / 255.0,
+                f32::from(b) / 255.0,
+                1.0,
+            ))
+        }
+        InkResult::NoPaint => Some(RenderColor::transparent()),
+        InkResult::Invalid(reason) => {
+            options.fail(reason);
+            None
+        }
+        InkResult::Unhandled => {
+            options.fail("unsupported shading colour space");
+            None
+        }
+    }
 }
 
 /// Read the shading's colour-space name. Handles both a bare name and an array
@@ -395,6 +455,9 @@ pub(crate) struct ShadingRenderOptions<'a> {
     region: Option<&'a PaintRegion>,
     sample_clip: Option<&'a crate::render::buffer::ClipMask>,
     sample_clip_origin: (i32, i32),
+    /// Native CMYK/DeviceN plate pass: shading colours resolve to inverted
+    /// plate ink instead of RGB.
+    pub(crate) plate: Option<&'a crate::render::plate::PlateTarget>,
 }
 
 impl<'a> ShadingRenderOptions<'a> {
@@ -430,7 +493,15 @@ impl<'a> ShadingRenderOptions<'a> {
             region: self.region,
             sample_clip: self.sample_clip,
             sample_clip_origin: self.sample_clip_origin,
+            plate: self.plate,
         }
+    }
+    pub(crate) fn with_plate(
+        mut self,
+        plate: Option<&'a crate::render::plate::PlateTarget>,
+    ) -> Self {
+        self.plate = plate;
+        self
     }
     pub(crate) fn with_opacity(mut self, opacity: f32) -> Self {
         self.opacity = opacity;
@@ -581,6 +652,7 @@ impl Default for ShadingRenderOptions<'_> {
             region: None,
             sample_clip: None,
             sample_clip_origin: (0, 0),
+            plate: None,
         }
     }
 }

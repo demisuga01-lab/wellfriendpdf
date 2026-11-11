@@ -4784,13 +4784,24 @@ impl PageRenderer {
         render_contract_fingerprint: String,
         optional_content: OptionalContentContext,
         cache: &mut RenderDocumentCache,
+        plate: Option<Arc<crate::render::plate::PlateTarget>>,
     ) -> Result<PixelBuffer> {
         let page_number = contract.page_number;
         let dpi = contract.dpi;
         let render_mode = contract.render_mode();
         let resource_budget = contract.resource_budget;
         let exactness_policy = contract.exactness;
-        let background = crate::engine::contract_background_pixel(contract);
+        let background = if plate.is_some() {
+            // Plate passes start from blank film: white is zero ink.
+            WHITE
+        } else {
+            crate::engine::contract_background_pixel(contract)
+        };
+        if let Some(plate) = plate.as_deref() {
+            if render_mode.is_high_quality() {
+                plate.note_issue("linear-light (high quality) compositing");
+            }
+        }
         let decode_limits = decode_limits_for_resource_budget(resource_budget);
         let ops = engine.get_page_content_shared_with_decode_limits(
             page_number,
@@ -4906,6 +4917,12 @@ impl PageRenderer {
             state.image_smoothing_policy = contract.image_smoothing;
             state.forced_color_scheme = contract.forced_colors;
             state.apply_rendering_intent_policy(contract.rendering_intent);
+            if let Some(plate) = plate.as_deref() {
+                if contract.forced_colors.is_some() {
+                    plate.note_issue("forced colour scheme");
+                }
+            }
+            state.plate = plate;
             {
                 let mut adapter = RenderStatePlanAdapter {
                     state: &mut state,
@@ -6579,6 +6596,10 @@ struct RenderState<'a> {
     /// Type 3 bitmap-glyph baseline snapping state (PDFium `AdjustBlue`):
     /// remembered device rows per Type 3 font and size.
     type3_blue_zones: Type3BlueState,
+    /// Native CMYK/DeviceN plate pass (see [`crate::render::plate`]): paint
+    /// colours, images and shadings resolve to inverted plate ink. `None`
+    /// is the ordinary RGB render. Soft-mask groups always render in RGB.
+    plate: Option<Arc<crate::render::plate::PlateTarget>>,
 }
 
 #[derive(Clone, Copy)]
@@ -8444,6 +8465,7 @@ impl<'a> RenderState<'a> {
             forced_color_text_depth: 0,
             forced_color_suppression: 0,
             type3_blue_zones: Type3BlueState::default(),
+            plate: None,
         };
         // A cache reused after a smaller contract must adopt this new state's
         // policy; the previous caller's cap is not sticky for legacy renders.
@@ -8517,6 +8539,26 @@ impl<'a> RenderState<'a> {
         crate::images::decoder::ImageColorOptions {
             options: self.color_transform_options(),
             functions: self.function_resources(),
+            plate: self.plate.as_deref(),
+        }
+    }
+
+    /// Plate pass: convert an image decoded by a codec path that produced
+    /// device gray/RGB without seeing the plate target.
+    fn plate_convert_device_image(&self, raw: RawImage) -> RawImage {
+        let Some(plate) = self.plate.as_deref() else {
+            return raw;
+        };
+        if raw.bits_per_sample != 8 || raw.pixels.is_empty() {
+            return raw;
+        }
+        let (pixels, channels) = plate.convert_device_image(&raw.pixels, raw.channels);
+        RawImage {
+            width: raw.width,
+            height: raw.height,
+            channels,
+            bits_per_sample: 8,
+            pixels,
         }
     }
 
@@ -8621,12 +8663,17 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    /// RGB overprint simulation; a plate pass overprints natively instead.
     fn fill_overprint_preview_enabled(&self) -> bool {
-        self.overprint_policy == OverprintPolicy::Preview && self.gs.fill_overprint
+        self.plate.is_none()
+            && self.overprint_policy == OverprintPolicy::Preview
+            && self.gs.fill_overprint
     }
 
     fn stroke_overprint_preview_enabled(&self) -> bool {
-        self.overprint_policy == OverprintPolicy::Preview && self.gs.stroke_overprint
+        self.plate.is_none()
+            && self.overprint_policy == OverprintPolicy::Preview
+            && self.gs.stroke_overprint
     }
 
     fn fill_overprint_model_enabled(&self) -> bool {
@@ -9513,6 +9560,11 @@ impl<'a> RenderState<'a> {
                     &limits,
                 )
             })?;
+        let raw = if image_ref.is_mask || image_ref.is_smask {
+            raw
+        } else {
+            self.plate_convert_device_image(raw)
+        };
         let raw = Arc::new(raw);
         let raw_bytes = raw.byte_count();
         let cache_max_bytes = self.cache_budget(RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES);
@@ -9679,6 +9731,11 @@ impl<'a> RenderState<'a> {
                     &limits,
                 )
             })?;
+        let raw = if image_ref.is_mask || image_ref.is_smask {
+            raw
+        } else {
+            self.plate_convert_device_image(raw)
+        };
         let raw = Arc::new(raw);
         let raw_bytes = raw.byte_count();
         let cache_max_bytes = self.cache_budget(RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES);
@@ -9722,6 +9779,19 @@ impl<'a> RenderState<'a> {
 
     fn image_decode_render_contract_fingerprint(&self) -> String {
         let color_options = self.color_transform_options();
+        let mut fingerprint = self.image_decode_render_contract_fingerprint_rgb(color_options);
+        if let Some(plate) = self.plate.as_deref() {
+            // Plate passes decode to plate ink: never share decoded images
+            // between plate sets or with RGB renders.
+            fingerprint.push_str(&plate.cache_identity());
+        }
+        fingerprint
+    }
+
+    fn image_decode_render_contract_fingerprint_rgb(
+        &self,
+        color_options: crate::render::cmm::ColorTransformOptions,
+    ) -> String {
         format!(
             concat!(
                 "mode:{:?}:backend:{:?}:print:{:?}:exact:{:?}:",
@@ -12242,6 +12312,8 @@ impl<'a> RenderState<'a> {
     /// Push the graphics-state blend mode onto the pixel buffer.
     fn sync_blend_mode(&mut self) {
         self.buf.blend_mode = self.gs.blend_mode;
+        // Also covers transparency groups composited with this blend mode.
+        self.plate_check_blend(self.gs.blend_mode);
     }
 
     /// Evaluate the ExtGState `/TR2` or `/TR` transfer function into lookup
@@ -12269,6 +12341,11 @@ impl<'a> RenderState<'a> {
 
     /// Apply the active transfer curves to an output paint colour.
     fn apply_paint_transfer(&self, pixel: PixelColor) -> PixelColor {
+        if self.plate.is_some() {
+            // RGB transfer curves do not apply to plate ink; the plate paint
+            // path reports active transfer functions for an RGB fallback.
+            return pixel;
+        }
         match self.gs.transfer.as_deref() {
             Some(lut) => lut.apply_rgba(pixel),
             None => pixel,
@@ -12280,6 +12357,13 @@ impl<'a> RenderState<'a> {
     /// current blend mode and soft mask. Used for per-pixel sources
     /// (shadings) whose colours are not produced by the paint-colour path.
     fn paint_through_transfer(&mut self, paint: impl FnOnce(&mut Self)) {
+        if let Some(plate) = self.plate.as_deref() {
+            if self.gs.transfer.is_some() {
+                plate.note_issue("transfer functions");
+            }
+            paint(self);
+            return;
+        }
         let Some(lut) = self.gs.transfer.clone() else {
             paint(self);
             return;
@@ -12381,6 +12465,10 @@ impl<'a> RenderState<'a> {
         raw: &crate::images::decoder::RawImage,
     ) -> Option<crate::images::decoder::RawImage> {
         let lut = self.gs.transfer.as_deref()?;
+        if let Some(plate) = self.plate.as_deref() {
+            plate.note_issue("transfer functions");
+            return None;
+        }
         if raw.bits_per_sample != 8 {
             return None;
         }
@@ -12545,6 +12633,10 @@ impl<'a> RenderState<'a> {
         }
         let fill_color = self.gs.fill_color.clone();
         let alpha = self.gs.fill_alpha as f32;
+        if self.plate.is_some() {
+            // Plate ink also depends on the overprint state; not cached.
+            return self.resolve_paint_color(&fill_color, alpha, false, "fill");
+        }
         if let Some(entry) = self.resolved_fill_color_cache.as_ref() {
             if entry.matches(
                 &fill_color,
@@ -12581,6 +12673,9 @@ impl<'a> RenderState<'a> {
         }
         let stroke_color = self.gs.stroke_color.clone();
         let alpha = self.gs.stroke_alpha as f32;
+        if self.plate.is_some() {
+            return self.resolve_paint_color(&stroke_color, alpha, true, "stroke");
+        }
         if let Some(entry) = self.resolved_stroke_color_cache.as_ref() {
             if entry.matches(
                 &stroke_color,
@@ -12921,6 +13016,9 @@ impl<'a> RenderState<'a> {
         stroke: bool,
         role: &str,
     ) -> PixelColor {
+        if let Some(plate) = self.plate.clone() {
+            return self.resolve_plate_paint_color(&plate, color, alpha, stroke, role);
+        }
         if let ColorSpace::Named(name) = &color.space {
             match self.current_paint_color_binding(name, stroke) {
                 Ok(binding) => {
@@ -12971,6 +13069,178 @@ impl<'a> RenderState<'a> {
                 self.record_fatal_render_error(format!("{role} color rejected: {reason}"));
                 crate::render::color::RenderColor::transparent().to_pixel_color()
             }
+        }
+    }
+
+    /// Plate pass: whether the current fill (or stroke) overprints.
+    fn plate_overprint_active(&self, stroke: bool) -> bool {
+        let Some(plate) = self.plate.as_deref() else {
+            return false;
+        };
+        plate.honours_overprint()
+            && self.overprint_policy != OverprintPolicy::Disabled
+            && if stroke {
+                self.gs.stroke_overprint
+            } else {
+                self.gs.fill_overprint
+            }
+    }
+
+    /// Plate pass: report a blend mode a per-plate compositor cannot
+    /// reproduce (the non-separable modes mix colour channels).
+    fn plate_check_blend(&self, mode: BlendMode) {
+        if let Some(plate) = self.plate.as_deref() {
+            if matches!(
+                mode,
+                BlendMode::Hue | BlendMode::Saturation | BlendMode::Color | BlendMode::Luminosity
+            ) {
+                plate.note_issue(format!("non-separable blend mode {mode:?}"));
+            }
+        }
+    }
+
+    /// Plate pass: whether an overprinting per-pixel paint (image, shading)
+    /// in `space` leaves every plate of this pass untouched.
+    fn plate_skips_space_paint(&self, space: Option<&PdfObject>) -> bool {
+        let Some(plate) = self.plate.as_deref() else {
+            return false;
+        };
+        self.plate_check_blend(self.gs.blend_mode);
+        if !self.plate_overprint_active(false) {
+            return false;
+        }
+        let Some(space) = space else {
+            return false;
+        };
+        let bound;
+        let space = match space {
+            PdfObject::Name(name)
+                if !matches!(name.as_str(), "DeviceGray" | "DeviceRGB" | "DeviceCMYK") =>
+            {
+                match self.resources.color_spaces.get(name) {
+                    Some(object) => {
+                        bound = object.clone();
+                        &bound
+                    }
+                    None => return false,
+                }
+            }
+            other => other,
+        };
+        plate.overprint_skips_space(
+            space,
+            self.engine.document().reader(),
+            self.color_transform_options(),
+            self.function_resources(),
+        )
+    }
+
+    /// Plate pass counterpart of [`Self::resolve_paint_color`]: the colour
+    /// as inverted ink of the pass's plates, honouring overprint.
+    fn resolve_plate_paint_color(
+        &mut self,
+        plate: &crate::render::plate::PlateTarget,
+        color: &crate::content::state::Color,
+        alpha: f32,
+        stroke: bool,
+        role: &str,
+    ) -> PixelColor {
+        use crate::render::plate::{InkResult, PlateTarget};
+        self.plate_check_blend(self.gs.blend_mode);
+        if self.gs.transfer.is_some() {
+            plate.note_issue("transfer functions");
+        }
+        let overprint = self.plate_overprint_active(stroke);
+        let opm_nonzero = overprint && self.active_overprint_mode() == 1;
+        let device =
+            |family: &str| match PlateTarget::device_ink(family, &color.components, opm_nonzero) {
+                Some(ink) => InkResult::Ink(ink),
+                None => InkResult::Invalid("malformed device colour components"),
+            };
+        let result = match &color.space {
+            ColorSpace::DeviceGray => device("DeviceGray"),
+            ColorSpace::DeviceRGB => device("DeviceRGB"),
+            ColorSpace::DeviceCMYK => device("DeviceCMYK"),
+            ColorSpace::Named(name) => match self.current_paint_color_binding(name, stroke) {
+                Ok(binding) => plate.resolve(
+                    binding.object.as_ref(),
+                    Some(binding.source.as_ref()),
+                    &color.components,
+                    self.engine.document().reader(),
+                    self.color_transform_options(),
+                    self.function_resources(),
+                    opm_nonzero,
+                ),
+                Err(reason) => {
+                    self.record_fatal_render_error(format!(
+                        "{role} color space /{name} rejected: {reason}"
+                    ));
+                    return crate::render::color::RenderColor::transparent().to_pixel_color();
+                }
+            },
+        };
+        match result {
+            InkResult::Ink(ink) => plate.pixel(&ink, alpha, overprint),
+            InkResult::NoPaint => crate::render::color::RenderColor::transparent().to_pixel_color(),
+            InkResult::Invalid(reason) => {
+                self.record_fatal_render_error(format!("{role} color rejected: {reason}"));
+                crate::render::color::RenderColor::transparent().to_pixel_color()
+            }
+            InkResult::Unhandled => {
+                self.record_fatal_render_error(format!(
+                    "{role} color space is unsupported for direct paint"
+                ));
+                crate::render::color::RenderColor::transparent().to_pixel_color()
+            }
+        }
+    }
+
+    /// Plate pass colour of a retained vector paint, whose draw state carries
+    /// the device colour (RGBA, plus the exact components for DeviceCMYK).
+    fn plate_vector_color(
+        &mut self,
+        plate: &crate::render::plate::PlateTarget,
+        draw_state: &DrawState,
+        stroke: bool,
+    ) -> PixelColor {
+        use crate::render::plate::PlateTarget;
+        self.plate_check_blend(draw_state.blend_mode);
+        let (rgba, cmyk, overprint) = if stroke {
+            (
+                draw_state.stroke_color,
+                draw_state.stroke_cmyk,
+                draw_state.stroke_overprint,
+            )
+        } else {
+            (
+                draw_state.fill_color,
+                draw_state.fill_cmyk,
+                draw_state.fill_overprint,
+            )
+        };
+        let overprint = overprint
+            && plate.honours_overprint()
+            && self.overprint_policy != OverprintPolicy::Disabled;
+        let alpha = f32::from(rgba[3]) / 255.0;
+        let ink = match cmyk {
+            Some(cmyk) => PlateTarget::device_ink(
+                "DeviceCMYK",
+                &cmyk.map(f64::from),
+                overprint && draw_state.overprint_mode == 1,
+            ),
+            None => PlateTarget::device_ink(
+                "DeviceRGB",
+                &[
+                    f64::from(rgba[0]) / 255.0,
+                    f64::from(rgba[1]) / 255.0,
+                    f64::from(rgba[2]) / 255.0,
+                ],
+                false,
+            ),
+        };
+        match ink {
+            Some(ink) => plate.pixel(&ink, alpha, overprint),
+            None => crate::render::color::RenderColor::transparent().to_pixel_color(),
         }
     }
 
@@ -14052,6 +14322,9 @@ impl<'a> RenderState<'a> {
             forced_color_text_depth: 0,
             forced_color_suppression: 0,
             type3_blue_zones: Type3BlueState::default(),
+            // A luminosity mask is computed from the group's colours in its
+            // own (RGB) blending space, not from plate ink.
+            plate: None,
         };
 
         mask_state.apply_form_bbox_clip(group_bbox);
@@ -14516,6 +14789,9 @@ impl<'a> RenderState<'a> {
         if !self.reject_current_fill_ext_g_state_paint_if_needed("inline image paint") {
             return;
         }
+        if !is_mask && self.plate_skips_space_paint(image_dictionary.get("ColorSpace")) {
+            return;
+        }
         let source_region = decode_plan.cache_key.contract.source_region;
         let ccitt_window = if decode_plan.capability_report.codec == ImageDecodeCodec::Ccitt {
             ccitt_window_from_source_region(source_region)
@@ -14617,6 +14893,17 @@ impl<'a> RenderState<'a> {
                 self.record_fatal_render_error(format!("inline image decode failed: {err}"));
                 return;
             }
+        };
+        // CCITT windows and reduced JPX decodes come out device-referred.
+        let raw = if !is_mask
+            && (ccitt_window.is_some()
+                || (raw_window.is_none()
+                    && native_reduction_target.is_some()
+                    && decode_plan.capability_report.codec == ImageDecodeCodec::Jpx))
+        {
+            self.plate_convert_device_image(raw)
+        } else {
+            raw
         };
         let pattern_stencil = is_mask && self.is_pattern_fill();
         let raw = if is_mask {
@@ -15121,6 +15408,11 @@ impl<'a> RenderState<'a> {
             return;
         }
         if !self.reject_current_fill_ext_g_state_paint_if_needed("image XObject paint") {
+            return;
+        }
+        if !image_is_mask
+            && self.plate_skips_space_paint(dict.get("ColorSpace").or_else(|| dict.get("CS")))
+        {
             return;
         }
         let source_region = decode_plan.cache_key.contract.source_region;
@@ -15888,6 +16180,7 @@ impl<'a> RenderState<'a> {
             forced_color_text_depth: self.forced_color_text_depth,
             forced_color_suppression: self.forced_color_suppression,
             type3_blue_zones: std::mem::take(&mut self.type3_blue_zones),
+            plate: self.plate.clone(),
         };
 
         // Carry the parent clip into the group in destination-local coordinates
@@ -16244,6 +16537,9 @@ impl<'a> RenderState<'a> {
         let Some(policy) = self.form_highlight.clone() else {
             return;
         };
+        if let Some(plate) = self.plate.as_deref() {
+            plate.note_issue("form field highlight");
+        }
         let reader = self.engine.document().reader();
         let chain = collect_field_chain(annot, reader);
         if inherited_field_object(&chain, "FT").is_none() {
@@ -16488,9 +16784,18 @@ impl<'a> RenderState<'a> {
                     return;
                 }
             };
+        if self.plate_skips_space_paint(
+            shading_dict
+                .get("ColorSpace")
+                .or_else(|| shading_dict.get("CS")),
+        ) {
+            return;
+        }
         let shading_memory = Arc::clone(&self.temporary_scheduler.budget);
         let shading_functions = Arc::clone(&self.function_cache);
+        let shading_plate = self.plate.clone();
         let shading_options = ShadingRenderOptions::new(self.gs.shading_smoothness_tolerance())
+            .with_plate(shading_plate.as_deref())
             .with_color_context(Some(&source_color_space), self.color_transform_options())
             .with_memory_budget(&shading_memory)
             .with_working_byte_limit(budget_to_usize(self.resource_budget.max_temporary_bytes))
@@ -17346,9 +17651,18 @@ impl<'a> RenderState<'a> {
                     return;
                 }
             };
+        if self.plate_skips_space_paint(
+            shading_dict
+                .get("ColorSpace")
+                .or_else(|| shading_dict.get("CS")),
+        ) {
+            return;
+        }
         let shading_memory = Arc::clone(&self.temporary_scheduler.budget);
         let shading_functions = Arc::clone(&self.function_cache);
+        let shading_plate = self.plate.clone();
         let shading_options = ShadingRenderOptions::new(self.gs.shading_smoothness_tolerance())
+            .with_plate(shading_plate.as_deref())
             .with_color_context(Some(&source_color_space), self.color_transform_options())
             .with_memory_budget(&shading_memory)
             .with_working_byte_limit(budget_to_usize(self.resource_budget.max_temporary_bytes))
@@ -18974,6 +19288,10 @@ impl<'a> RenderState<'a> {
         fill_color: PixelColor,
         glyph_pixel_size: f64,
     ) -> bool {
+        if let Some(plate) = self.plate.as_deref() {
+            // COLR/SVG/bitmap glyph colours are sRGB paint, not plate ink.
+            plate.note_issue("colour font glyphs");
+        }
         match crate::render::color_glyph::colr_cpal_layers(
             request.font_bytes,
             glyph_id,
@@ -22681,6 +22999,46 @@ impl<'a, 'b> RenderStatePlanAdapter<'a, 'b> {
         let color = self.effective_vector_color(fallback);
         self.state.apply_paint_transfer(color)
     }
+
+    /// Plate pass colour of a retained vector paint: inherited (Type 3) and
+    /// forced (uncoloured pattern) colours already resolve to plate ink;
+    /// otherwise the draw state's device colour is converted.
+    fn plate_vector_fill_color(
+        &mut self,
+        plate: &crate::render::plate::PlateTarget,
+        draw_state: &DrawState,
+        stroke: bool,
+    ) -> PixelColor {
+        let (fallback, explicit, inherited) = if stroke {
+            (
+                draw_state.stroke_color,
+                draw_state.stroke_color_explicit,
+                self.forced_vector_stroke_pixel_color,
+            )
+        } else {
+            (
+                draw_state.fill_color,
+                draw_state.fill_color_explicit,
+                self.forced_vector_fill_pixel_color,
+            )
+        };
+        if self.state.forced_color_scheme.is_some() {
+            plate.note_issue("forced colour scheme");
+        }
+        if !explicit {
+            if let Some(color) = inherited {
+                // A fully transparent inherited colour is an overprint skip.
+                if color[3] == 0 {
+                    return color;
+                }
+                return inherited_type3_vector_color_with_fallback_alpha(color, fallback);
+            }
+        }
+        if self.forced_vector_color.is_some() {
+            return self.effective_vector_color(fallback);
+        }
+        self.state.plate_vector_color(plate, draw_state, stroke)
+    }
 }
 
 impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
@@ -23293,8 +23651,11 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
         let saved_blend = self.state.buf.blend_mode;
         self.state.buf.blend_mode = draw_state.blend_mode;
         let ctm = self.effective_vector_ctm(&draw_state.ctm);
-        let fill_color =
-            self.effective_vector_fill_color(draw_state.fill_color, draw_state.fill_color_explicit);
+        let fill_color = match self.state.plate.clone() {
+            Some(plate) => self.plate_vector_fill_color(&plate, draw_state, false),
+            None => self
+                .effective_vector_fill_color(draw_state.fill_color, draw_state.fill_color_explicit),
+        };
         if let Some(reason) = retained_fill_ext_g_state_paint_refusal_for_alpha(
             self.state.exactness_policy,
             draw_state,
@@ -23347,10 +23708,13 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
         let saved_blend = self.state.buf.blend_mode;
         self.state.buf.blend_mode = draw_state.blend_mode;
         let ctm = self.effective_vector_ctm(&draw_state.ctm);
-        let stroke_color = self.effective_vector_stroke_color(
-            draw_state.stroke_color,
-            draw_state.stroke_color_explicit,
-        );
+        let stroke_color = match self.state.plate.clone() {
+            Some(plate) => self.plate_vector_fill_color(&plate, draw_state, true),
+            None => self.effective_vector_stroke_color(
+                draw_state.stroke_color,
+                draw_state.stroke_color_explicit,
+            ),
+        };
         if let Some(reason) = retained_stroke_ext_g_state_paint_refusal_for_alpha(
             self.state.exactness_policy,
             draw_state,

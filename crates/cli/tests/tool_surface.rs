@@ -2500,6 +2500,61 @@ fn render_fractional_separate_and_scale_to_sizes() {
 }
 
 #[test]
+fn render_native_cmyk_and_separation_plates() {
+    // Native CMYK JPEG (Adobe CMYK) and the RGB-convert method both encode.
+    for method in ["native", "convert"] {
+        let (name, jpg) = render_single_page(
+            &format!("jpg_cmyk_{method}"),
+            &["--dpi", "36", "--format", "jpg", "--cmyk", "--cmyk-method", method],
+        );
+        assert_eq!(name, "page-001.jpg");
+        assert!(jpg.starts_with(&[0xFF, 0xD8]), "{method}: JPEG");
+    }
+
+    let o = tmp("render_separations.zip");
+    let pdf = fx("multi_stream.pdf");
+    let out = run(&[
+        "render",
+        pdf.to_str().unwrap(),
+        "-o",
+        o.to_str().unwrap(),
+        "-p",
+        "1",
+        "--dpi",
+        "36",
+        "--separations",
+    ]);
+    assert_ok(&out, "render --separations");
+    let entries = zip_entries(&o);
+    let _ = std::fs::remove_file(&o);
+    let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "page-001-Cyan.png",
+            "page-001-Magenta.png",
+            "page-001-Yellow.png",
+            "page-001-Black.png"
+        ]
+    );
+    for (name, png) in &entries {
+        assert_eq!(png_header(png).2, 0, "{name}: 8-bit grey plate");
+    }
+
+    let o = tmp("render_separations_jpg.zip");
+    let out = run(&[
+        "render",
+        pdf.to_str().unwrap(),
+        "-o",
+        o.to_str().unwrap(),
+        "--format",
+        "jpg",
+        "--separations",
+    ]);
+    assert!(!out.status.success(), "--separations rejects jpg");
+}
+
+#[test]
 fn render_tiff_and_pnm_outputs() {
     let (name, tif) = render_single_page("tiff", &["--dpi", "36", "--format", "tiff"]);
     assert_eq!(name, "page-001.tif");

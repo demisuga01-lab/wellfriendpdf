@@ -24,6 +24,7 @@ pub mod page_renderer;
 pub(crate) mod parameter_dictionary;
 pub mod path;
 pub mod plan;
+pub mod plate;
 pub mod postscript;
 pub(crate) mod print_profile;
 pub mod progressive;
@@ -99,6 +100,9 @@ pub use plan::{
     GraphicsStateDescriptor, HotDisplayOp, InlineImageDescriptor, MarkedContentProperties,
     NativeDescriptor, PackedColdTables, PackedCompileRefusal, PackedDisplayList, PatternPaintPhase,
     PatternPathDescriptor, PlanDispatcher, RenderBatch, RenderPlan, RenderSpatialIndex,
+};
+pub use plate::{
+    CmykRaster, SeparationPlate, SeparationRaster, MAX_SEPARATION_SPOTS, PROCESS_COLORANTS,
 };
 pub use postscript::{
     assemble_eps_document, assemble_ps_document, render_page_ps, render_page_ps_strict,
