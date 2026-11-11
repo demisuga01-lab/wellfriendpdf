@@ -7,6 +7,7 @@ scalability for web, print-prep, and vector-editing workflows.
 wellfriendpdf render in.pdf --format svg -o pages.zip            # all pages, ZIP of .svg
 wellfriendpdf render in.pdf --format svg -p 1,3-5 -o pages.zip   # a page range
 wellfriendpdf render in.pdf --format svg --dpi 150 -o pages.zip  # device scale
+wellfriendpdf render in.pdf --format svg --svg-text fonts -o pages.zip  # <text> in embedded fonts
 ```
 
 Output follows the existing `render` convention: one `page-NNN.svg` per page
@@ -48,8 +49,26 @@ For pages using only natively-representable operations:
 - **Text** → one `<path>` per glyph (text-as-**outlines**): the glyph outline,
   scaled by font size and transformed by the text matrix × CTM, filled (or
   stroked) with the text colour. Identical outlines to the raster renderer, so
-  text is pixel-faithful. (Selectable `<text>` with embedded/subset fonts is a
-  future enhancement.)
+  text is pixel-faithful. An invisible `<text>` layer on top carries the
+  decoded Unicode for search and copy.
+- **Text with embedded fonts** (optional, `--svg-text fonts`,
+  `SvgOptions { text_mode: SvgTextMode::EmbeddedFonts, .. }` with
+  `ContentEngine::render_page_svg_with_options`): plain filled text becomes
+  visible `<text font-family="wf-font-N">` runs, one per shown string, whose
+  `transform` is the first glyph's em frame (text matrix Ã— CTM, font size,
+  `Tz`, rise) and whose `x`/`y` lists give every glyph's exact position, so
+  `Tc`, `Tw`, `TJ` kerning and the PDF widths are kept. The fonts used are
+  subset with `subsetter` and embedded as `@font-face` data URIs: TrueType
+  as TrueType, OpenType-CFF as OpenType, bare CFF (`FontFile3`) wrapped in an
+  OpenType-CFF container. Each glyph is addressed by a private-use code point
+  (U+E000â€¦) through a rebuilt `cmap`, with `OS/2`, `name` and `post` added for
+  browser font sanitisers, so the browser draws exactly the PDF's glyph
+  without shaping. Glyphs stay outlines, run by run, for Type 3 and Type 1
+  fonts, CFF2, CFF programs with a non-uniform FontMatrix, programs the
+  subsetter rejects, glyphs the CFF interpreter cannot draw natively,
+  vertical writing, and stroked, clipping or pattern-filled text. The
+  invisible Unicode layer stays the searchable text. resvg cannot load web
+  fonts, so this mode is meant for browsers.
 - **Clipping** → `<clipPath>` defs referenced via `clip-path`, tracking the
   `q`/`Q` clip stack.
 - **Colour** → device Gray/RGB/CMYK and Separation/DeviceN tint transforms,
@@ -96,7 +115,8 @@ parsed by `resvg` as a structural cross-check.
   EPSF single-page variant). See `docs/postscript_output.md`. Remaining PS
   follow-ups: selectable text via embedded fonts, native `shfill` shadings, and
   `DCTDecode` JPEG passthrough.
-- **Selectable text** via embedded/subset fonts in the SVG (`<text>`/`@font-face`).
+- **Selectable text** via embedded/subset fonts in the SVG (`<text>`/`@font-face`):
+  implemented as the optional `--svg-text fonts` mode (above).
 - **Native axial/radial SVG gradients** (`<linearGradient>`/`<radialGradient>`)
   for ShadingType 2/3 instead of the whole-page fallback; mesh shadings (4–7)
   would still fall back.

@@ -292,6 +292,168 @@ fn svg_text_is_searchable_through_an_invisible_text_layer() {
     }
 }
 
+fn base64_decode(text: &str) -> Vec<u8> {
+    let value = |byte: u8| -> u32 {
+        match byte {
+            b'A'..=b'Z' => u32::from(byte - b'A'),
+            b'a'..=b'z' => u32::from(byte - b'a') + 26,
+            b'0'..=b'9' => u32::from(byte - b'0') + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => panic!("bad base64 byte {byte}"),
+        }
+    };
+    let bytes: Vec<u8> = text.bytes().filter(|byte| *byte != b'=').collect();
+    let mut out = Vec::with_capacity(bytes.len() * 3 / 4);
+    for chunk in bytes.chunks(4) {
+        let mut acc = 0u32;
+        for (index, byte) in chunk.iter().enumerate() {
+            acc |= value(*byte) << (18 - 6 * index);
+        }
+        out.extend_from_slice(&acc.to_be_bytes()[1..chunk.len()]);
+    }
+    out
+}
+
+/// Value of attribute `name` in an element's start tag.
+/// `element` starts right after the tag name, so the first attribute has no
+/// leading space.
+fn attr<'a>(element: &'a str, name: &str) -> Option<&'a str> {
+    let key = format!("{name}=\"");
+    let start = if element.starts_with(&key) {
+        key.len()
+    } else {
+        element.find(&format!(" {key}"))? + key.len() + 1
+    };
+    Some(&element[start..start + element[start..].find('"')?])
+}
+
+fn numbers(text: &str) -> Vec<f64> {
+    text.split([' ', ','])
+        .filter(|item| !item.is_empty())
+        .map(|item| item.parse().unwrap())
+        .collect()
+}
+
+/// Device origins of the outline glyphs (`<use>`) of an SVG page.
+fn use_glyph_origins(svg: &str) -> Vec<(f64, f64)> {
+    svg.split("<use ")
+        .skip(1)
+        .filter_map(|element| {
+            let matrix = attr(element, "transform")?
+                .strip_prefix("matrix(")?
+                .strip_suffix(')')?;
+            let values = numbers(matrix);
+            Some((values[4], values[5]))
+        })
+        .collect()
+}
+
+/// Embedded `@font-face` programs by family, and the device origin and
+/// family/character of every visible `<text>` glyph.
+#[allow(clippy::type_complexity)]
+fn embedded_font_text(
+    svg: &str,
+) -> (
+    std::collections::HashMap<String, Vec<u8>>,
+    Vec<((f64, f64), String, char)>,
+) {
+    let mut fonts = std::collections::HashMap::new();
+    for face in svg.split("@font-face{").skip(1) {
+        let family = face["font-family:\"".len()..].split('"').next().unwrap();
+        let data = face.split(";base64,").nth(1).unwrap().split(')').next().unwrap();
+        fonts.insert(family.to_string(), base64_decode(data));
+    }
+    let mut glyphs = Vec::new();
+    for element in svg.split("<text ").skip(1) {
+        let Some(family) = attr(element, "font-family") else {
+            continue;
+        };
+        if !family.starts_with("wf-font-") {
+            continue;
+        }
+        let size: f64 = attr(element, "font-size").unwrap().parse().unwrap();
+        let m = numbers(
+            attr(element, "transform")
+                .unwrap()
+                .trim_start_matches("matrix(")
+                .trim_end_matches(')'),
+        );
+        let xs = numbers(attr(element, "x").unwrap());
+        let ys = numbers(attr(element, "y").unwrap());
+        let body = &element[element.find('>').unwrap() + 1..element.find("</text>").unwrap()];
+        let chars: Vec<char> = body
+            .split(';')
+            .filter(|item| !item.is_empty())
+            .map(|item| {
+                char::from_u32(u32::from_str_radix(item.trim_start_matches("&#x"), 16).unwrap())
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(chars.len(), xs.len(), "one x per glyph: {element}");
+        assert!(size > 0.0);
+        for (index, ch) in chars.into_iter().enumerate() {
+            let (x, y) = (xs[index], if ys.len() == 1 { ys[0] } else { ys[index] });
+            let origin = (m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]);
+            glyphs.push((origin, family.to_string(), ch));
+        }
+    }
+    (fonts, glyphs)
+}
+
+#[test]
+fn svg_embedded_fonts_draw_text_at_the_outline_glyph_positions() {
+    use wellfriendpdf_engine::{SvgOptions, SvgTextMode};
+    let e = engine("tracemonkey.pdf");
+    let outlines = e.render_page_svg(3, DPI).unwrap();
+    let options = SvgOptions {
+        text_mode: SvgTextMode::EmbeddedFonts,
+        ..SvgOptions::default()
+    };
+    let page = e.render_page_svg_with_options(3, DPI, &options).unwrap();
+    assert!(!page.is_rasterized);
+    // The default output is unchanged by the option's existence.
+    assert!(!outlines.svg.contains("@font-face"));
+    assert_eq!(outlines.svg, e.render_page_svg(3, DPI).unwrap().svg);
+
+    let (fonts, glyphs) = embedded_font_text(&page.svg);
+    assert!(!fonts.is_empty(), "fonts are embedded");
+    assert!(glyphs.len() > 500, "visible text glyphs: {}", glyphs.len());
+    // Every glyph's character is mapped by its font to a drawn glyph.
+    for (family, program) in &fonts {
+        let face = ttf_parser::Face::parse(program, 0)
+            .unwrap_or_else(|err| panic!("{family} is a valid font: {err}"));
+        for (_, glyph_family, ch) in glyphs.iter().filter(|g| &g.1 == family) {
+            let gid = face
+                .glyph_index(*ch)
+                .unwrap_or_else(|| panic!("{family} maps U+{:04X}", u32::from(*ch)));
+            assert!(
+                face.glyph_bounding_box(gid).is_some(),
+                "{glyph_family} U+{:04X} has an outline",
+                u32::from(*ch)
+            );
+        }
+    }
+    // Text glyphs and remaining outline glyphs sit exactly where the outline
+    // rendering puts every glyph.
+    let mut expected = use_glyph_origins(&outlines.svg);
+    let mut actual: Vec<(f64, f64)> = glyphs.iter().map(|g| g.0).collect();
+    actual.extend(use_glyph_origins(&page.svg));
+    assert_eq!(actual.len(), expected.len());
+    let key = |p: &(f64, f64)| ((p.1 * 10.0).round() as i64, (p.0 * 10.0).round() as i64);
+    expected.sort_by_key(key);
+    actual.sort_by_key(key);
+    for (a, b) in actual.iter().zip(&expected) {
+        assert!(
+            (a.0 - b.0).abs() < 0.02 && (a.1 - b.1).abs() < 0.02,
+            "glyph at {a:?} vs outline at {b:?}"
+        );
+    }
+    // The searchable layer is still there.
+    let text = text_layer_content(&page.svg).expect("text layer");
+    assert!(text.contains("store primes to interpreter stack"));
+}
+
 #[test]
 fn svg_rasterizes_close_to_wellfriendpdf_raster() {
     // Compare on pages with ACTUAL visible marks (a blank page trivially matches

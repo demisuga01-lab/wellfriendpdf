@@ -123,7 +123,10 @@ pub use progressive::{
 };
 pub use quality::RenderQuality;
 pub use shading::ShadingRenderer;
-pub use svg::{render_page_svg, render_page_svg_strict, SvgPage};
+pub use svg::{
+    render_page_svg, render_page_svg_strict, render_page_svg_with_options, SvgOptions, SvgPage,
+    SvgTextMode,
+};
 pub use transaction_invalidation::{
     apply_render_invalidation_plan_json_to_cache, dirty_regions_to_render_tiles,
     map_refs_to_canonical_ids, RenderInvalidationCachePlan, RenderInvalidationPlanTile,

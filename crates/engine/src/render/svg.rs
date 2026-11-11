@@ -45,9 +45,22 @@
 //! `svg_text_layer.rs`) is added on top so the SVG can be searched, selected
 //! and copied. A page embedded as one raster image gets the same layer from
 //! the page's extracted word boxes.
+//!
+//! # Embedded fonts (optional)
+//!
+//! With [`SvgTextMode::EmbeddedFonts`], filled text is drawn as visible
+//! `<text>` in the page's own fonts instead: every font program used is
+//! subset and embedded as an `@font-face` data URI (`svg_fonts.rs`) and each
+//! run of glyphs carries the exact device position of every glyph. Glyphs
+//! that cannot be drawn that way (Type 3 and Type 1 fonts, programs the
+//! subsetter rejects, vertical writing, stroked, clipping or pattern-filled
+//! text) stay outlines, run by run.
 
 #[path = "svg_text_layer.rs"]
 mod text_layer;
+
+#[path = "svg_fonts.rs"]
+mod fonts;
 
 use crate::content::operation::{ContentOperation, Operand};
 use crate::content::state::{BlendMode, Color, ColorSpace, GraphicsState, LineCap, LineJoin};
@@ -95,8 +108,30 @@ pub struct SvgPage {
     pub has_regional_images: bool,
 }
 
+/// How SVG output draws text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SvgTextMode {
+    /// Glyph outlines (`<path>`/`<use>`), plus an invisible searchable text
+    /// layer. Renders identically everywhere.
+    #[default]
+    Outlines,
+    /// Visible `<text>` in the page's fonts, subset and embedded as
+    /// `@font-face` data URIs, with exact per-glyph positions; glyphs whose
+    /// font cannot be embedded fall back to outlines. Needs a renderer with
+    /// web-font support (browsers; not resvg).
+    EmbeddedFonts,
+}
+
+/// Options for [`render_page_svg_with_options`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SvgOptions {
+    pub text_mode: SvgTextMode,
+    /// Refuse whole-page raster fallback (see [`render_page_svg_strict`]).
+    pub strict_vector: bool,
+}
+
 pub fn render_page_svg(engine: &ContentEngine, page_number: usize, dpi: u32) -> Result<SvgPage> {
-    render_page_svg_with_policy(engine, page_number, dpi, SvgWholePageRasterPolicy::Allow)
+    render_page_svg_with_options(engine, page_number, dpi, &SvgOptions::default())
 }
 
 /// Render a single page to SVG without silently rasterizing the whole page when
@@ -106,7 +141,30 @@ pub fn render_page_svg_strict(
     page_number: usize,
     dpi: u32,
 ) -> Result<SvgPage> {
-    render_page_svg_with_policy(engine, page_number, dpi, SvgWholePageRasterPolicy::Refuse)
+    render_page_svg_with_options(
+        engine,
+        page_number,
+        dpi,
+        &SvgOptions {
+            strict_vector: true,
+            ..SvgOptions::default()
+        },
+    )
+}
+
+/// Render a single page to SVG with explicit [`SvgOptions`].
+pub fn render_page_svg_with_options(
+    engine: &ContentEngine,
+    page_number: usize,
+    dpi: u32,
+    options: &SvgOptions,
+) -> Result<SvgPage> {
+    let policy = if options.strict_vector {
+        SvgWholePageRasterPolicy::Refuse
+    } else {
+        SvgWholePageRasterPolicy::Allow
+    };
+    render_page_svg_with_policy(engine, page_number, dpi, policy, options.text_mode)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +184,7 @@ fn render_page_svg_with_policy(
     page_number: usize,
     dpi: u32,
     whole_page_policy: SvgWholePageRasterPolicy,
+    text_mode: SvgTextMode,
 ) -> Result<SvgPage> {
     let viewport = engine.page_viewport(page_number, dpi)?;
     let ops = engine.get_page_content(page_number)?;
@@ -151,6 +210,7 @@ fn render_page_svg_with_policy(
             &resources,
             &viewport,
             RegionalVectorResources::empty(),
+            text_mode,
         ),
         VectorFallbackDecision::RegionalImageFallback {
             ref image_names,
@@ -169,6 +229,7 @@ fn render_page_svg_with_policy(
                 form_names,
                 shading_names,
             },
+            text_mode,
         ),
     }
 }
@@ -181,6 +242,7 @@ fn render_vector_page(
     resources: &PageResources,
     viewport: &Viewport,
     regional: RegionalVectorResources<'_>,
+    text_mode: SvgTextMode,
 ) -> Result<SvgPage> {
     let (w, h) = (viewport.width_px, viewport.height_px);
     let mut sink = SvgSink::new(w, h);
@@ -205,6 +267,8 @@ fn render_vector_page(
         form_object_stack: Vec::new(),
         text_clip_path: None,
         fatal_error: None,
+        text_mode,
+        text_run: None,
     };
     state.run(ops);
     if let Some(err) = state.fatal_error.take() {
@@ -500,6 +564,8 @@ struct SvgSink {
     glyph_ids: std::collections::HashMap<u64, String>,
     /// Invisible searchable text, emitted on top of the page.
     text_layer: text_layer::TextLayer,
+    /// Fonts embedded for [`SvgTextMode::EmbeddedFonts`] text.
+    fonts: fonts::FontSet,
 }
 
 impl SvgSink {
@@ -514,6 +580,7 @@ impl SvgSink {
             mask_counter: 0,
             glyph_ids: std::collections::HashMap::new(),
             text_layer: text_layer::TextLayer::default(),
+            fonts: fonts::FontSet::default(),
         }
     }
 
@@ -702,6 +769,7 @@ impl SvgSink {
              width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\">\n",
             self.width, self.height, self.width, self.height
         ));
+        out.push_str(&self.fonts.style_element());
         if !self.defs.is_empty() {
             out.push_str("<defs>\n");
             out.push_str(&self.defs);
@@ -746,6 +814,22 @@ struct SvgRenderState<'a> {
     form_object_stack: Vec<(u32, u16)>,
     text_clip_path: Option<FlatPath>,
     fatal_error: Option<WellfriendError>,
+    text_mode: SvgTextMode,
+    /// Embedded-font glyphs of the current text-showing string, emitted as
+    /// one `<text>` element.
+    text_run: Option<TextRun>,
+}
+
+/// Consecutive glyphs of one string drawn with one embedded font.
+struct TextRun {
+    font: usize,
+    /// Em space at the first glyph's origin to device space.
+    frame: Transform2D,
+    /// Device position of each glyph's origin, and its character.
+    glyphs: Vec<((f64, f64), char)>,
+    fill: String,
+    attrs: String,
+    clip: String,
 }
 
 impl SvgRenderState<'_> {
@@ -2580,6 +2664,11 @@ impl SvgRenderState<'_> {
     }
 
     fn show_text(&mut self, bytes: &[u8]) {
+        self.show_text_glyphs(bytes);
+        self.flush_text_run();
+    }
+
+    fn show_text_glyphs(&mut self, bytes: &[u8]) {
         let font_name = self.gs.text.font_name.clone();
         let font_size = self.gs.text.font_size;
         if font_size <= 0.0 {
@@ -2619,6 +2708,17 @@ impl SvgRenderState<'_> {
             }
         };
         let font_program = font_bytes.as_deref().filter(|bytes| !bytes.is_empty());
+        let embeddable_program = match self.resources.fonts.get(&font_name) {
+            Some(font_dict)
+                if matches!(
+                    font_dict.get("Subtype"),
+                    Some(PdfObject::Name(subtype)) if subtype.as_str() == "Type3"
+                ) =>
+            {
+                None
+            }
+            _ => font_bytes.clone().filter(|bytes| !bytes.is_empty()),
+        };
         let upem = font_program
             .and_then(get_upem)
             .map(f64::from)
@@ -2643,7 +2743,16 @@ impl SvgRenderState<'_> {
                     ));
                     return;
                 };
-                self.emit_glyph_outline(outline, upem);
+                if !self.push_embedded_font_glyph(
+                    embeddable_program.as_ref(),
+                    upem,
+                    &glyph,
+                    outline.as_ref(),
+                    layer_start,
+                ) {
+                    self.flush_text_run();
+                    self.emit_glyph_outline(outline, upem);
+                }
             }
             let advance = if glyph.is_vertical {
                 0.0
@@ -2678,6 +2787,126 @@ impl SvgRenderState<'_> {
                     vertical: glyph.is_vertical,
                 });
             }
+        }
+    }
+
+    /// [`SvgTextMode::EmbeddedFonts`]: add a glyph to the current `<text>`
+    /// run. `false` when the glyph must be drawn as an outline instead
+    /// (outline mode, a font that cannot be embedded, a glyph the embedded
+    /// program would not draw identically, text that is not plain filled
+    /// horizontal text).
+    fn push_embedded_font_glyph(
+        &mut self,
+        program: Option<&std::sync::Arc<[u8]>>,
+        upem: f64,
+        glyph: &DecodedGlyph,
+        outline: Option<&Path>,
+        frame: Option<Transform2D>,
+    ) -> bool {
+        if self.text_mode != SvgTextMode::EmbeddedFonts
+            || self.gs.text.rendering_mode != 0
+            || self.gs.fill_color_space.is_pattern()
+            || glyph.is_vertical
+        {
+            return false;
+        }
+        let (Some(program), Some(frame)) = (program, frame) else {
+            return false;
+        };
+        let Some(outline) = outline.filter(|path| !path.segments.is_empty()) else {
+            // Nothing to draw (a space): the run goes on.
+            return true;
+        };
+        let [a, b, c, d, ..] = frame.to_array();
+        let det = a * d - b * c;
+        if !det.is_finite() || det.abs() < 1e-9 {
+            return false;
+        }
+        let Some(font) = self.sink.fonts.font_for(program, upem) else {
+            return false;
+        };
+        let Some(ch) = self.sink.fonts.glyph_char(font, program, glyph, outline) else {
+            return false;
+        };
+        let same_frame = |run: &TextRun| {
+            let [ra, rb, rc, rd, ..] = run.frame.to_array();
+            run.font == font
+                && [ra - a, rb - b, rc - c, rd - d]
+                    .iter()
+                    .all(|delta| delta.abs() <= 1e-9 * (1.0 + det.abs()))
+        };
+        if self.text_run.as_ref().is_some_and(|run| !same_frame(run)) {
+            self.flush_text_run();
+        }
+        if self.text_run.is_none() {
+            let Some((fill, alpha)) = self.current_fill_color_or_fatal("SVG text fill color")
+            else {
+                return true;
+            };
+            let attrs = format!("{}{}", opacity_attr("fill-opacity", alpha), self.blend_attr());
+            self.text_run = Some(TextRun {
+                font,
+                frame,
+                glyphs: Vec::new(),
+                fill,
+                attrs,
+                clip: self.clip_attr(),
+            });
+        }
+        let [.., e, f] = frame.to_array();
+        if let Some(run) = self.text_run.as_mut() {
+            run.glyphs.push(((e, f), ch));
+        }
+        true
+    }
+
+    /// Emit the pending embedded-font run as one `<text>` element: the
+    /// element's coordinate system is the first glyph's em frame scaled to
+    /// the device em size, and every glyph gets its own x (and y when the
+    /// run is not on one baseline).
+    fn flush_text_run(&mut self) {
+        let Some(run) = self.text_run.take() else {
+            return;
+        };
+        if run.glyphs.is_empty() {
+            return;
+        }
+        let [a, b, c, d, e, f] = run.frame.to_array();
+        let det = a * d - b * c;
+        let size = det.abs().sqrt();
+        let mut xs = Vec::with_capacity(run.glyphs.len());
+        let mut ys = Vec::with_capacity(run.glyphs.len());
+        let mut chars = String::with_capacity(run.glyphs.len() * 8);
+        for &((px, py), ch) in &run.glyphs {
+            let (dx, dy) = (px - e, py - f);
+            // Em coordinates of the origin, then the element's (y down).
+            let u = (d * dx - c * dy) / det;
+            let v = (a * dy - b * dx) / det;
+            xs.push(svg_number(u * size));
+            ys.push(svg_number(-v * size));
+            chars.push_str(&format!("&#x{:X};", u32::from(ch)));
+        }
+        let y_attr = if ys.iter().all(|y| y.as_str() == "0") {
+            "0".to_string()
+        } else {
+            ys.join(" ")
+        };
+        let family = fonts::FontSet::family(run.font);
+        let element = format!(
+            "<text font-family=\"{family}\" font-size=\"{size:.4}\" transform=\"matrix({:.6} {:.6} {:.6} {:.6} {e:.3} {f:.3})\" x=\"{}\" y=\"{y_attr}\" fill=\"{}\"{}>{chars}</text>",
+            a / size,
+            b / size,
+            -c / size,
+            -d / size,
+            xs.join(" "),
+            run.fill,
+            run.attrs,
+        );
+        if run.clip.is_empty() {
+            self.sink.push_element(&element);
+        } else {
+            self.sink
+                .push_element(&format!("<g{}>{element}</g>", run.clip));
         }
     }
 
@@ -3158,6 +3387,17 @@ fn reversed_svg_gradient_stops(stops: &[VectorShadingStop]) -> Vec<VectorShading
 }
 
 /// Emit a `fill-opacity`/`stroke-opacity` attribute only when alpha < 1.
+/// A coordinate with three decimals and no trailing zeros.
+fn svg_number(value: f64) -> String {
+    let text = format!("{value:.3}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" || text.is_empty() {
+        "0".to_string()
+    } else {
+        text.to_string()
+    }
+}
+
 fn opacity_attr(attr: &str, alpha: f32) -> String {
     if alpha >= 0.999 {
         String::new()
@@ -3325,6 +3565,8 @@ mod tests {
             form_object_stack: Vec::new(),
             text_clip_path: None,
             fatal_error: None,
+            text_mode: SvgTextMode::Outlines,
+            text_run: None,
         };
         state.gs.fill_color_space = ColorSpace::Named("Bad".to_string());
         state.gs.fill_color = Color {
@@ -3371,6 +3613,8 @@ mod tests {
             form_object_stack: Vec::new(),
             text_clip_path: None,
             fatal_error: None,
+            text_mode: SvgTextMode::Outlines,
+            text_run: None,
         };
         state.gs.fill_color = Color {
             space: ColorSpace::DeviceRGB,
@@ -3439,6 +3683,8 @@ mod tests {
             form_object_stack: Vec::new(),
             text_clip_path: None,
             fatal_error: None,
+            text_mode: SvgTextMode::Outlines,
+            text_run: None,
         };
         let shading = VectorShading::Axial(crate::render::vector_fallback::VectorAxialShading {
             coords: [0.0, 0.0, 5.0, 0.0],

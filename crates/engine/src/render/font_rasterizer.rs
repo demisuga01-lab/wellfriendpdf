@@ -385,6 +385,61 @@ pub(crate) mod cff_support {
         Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
     }
 
+    /// Glyph id a simple font's glyph selects in a bare SID-keyed CFF
+    /// program, by the lookup the vector outline extraction uses: the glyph
+    /// name first, then the program's own encoding (`.notdef` when the code
+    /// is unencoded).
+    pub(crate) fn simple_glyph_gid(
+        font_bytes: &[u8],
+        code: u16,
+        glyph_name: Option<&str>,
+    ) -> Option<u16> {
+        let table = parse(font_bytes)?;
+        if let Some(glyph_id) =
+            glyph_name.and_then(|name| glyph_index_by_name(&table, font_bytes, name))
+        {
+            return Some(glyph_id.0);
+        }
+        let code = u8::try_from(code).ok()?;
+        Some(table.glyph_index(code).unwrap_or(GlyphId(0)).0)
+    }
+
+    /// Whether the CFF charstring interpreter draws this glyph by itself
+    /// (without the seac or simple Type 2 recovery paths), i.e. a standard
+    /// CFF consumer will draw the same outline.
+    pub(crate) fn native_outline_ok(font_bytes: &[u8], gid: u16) -> bool {
+        parse(font_bytes).is_some_and(|table| {
+            let mut builder = GlyphToPath::new();
+            table.outline(GlyphId(gid), &mut builder).is_ok()
+        })
+    }
+
+    /// Glyph count, advance widths (font units, CID-keyed fonts: none) and
+    /// units per em of a bare CFF program whose FontMatrix is a plain
+    /// uniform scale, for wrapping it in an OpenType container.
+    pub(crate) fn wrap_metrics(font_bytes: &[u8]) -> Option<(u16, Vec<u16>, u16)> {
+        let table = parse(font_bytes)?;
+        let matrix = table.matrix();
+        if matrix.kx != 0.0
+            || matrix.ky != 0.0
+            || matrix.tx != 0.0
+            || matrix.ty != 0.0
+            || (matrix.sx - matrix.sy).abs() > f32::EPSILON
+        {
+            return None;
+        }
+        let upem = table_units_per_em(&table);
+        if !(16.0..=16384.0).contains(&upem) || (f64::from(matrix.sx) * upem - 1.0).abs() > 1e-3
+        {
+            return None;
+        }
+        let count = table.number_of_glyphs();
+        let widths = (0..count)
+            .map(|gid| table.glyph_width(GlyphId(gid)).unwrap_or(0))
+            .collect();
+        Some((count, widths, upem as u16))
+    }
+
     fn outline_table_path(
         table: &ttf_parser::cff::Table<'_>,
         font_bytes: &[u8],

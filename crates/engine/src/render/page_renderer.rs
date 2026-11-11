@@ -6600,6 +6600,21 @@ struct RenderState<'a> {
     /// colours, images and shadings resolve to inverted plate ink. `None`
     /// is the ordinary RGB render. Soft-mask groups always render in RGB.
     plate: Option<Arc<crate::render::plate::PlateTarget>>,
+    /// Per-plate overprint masking (see
+    /// [`crate::render::plate::PlateTarget::with_overprint_masking`]): one
+    /// scope per operator being dispatched, innermost last.
+    plate_mask_scopes: Mutex<Vec<PlateMaskScope>>,
+}
+
+/// Pixels saved before an overprinting paint that names only some of the
+/// plates of a pass, restored in the plates it leaves untouched once the
+/// operator is done.
+#[derive(Default)]
+struct PlateMaskScope {
+    /// Buffer identity, channels to keep and the pixels before the paint.
+    saved: Option<(usize, [bool; 3], Vec<u8>)>,
+    /// A paint without a mask was resolved in this scope (or a nested one).
+    plain: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -8466,6 +8481,7 @@ impl<'a> RenderState<'a> {
             forced_color_suppression: 0,
             type3_blue_zones: Type3BlueState::default(),
             plate: None,
+            plate_mask_scopes: Mutex::default(),
         };
         // A cache reused after a smaller contract must adopt this new state's
         // policy; the previous caller's cap is not sticky for legacy renders.
@@ -9347,7 +9363,11 @@ impl<'a> RenderState<'a> {
                 );
                 return;
             }
+            let masking = self.plate_mask_begin();
             self.dispatch(op);
+            if masking {
+                self.plate_mask_end();
+            }
             if self.fatal_render_error.is_some() {
                 return;
             }
@@ -13082,8 +13102,105 @@ impl<'a> RenderState<'a> {
     fn plate_check_blend(&self, mode: BlendMode) {
         if let Some(plate) = self.plate.as_deref() {
             if !mode.is_separable() {
-                plate.check_blend_mode(true, &format!("{mode:?}"));
+                plate.check_blend_mode(true);
             }
+        }
+    }
+
+    /// Open a per-plate overprint masking scope for one operator; `false`
+    /// (nothing to close) unless this pass masks overprint.
+    fn plate_mask_begin(&self) -> bool {
+        if !self
+            .plate
+            .as_deref()
+            .is_some_and(|plate| plate.masks_overprint())
+        {
+            return false;
+        }
+        if let Ok(mut scopes) = self.plate_mask_scopes.lock() {
+            scopes.push(PlateMaskScope::default());
+        }
+        true
+    }
+
+    /// Close the innermost masking scope: restore the plates its masked
+    /// paint left untouched from the saved pixels.
+    fn plate_mask_end(&mut self) {
+        let Some(plate) = self.plate.clone() else {
+            return;
+        };
+        let Some(scope) = self
+            .plate_mask_scopes
+            .get_mut()
+            .ok()
+            .and_then(|scopes| scopes.pop())
+        else {
+            return;
+        };
+        let painted = scope.plain || scope.saved.is_some();
+        if let Some((identity, keep, saved)) = scope.saved {
+            let data = self.buf.rgba_bytes_mut();
+            if data.as_ptr() as usize != identity || data.len() != saved.len() {
+                plate.note_issue(crate::render::plate::UNMASKED_OVERPRINT_ISSUE);
+            } else {
+                for (pixel, before) in data
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(saved.as_chunks::<4>().0)
+                {
+                    for channel in 0..3 {
+                        if keep[channel] {
+                            pixel[channel] = before[channel];
+                        }
+                    }
+                }
+            }
+        }
+        if painted {
+            // The enclosing operator painted through this one.
+            self.plate_mask_note_paint(&plate, None);
+        }
+    }
+
+    /// Record a paint resolved in the current masking scope; `keep` holds
+    /// the channels an overprinting paint leaves untouched. The first masked
+    /// paint saves the pixels; a second paint with another mask, or masked
+    /// and unmasked paints in one operator, cannot be masked.
+    fn plate_mask_note_paint(
+        &self,
+        plate: &crate::render::plate::PlateTarget,
+        keep: Option<[bool; 3]>,
+    ) {
+        use crate::render::plate::UNMASKED_OVERPRINT_ISSUE;
+        if !plate.masks_overprint() {
+            return;
+        }
+        let Ok(mut scopes) = self.plate_mask_scopes.lock() else {
+            plate.note_issue(UNMASKED_OVERPRINT_ISSUE);
+            return;
+        };
+        let Some(scope) = scopes.last_mut() else {
+            if keep.is_some() {
+                plate.note_issue(UNMASKED_OVERPRINT_ISSUE);
+            }
+            return;
+        };
+        let Some(keep) = keep else {
+            scope.plain = true;
+            if scope.saved.is_some() {
+                plate.note_issue(UNMASKED_OVERPRINT_ISSUE);
+            }
+            return;
+        };
+        let pixels = self.buf.rgba_bytes();
+        let identity = pixels.as_ptr() as usize;
+        match &scope.saved {
+            _ if scope.plain => plate.note_issue(UNMASKED_OVERPRINT_ISSUE),
+            None => scope.saved = Some((identity, keep, pixels.to_vec())),
+            Some((saved_identity, saved_keep, _))
+                if *saved_identity == identity && *saved_keep == keep => {}
+            Some(_) => plate.note_issue(UNMASKED_OVERPRINT_ISSUE),
         }
     }
 
@@ -13093,12 +13210,26 @@ impl<'a> RenderState<'a> {
         let Some(plate) = self.plate.as_deref() else {
             return false;
         };
+        let (skips, keep) = self.plate_space_paint_effect(plate, space);
+        if !skips {
+            self.plate_mask_note_paint(plate, keep);
+        }
+        skips
+    }
+
+    /// Whether an image or shading paint in `space` skips this plate pass
+    /// entirely, and the channels it keeps when it overprints only some.
+    fn plate_space_paint_effect(
+        &self,
+        plate: &crate::render::plate::PlateTarget,
+        space: Option<&PdfObject>,
+    ) -> (bool, Option<[bool; 3]>) {
         self.plate_check_blend(self.gs.blend_mode);
         if !self.plate_overprint_active(false) {
-            return false;
+            return (false, None);
         }
         let Some(space) = space else {
-            return false;
+            return (false, None);
         };
         let bound;
         let space = match space {
@@ -13110,7 +13241,7 @@ impl<'a> RenderState<'a> {
                         bound = object.clone();
                         &bound
                     }
-                    None => return false,
+                    None => return (false, None),
                 }
             }
             other => other,
@@ -13165,7 +13296,15 @@ impl<'a> RenderState<'a> {
             },
         };
         match result {
-            InkResult::Ink(ink) => plate.pixel(&ink, alpha, overprint),
+            InkResult::Ink(ink) => {
+                let keep = if overprint {
+                    plate.overprint_keep_mask(&ink)
+                } else {
+                    None
+                };
+                self.plate_mask_note_paint(plate, keep);
+                plate.pixel(&ink, alpha, overprint)
+            }
             InkResult::NoPaint => crate::render::color::RenderColor::transparent().to_pixel_color(),
             InkResult::Invalid(reason) => {
                 self.record_fatal_render_error(format!("{role} color rejected: {reason}"));
@@ -13224,7 +13363,15 @@ impl<'a> RenderState<'a> {
             ),
         };
         match ink {
-            Some(ink) => plate.pixel(&ink, alpha, overprint),
+            Some(ink) => {
+                let keep = if overprint {
+                    plate.overprint_keep_mask(&ink)
+                } else {
+                    None
+                };
+                self.plate_mask_note_paint(plate, keep);
+                plate.pixel(&ink, alpha, overprint)
+            }
             None => crate::render::color::RenderColor::transparent().to_pixel_color(),
         }
     }
@@ -14310,6 +14457,7 @@ impl<'a> RenderState<'a> {
             // A luminosity mask is computed from the group's colours in its
             // own (RGB) blending space, not from plate ink.
             plate: None,
+            plate_mask_scopes: Mutex::default(),
         };
 
         mask_state.apply_form_bbox_clip(group_bbox);
@@ -16166,6 +16314,7 @@ impl<'a> RenderState<'a> {
             forced_color_suppression: self.forced_color_suppression,
             type3_blue_zones: std::mem::take(&mut self.type3_blue_zones),
             plate: self.plate.clone(),
+            plate_mask_scopes: Mutex::default(),
         };
 
         // Carry the parent clip into the group in destination-local coordinates
@@ -23821,6 +23970,15 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
 
     fn should_stop(&self) -> bool {
         self.state.fatal_render_error.is_some()
+    }
+
+    fn begin_operator(&mut self) {
+        self.state.plate_mask_begin();
+    }
+
+    fn end_operator(&mut self) {
+        // A no-op unless the plate pass masks overprint (no scope is open).
+        self.state.plate_mask_end();
     }
 }
 
