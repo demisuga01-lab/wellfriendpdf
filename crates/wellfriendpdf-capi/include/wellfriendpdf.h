@@ -28,6 +28,7 @@ enum {
 
 typedef struct WellfriendDocument WellfriendDocument;
 typedef struct WellfriendStorySession WellfriendStorySession;
+typedef struct WellfriendXfaSession WellfriendXfaSession;
 typedef struct WellfriendProgressiveRenderJob WellfriendProgressiveRenderJob;
 typedef struct WellfriendRenderContract WellfriendRenderContract;
 typedef struct WellfriendRenderCancellation WellfriendRenderCancellation;
@@ -78,6 +79,30 @@ WELLFRIENDPDF_API int wellfriendpdf_story_session_render_page_png(
     const WellfriendRenderCancellation *cancellation, WellfriendBuffer *out,
     char **error_out);
 WELLFRIENDPDF_API void wellfriendpdf_story_session_free(WellfriendStorySession *session);
+
+/* Interactive XFA form sessions (click, change, enter, exit, full, preOpen,
+ * postOpen, validate... dispatched as PDFium's form filler would, followed
+ * by dependent calculations and validations). Not thread-safe: callers
+ * serialize session use/free. options_json may be NULL or
+ * {"run_scripts":bool}; the session copies the document. JSON commands are
+ * length-delimited UTF-8 objects with an "op": fields, value, set_value,
+ * click, dispatch, validations, script_log, export_data_xml, page_count,
+ * form_type. Outputs use wellfriendpdf_buffer_free; errors use
+ * wellfriendpdf_error_free. A PANIC poisons the session. */
+WELLFRIENDPDF_API WellfriendXfaSession *wellfriendpdf_xfa_session_open(
+    const WellfriendDocument *document, const char *options_json, char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_xfa_session_command_json(
+    WellfriendXfaSession *session, const uint8_t *json, size_t len,
+    WellfriendBuffer *out, char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_xfa_session_render_page_png(
+    WellfriendXfaSession *session, size_t page, uint32_t dpi, WellfriendBuffer *out,
+    char **error_out);
+/* Writes the session's data into the datasets packet (incremental update). */
+WELLFRIENDPDF_API int wellfriendpdf_xfa_session_save_pdf(
+    WellfriendXfaSession *session, WellfriendBuffer *out, char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_xfa_session_layout_pdf(
+    WellfriendXfaSession *session, WellfriendBuffer *out, char **error_out);
+WELLFRIENDPDF_API void wellfriendpdf_xfa_session_free(WellfriendXfaSession *session);
 
 typedef int (*WellfriendProgressiveViewerCallback)(
     const char *event_json,

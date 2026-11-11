@@ -22,13 +22,13 @@ use crate::render::XfaRenderPolicy;
 use crate::{ContentEngine, PdfDocument};
 
 use super::events::FormScripts;
-use super::form::{build_form_model_with_datasets, data_root, Template};
+use super::form::{build_form_model_with_datasets, data_root, FormModel, Template};
 use super::layout::layout_form;
 use super::locale::LocaleSet;
 use super::paint::{NamedImages, PaintScope, Painter};
 use super::text::FontBook;
 use super::xml::XmlNode;
-use super::{load_xfa, packet_root, XfaLimits};
+use super::{load_xfa, packet_root, LoadedXfa, XfaLimits};
 
 /// How a PDF uses XFA (PDFium `FormType`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,17 +109,27 @@ fn dynamic_render(config: Option<&XmlNode>) -> bool {
     })
 }
 
-fn build_model(document: &PdfDocument) -> Option<XfaRenderModel> {
-    let catalog = document.get_catalog().ok()?;
-    // Cheap exit for the common case: no /AcroForm /XFA.
+/// The packets a render needs, borrowed from loaded XFA.
+pub(crate) struct XfaSources<'a> {
+    pub template: &'a XmlNode,
+    pub datasets_root: Option<&'a XmlNode>,
+    pub datasets: Option<&'a XmlNode>,
+    pub form_type: XfaFormType,
+    pub locales: LocaleSet,
+}
+
+/// Whether the document has an `/AcroForm /XFA` entry at all.
+pub(crate) fn has_xfa_entry(document: &PdfDocument) -> bool {
     let reader = document.reader();
-    let acroform = catalog
-        .get("AcroForm")
-        .and_then(|obj| reader.resolve(obj.clone()).ok())?;
-    let acroform = acroform.as_dict()?;
-    acroform.get("XFA")?;
-    let limits = XfaLimits::default();
-    let loaded = load_xfa(document, &limits, &CancelToken::none()).ok()?;
+    document
+        .get_catalog()
+        .ok()
+        .and_then(|catalog| catalog.get("AcroForm").cloned())
+        .and_then(|acroform| reader.resolve(acroform).ok())
+        .is_some_and(|acroform| acroform.as_dict().is_some_and(|d| d.get("XFA").is_some()))
+}
+
+pub(crate) fn xfa_sources(loaded: &LoadedXfa) -> Option<XfaSources<'_>> {
     let template = packet_root(&loaded.packets, "template")
         .and_then(|root| xml_root(root, "template"))
         .or_else(|| {
@@ -141,36 +151,90 @@ fn build_model(document: &PdfDocument) -> Option<XfaRenderModel> {
     let locale_set =
         packet_root(&loaded.packets, "localeSet").and_then(|root| xml_root(root, "localeSet"));
     let locales = LocaleSet::new(locale_set, config);
+    Some(XfaSources {
+        template,
+        datasets_root,
+        datasets,
+        form_type,
+        locales,
+    })
+}
+
+fn build_model(document: &PdfDocument) -> Option<XfaRenderModel> {
+    // Cheap exit for the common case: no /AcroForm /XFA.
+    if !has_xfa_entry(document) {
+        return None;
+    }
+    let limits = XfaLimits::default();
+    let loaded = load_xfa(document, &limits, &CancelToken::none()).ok()?;
+    let sources = xfa_sources(&loaded)?;
+    let template = sources.template;
     let tpl = Template::new(template);
-    let mut model = build_form_model_with_datasets(&tpl, template, datasets, datasets_root)?;
+    let mut model =
+        build_form_model_with_datasets(&tpl, template, sources.datasets, sources.datasets_root)?;
     // Form scripts (initialize, calculate, form:ready, docReady).
-    let mut scripts = FormScripts::prepare(&tpl, template, &model, datasets_root, locales.clone());
+    let mut scripts = FormScripts::prepare(
+        &tpl,
+        template,
+        &model,
+        sources.datasets_root,
+        sources.locales.clone(),
+    );
     if let Some(scripts) = scripts.as_mut() {
         scripts.before_layout(&tpl, &mut model);
     }
-    let dr_fonts = dr_fonts(reader, acroform);
+    Some(paint_form(
+        document,
+        &sources,
+        &tpl,
+        model,
+        scripts.as_mut(),
+    ))
+}
+
+/// Lays out and paints a merged form model (running `layout:ready`
+/// scripts, which may change the form and trigger one more layout).
+pub(crate) fn paint_form<'t>(
+    document: &PdfDocument,
+    sources: &XfaSources<'t>,
+    tpl: &Template<'t>,
+    mut model: FormModel<'t>,
+    mut scripts: Option<&mut FormScripts<'t>>,
+) -> XfaRenderModel {
+    let reader = document.reader();
+    let catalog = document.get_catalog().ok();
+    let acroform = catalog
+        .as_ref()
+        .and_then(|catalog| catalog.get("AcroForm").cloned())
+        .and_then(|acroform| reader.resolve(acroform).ok())
+        .and_then(|acroform| acroform.as_dict().cloned())
+        .unwrap_or_else(PdfDictionary::empty);
+    let dr_fonts = dr_fonts(reader, &acroform);
     let mut book = FontBook::new(Some(reader), dr_fonts);
-    let mut pages = layout_form(&tpl, &model, &mut book);
+    let mut pages = layout_form(tpl, &model, &mut book);
     let mut page_values = std::collections::HashMap::new();
-    if let Some(scripts) = scripts.as_mut() {
+    if let Some(scripts) = scripts.as_deref_mut() {
         if scripts.has_layout_ready() {
             scripts.set_layout(&pages);
             drop(pages);
-            scripts.layout_ready(&tpl, &mut model);
-            pages = layout_form(&tpl, &model, &mut book);
+            scripts.layout_ready(tpl, &mut model);
+            pages = layout_form(tpl, &model, &mut book);
             scripts.set_layout(&pages);
             page_values = scripts.master_page_values(&pages);
         }
     }
     let script_report = scripts
-        .as_ref()
+        .as_deref()
         .map(|scripts| scripts.report())
         .unwrap_or_default();
-    let named = named_images(reader, &catalog);
+    let named = catalog
+        .as_ref()
+        .map(|catalog| named_images(reader, catalog))
+        .unwrap_or_default();
     let mut roots = vec![&model.root];
     roots.extend(model.page_areas.iter().flat_map(|area| area.content.iter()));
-    let mut painter = Painter::new(&tpl, &mut book, &named, &roots);
-    painter.set_locales(locales);
+    let mut painter = Painter::new(tpl, &mut book, &named, &roots);
+    painter.set_locales(sources.locales.clone());
     painter.set_page_values(page_values);
     let mut painted = Vec::with_capacity(pages.len());
     let mut shadings = BTreeMap::new();
@@ -206,8 +270,8 @@ fn build_model(document: &PdfDocument) -> Option<XfaRenderModel> {
         }
         resources.insert("Shading", PdfObject::Dictionary(dict));
     }
-    Some(XfaRenderModel {
-        form_type,
+    XfaRenderModel {
+        form_type: sources.form_type,
         pages: painted,
         resources,
         unsupported,
@@ -224,7 +288,7 @@ fn build_model(document: &PdfDocument) -> Option<XfaRenderModel> {
             })
             .collect(),
         full_document: OnceLock::new(),
-    })
+    }
 }
 
 fn dr_fonts(reader: &PdfReader, acroform: &PdfDictionary) -> Vec<(PdfObject, PdfDictionary)> {

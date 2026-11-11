@@ -164,6 +164,23 @@ export class StoryEditSession {
   free(): void;
 }
 
+/** Interactive XFA form session (set values, clicks, events, recalculation,
+ * validation, rendering and saving the datasets packet). Commands are JSON
+ * objects with an "op": fields, value, set_value, click, dispatch,
+ * validations, script_log, export_data_xml, page_count, form_type.
+ */
+export class XfaSession {
+  /** `optionsJson`: optional `{"run_scripts": boolean}`. */
+  constructor(bytes: Uint8Array, optionsJson?: string | null);
+  commandJson(commandJson: string): ReportJson;
+  renderPagePng(page: number, dpi: number): Uint8Array;
+  /** The PDF with the session's data in its datasets packet (incremental update). */
+  savePdf(): Uint8Array;
+  layoutPdf(): Uint8Array;
+  close(): void;
+  free(): void;
+}
+
 export class WellfriendOutput {
   bytes(): Uint8Array;
   byteLength(): number;

@@ -21,10 +21,12 @@ use wellfriendpdf_engine::{
 
 pub mod ocr_backend;
 pub mod story_session;
+pub mod xfa_session;
 pub use ocr_backend::{
     CAbiOcrEngine, WellfriendOcrBackend, WellfriendOcrEmitWordFn, WellfriendOcrRecognizeFn,
 };
 pub use story_session::*;
+pub use xfa_session::*;
 
 pub const WELLFRIENDPDF_STATUS_OK: c_int = 0;
 pub const WELLFRIENDPDF_STATUS_NULL: c_int = 1;

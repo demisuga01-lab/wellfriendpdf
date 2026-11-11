@@ -16,7 +16,8 @@
 //! runs non-interactively after the calculations (PDFium `InitValidate`),
 //! again for values changed later, and on `execValidate`; failures are
 //! recorded (no message boxes). Interactive events (click, change, enter,
-//! exit...) and scripts marked `runAt="server"` never run.
+//! exit...) run only when an interactive session (`super::session`)
+//! dispatches them; scripts marked `runAt="server"` never run.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -29,11 +30,11 @@ use super::form::{
 use super::layout::{caption_spec, field_ui, LayoutPage};
 use super::locale::LocaleSet;
 use super::som::{
-    activity_kind, Activity, Class, Dom, Lang, LayoutInfo, Limits, Request, SNode, ScriptDef, Val,
-    ValidateDef, ValidationFailure, NO_TMPL,
+    activity_kind, Activity, Class, Dom, EventState, Lang, LayoutInfo, Limits, Obj, Request, SNode,
+    ScriptDef, Val, ValidateDef, ValidationFailure, NO_TMPL,
 };
 use super::style::{parse_color, Presence};
-use super::xml::XmlNode;
+use super::xml::{escape_xml, XmlNode};
 
 /// What the script pass did (for diagnostics and tests).
 #[derive(Clone, Debug, Default)]
@@ -78,6 +79,22 @@ pub(crate) struct FormScripts<'t> {
     runner: Runner,
     /// Arena node id -> form node address after the last write-back.
     addresses: HashMap<usize, usize>,
+    /// [`Self::form_ids`] as first built: the order of a freshly merged
+    /// form model (sessions rebuild the model from it for every layout).
+    base_form_ids: Vec<usize>,
+    /// Interactive session: script changes are kept (not cleared on
+    /// write-back), so they apply again to every freshly merged model.
+    session: bool,
+}
+
+/// The lifetime-free part of [`FormScripts`]: the script DOM and runner of
+/// an interactive session, kept between calls while the template it was
+/// built from stays owned by the session.
+pub(crate) struct ScriptState {
+    form_ids: Vec<usize>,
+    runner: Runner,
+    addresses: HashMap<usize, usize>,
+    base_form_ids: Vec<usize>,
 }
 
 fn key(node: &XmlNode) -> usize {
@@ -101,6 +118,36 @@ impl<'t> FormScripts<'t> {
         if !has_scripts(template) {
             return None;
         }
+        Some(Self::build_scripts(
+            tpl, template, model, datasets, locales, false,
+        ))
+    }
+
+    /// The script DOM of an interactive session (built even without
+    /// scripts: the session reads and writes values through it). Without
+    /// `run_scripts`, every script is dropped and events do nothing.
+    pub(crate) fn prepare_session(
+        tpl: &Template<'t>,
+        template: &'t XmlNode,
+        model: &FormModel<'t>,
+        datasets: Option<&'t XmlNode>,
+        locales: LocaleSet,
+        run_scripts: bool,
+    ) -> Self {
+        let scripts = Self::build_scripts(tpl, template, model, datasets, locales, true);
+        if !run_scripts {
+            let mut dom = scripts.runner.dom.borrow_mut();
+            for node in &mut dom.nodes {
+                node.scripts.clear();
+                if let Some(validate) = node.validate.as_mut() {
+                    validate.script = None;
+                }
+            }
+        }
+        scripts
+    }
+
+    fn template_index(template: &'t XmlNode) -> (Vec<&'t XmlNode>, HashMap<usize, usize>) {
         let mut tmpls = Vec::new();
         let mut tmpl_ids = HashMap::new();
         let mut stack = vec![(template, 0usize)];
@@ -111,6 +158,18 @@ impl<'t> FormScripts<'t> {
                 stack.extend(node.children.iter().rev().map(|child| (child, depth + 1)));
             }
         }
+        (tmpls, tmpl_ids)
+    }
+
+    fn build_scripts(
+        tpl: &Template<'t>,
+        template: &'t XmlNode,
+        model: &FormModel<'t>,
+        datasets: Option<&'t XmlNode>,
+        locales: LocaleSet,
+        session: bool,
+    ) -> Self {
+        let (tmpls, tmpl_ids) = Self::template_index(template);
         let dom = Dom::new(Limits::default(), locales);
         let mut scripts = FormScripts {
             tmpls,
@@ -118,12 +177,52 @@ impl<'t> FormScripts<'t> {
             form_ids: Vec::new(),
             runner: Runner::new(dom),
             addresses: HashMap::new(),
+            base_form_ids: Vec::new(),
+            session,
         };
         let mut xml_binds = HashMap::new();
         scripts.build(tpl, model, &mut xml_binds);
         scripts.build_data(tpl, datasets, &xml_binds);
         scripts.remember_addresses(model);
-        Some(scripts)
+        scripts.base_form_ids = scripts.form_ids.clone();
+        scripts
+    }
+
+    /// Re-attaches a session's script state to its (unchanged) template.
+    pub(crate) fn resume(template: &'t XmlNode, state: ScriptState) -> Self {
+        let (tmpls, tmpl_ids) = Self::template_index(template);
+        FormScripts {
+            tmpls,
+            tmpl_ids,
+            form_ids: state.form_ids,
+            runner: state.runner,
+            addresses: state.addresses,
+            base_form_ids: state.base_form_ids,
+            session: true,
+        }
+    }
+
+    /// Detaches the lifetime-free script state (see [`Self::resume`]).
+    pub(crate) fn into_state(self) -> ScriptState {
+        ScriptState {
+            form_ids: self.form_ids,
+            runner: self.runner,
+            addresses: self.addresses,
+            base_form_ids: self.base_form_ids,
+        }
+    }
+
+    /// Fresh script budgets before a session render (`layout:ready`).
+    pub(crate) fn begin_render(&mut self) {
+        self.runner.begin_action();
+    }
+
+    /// Applies every script change of a session to `model`, a freshly
+    /// merged form model (the same merge the session started from).
+    pub(crate) fn apply_to_fresh_model(&mut self, tpl: &Template<'t>, model: &mut FormModel<'t>) {
+        self.form_ids = self.base_form_ids.clone();
+        self.remember_addresses(model);
+        self.write_back(tpl, model);
     }
 
     fn tmpl_id(&self, node: &XmlNode) -> usize {
@@ -251,6 +350,16 @@ impl<'t> FormScripts<'t> {
         let mut dom = self.runner.dom.borrow_mut();
         let model = dom.add(SNode::new(Class::DataModel, "datasets", NO_TMPL), None);
         dom.datasets = Some(model);
+        if let Some(datasets) = datasets.filter(|d| d.local_name != "data") {
+            let declarations = datasets
+                .attributes
+                .iter()
+                .filter(|attr| attr.name == "xmlns" || attr.name.starts_with("xmlns:"))
+                .map(|attr| (attr.name.clone(), attr.value.clone()))
+                .collect();
+            dom.data_xml
+                .insert(model, (datasets.name.clone(), declarations));
+        }
         let mut data = None;
         let mut budget = MAX_DATA_NODES;
         if let Some(datasets) = datasets {
@@ -605,38 +714,7 @@ impl<'t> FormScripts<'t> {
     }
 
     pub(crate) fn report(&self) -> ScriptReport {
-        let mut report = self.runner.report.clone();
-        let dom = self.runner.dom.borrow();
-        report.log = dom.log.clone();
-        // Document order of the (still attached) containers.
-        let mut order = HashMap::new();
-        let mut stack = vec![dom.root];
-        while let Some(id) = stack.pop() {
-            order.insert(id, order.len());
-            stack.extend(dom.nodes[id].children.iter().rev().copied());
-        }
-        let mut failed: Vec<(usize, usize)> = self
-            .runner
-            .validations
-            .keys()
-            .filter_map(|&id| order.get(&id).map(|&rank| (rank, id)))
-            .collect();
-        failed.sort_unstable();
-        for (_, id) in failed {
-            let som = dom_som(&dom, id);
-            for failure in &self.runner.validations[&id] {
-                if report.validations.len() >= MAX_VALIDATION_RECORDS {
-                    break;
-                }
-                report.validations.push(ValidationRecord {
-                    som: som.clone(),
-                    test: failure.test,
-                    severity: failure.severity.clone(),
-                    message: failure.message.clone(),
-                });
-            }
-        }
-        report
+        report_of(&self.runner)
     }
 
     /// Writes script changes into the form model (rebuilding it when
@@ -712,7 +790,7 @@ impl<'t> FormScripts<'t> {
                 assign_locales(node, locale);
             }
         }
-        {
+        if !self.session {
             let mut dom = self.runner.dom.borrow_mut();
             for node in &mut dom.nodes {
                 node.changes = Default::default();
@@ -764,6 +842,608 @@ impl<'t> FormScripts<'t> {
         node.children = children;
         Some(node)
     }
+}
+
+/// One event an interactive session dispatched.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FiredEvent {
+    pub som: String,
+    pub activity: String,
+    /// Scripts of the node that handled it (0: no handler).
+    pub scripts: usize,
+}
+
+/// What one host action of a session did.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ActionOutcome {
+    pub fired: Vec<FiredEvent>,
+    /// Whether a new value was committed to the target.
+    pub committed: bool,
+    /// Messages (`app.alert`, `messageBox`) the action's scripts showed.
+    pub messages: Vec<String>,
+    /// Script errors raised during the action.
+    pub errors: Vec<String>,
+}
+
+/// A field or exclusion group of a session's form, for hosts.
+#[derive(Clone, Debug)]
+pub(crate) struct SessionNode {
+    pub som: String,
+    pub name: String,
+    pub class: &'static str,
+    pub ui: String,
+    pub value_kind: String,
+    pub value: Option<String>,
+    pub presence: String,
+    pub access: String,
+    pub caption: Option<String>,
+    pub items: Vec<(String, String)>,
+    pub on_value: Option<String>,
+    pub off_value: Option<String>,
+    /// Effective presence: visible and every ancestor visible.
+    pub interactive: bool,
+}
+
+/// Interactive events of a session (PDFium's form filler: `CXFA_FFField`,
+/// `CXFA_FFTextEdit`, `CXFA_FFCheckButton`, `CXFA_FFComboBox`, followed by
+/// `CXFA_FFDocView::UpdateDocView`'s calculate and validate passes).
+impl<'t> FormScripts<'t> {
+    fn session_node(&mut self, som: &str) -> Result<usize, String> {
+        node_for(&self.runner, som)
+    }
+
+    /// Visible with open access, inside visible containers: what a user
+    /// can interact with (PDFium creates widgets only for these).
+    fn ensure_interactive(&self, id: usize) -> Result<(), String> {
+        let dom = self.runner.dom.borrow();
+        let som = dom.som_expression(id);
+        if !effectively_visible(&dom, id) {
+            return Err(format!("{som} is not visible"));
+        }
+        let access = dom.nodes[id].access.as_str();
+        if access != "open" {
+            return Err(format!("{som} is not open for input (access={access})"));
+        }
+        Ok(())
+    }
+
+    fn raw_text(&self, id: usize) -> String {
+        match self.runner.dom.borrow().raw_value(id) {
+            Val::Null => String::new(),
+            value => value.to_text(),
+        }
+    }
+
+    fn finish_action(
+        &mut self,
+        mut outcome: ActionOutcome,
+        log: usize,
+        errors: usize,
+    ) -> ActionOutcome {
+        self.runner.settle();
+        outcome.messages = self
+            .runner
+            .dom
+            .borrow()
+            .log
+            .get(log..)
+            .unwrap_or_default()
+            .to_vec();
+        outcome.errors = self
+            .runner
+            .report
+            .errors
+            .get(errors..)
+            .unwrap_or_default()
+            .to_vec();
+        outcome
+    }
+
+    fn marks(&self) -> (usize, usize) {
+        (
+            self.runner.dom.borrow().log.len(),
+            self.runner.report.errors.len(),
+        )
+    }
+
+    /// A user edit of a field's value: `enter`, (`preOpen` for drop-down
+    /// lists), `change` (scripts may rewrite `xfa.event.change` or set
+    /// `cancelAction`), `full` when the text reaches `maxChars`,
+    /// (`postOpen`), the commit, `exit`, then dependent calculations and
+    /// validations.
+    pub(crate) fn session_set_value(
+        &mut self,
+        tpl: &Template<'t>,
+        som: &str,
+        value: &str,
+    ) -> Result<ActionOutcome, String> {
+        self.runner.begin_action();
+        let (log, errors) = self.marks();
+        let id = self.session_node(som)?;
+        let (class, ui, items, tmpl, members) = {
+            let dom = self.runner.dom.borrow();
+            let node = &dom.nodes[id];
+            let members: Vec<(usize, Option<String>)> = node
+                .children
+                .iter()
+                .filter(|&&child| dom.nodes[child].class == Class::Field)
+                .map(|&child| (child, dom.nodes[child].on_value.clone()))
+                .collect();
+            (
+                node.class,
+                node.ui.clone(),
+                node.items.clone(),
+                node.tmpl,
+                members,
+            )
+        };
+        match class {
+            Class::ExclGroup => {
+                // Selecting a group value is a click on the member with
+                // that on value.
+                if let Some((member, _)) = members
+                    .iter()
+                    .find(|(_, on)| on.as_deref().unwrap_or("1") == value)
+                {
+                    let member_som = self.runner.dom.borrow().som_expression(*member);
+                    return self.session_click(&member_som);
+                }
+                if !value.is_empty() {
+                    return Err(format!("no member of {som} has the on value {value:?}"));
+                }
+            }
+            Class::Field => {}
+            _ => return Err(format!("{som} is not a field or exclusion group")),
+        }
+        self.ensure_interactive(id)?;
+        if ui == "button" {
+            return Err(format!("{som} is a button; use click"));
+        }
+        let template = self.tmpls.get(tmpl).copied();
+        let max_chars = template
+            .and_then(|t| tpl.child(t, "value"))
+            .and_then(|v| v.children.first())
+            .and_then(|text| tpl.attr(text, "maxChars"))
+            .and_then(|max| max.trim().parse::<usize>().ok())
+            .filter(|max| *max > 0);
+        let dropdown = ui == "choiceList"
+            && template
+                .and_then(|t| field_ui(tpl, t).1)
+                .and_then(|widget| tpl.attr(widget, "open"))
+                .is_none_or(|open| matches!(open.trim(), "userControl" | "onEntry"));
+        let mut value = value.to_string();
+        if ui == "choiceList" && !items.iter().any(|(_, save)| *save == value) {
+            if let Some((_, save)) = items.iter().find(|(display, _)| *display == value) {
+                value = save.clone();
+            }
+        }
+        let mut full = false;
+        if let Some(max) = max_chars {
+            if value.chars().count() >= max {
+                value = value.chars().take(max).collect();
+                full = true;
+            }
+        }
+        let prev = self.raw_text(id);
+        let mut outcome = ActionOutcome::default();
+        self.runner
+            .fire(id, "enter", EventState::default(), &mut outcome.fired);
+        if dropdown {
+            self.runner
+                .fire(id, "preOpen", EventState::default(), &mut outcome.fired);
+        }
+        let event = EventState {
+            change: value.clone(),
+            prev_text: prev.clone(),
+            full_text: value.clone(),
+            sel_start: 0,
+            sel_end: prev.chars().count() as i64,
+            ..EventState::default()
+        };
+        let after = self.runner.fire(id, "change", event, &mut outcome.fired);
+        if full {
+            self.runner
+                .fire(id, "full", EventState::default(), &mut outcome.fired);
+        }
+        if dropdown {
+            self.runner
+                .fire(id, "postOpen", EventState::default(), &mut outcome.fired);
+        }
+        if !after.cancel_action {
+            // The edit replaces the selection (all of the old text) with
+            // the (possibly rewritten) change.
+            let new = after.new_text();
+            if new != prev {
+                let result = {
+                    let mut dom = self.runner.dom.borrow_mut();
+                    let stored = if new.is_empty() {
+                        Val::Null
+                    } else {
+                        Val::Str(new)
+                    };
+                    dom.set_value(id, &stored)
+                };
+                result.map_err(|error| error.0)?;
+                outcome.committed = true;
+            }
+        }
+        self.runner
+            .fire(id, "exit", EventState::default(), &mut outcome.fired);
+        Ok(self.finish_action(outcome, log, errors))
+    }
+
+    /// A user click: `mouseEnter`, `enter`, `mouseDown`, `mouseUp`; check
+    /// boxes toggle (radio buttons select, deselecting the rest of their
+    /// exclusion group) and fire `change` then `click` on the group and the
+    /// field, other fields fire `click`; then `exit`, `mouseExit`, and the
+    /// calculate and validate passes.
+    pub(crate) fn session_click(&mut self, som: &str) -> Result<ActionOutcome, String> {
+        self.runner.begin_action();
+        let (log, errors) = self.marks();
+        let id = self.session_node(som)?;
+        let (class, ui, group, on, off) = {
+            let dom = self.runner.dom.borrow();
+            let node = &dom.nodes[id];
+            let group = node
+                .parent
+                .filter(|&parent| dom.nodes[parent].class == Class::ExclGroup);
+            (
+                node.class,
+                node.ui.clone(),
+                group,
+                node.on_value.clone().unwrap_or_else(|| "1".into()),
+                node.off_value.clone().unwrap_or_else(|| "0".into()),
+            )
+        };
+        if class != Class::Field {
+            return Err(format!("{som} is not a field"));
+        }
+        self.ensure_interactive(id)?;
+        let mut outcome = ActionOutcome::default();
+        for activity in ["mouseEnter", "enter", "mouseDown", "mouseUp"] {
+            self.runner
+                .fire(id, activity, EventState::default(), &mut outcome.fired);
+        }
+        if ui == "checkButton" {
+            let prev = self.raw_text(id);
+            let is_on = prev == on;
+            // A selected radio button stays selected (no state change).
+            if !(group.is_some() && is_on) {
+                let new = if is_on { off } else { on };
+                let result = self
+                    .runner
+                    .dom
+                    .borrow_mut()
+                    .set_value(id, &Val::Str(new.clone()));
+                result.map_err(|error| error.0)?;
+                outcome.committed = true;
+                let event = EventState {
+                    sel_end: prev.chars().count() as i64,
+                    prev_text: prev,
+                    change: new.clone(),
+                    full_text: new,
+                    ..EventState::default()
+                };
+                if let Some(group) = group {
+                    self.runner
+                        .fire(group, "change", event.clone(), &mut outcome.fired);
+                }
+                self.runner
+                    .fire(id, "change", event.clone(), &mut outcome.fired);
+                if let Some(group) = group {
+                    self.runner
+                        .fire(group, "click", event.clone(), &mut outcome.fired);
+                }
+                self.runner.fire(id, "click", event, &mut outcome.fired);
+            }
+        } else {
+            self.runner
+                .fire(id, "click", EventState::default(), &mut outcome.fired);
+        }
+        for activity in ["exit", "mouseExit"] {
+            self.runner
+                .fire(id, activity, EventState::default(), &mut outcome.fired);
+        }
+        Ok(self.finish_action(outcome, log, errors))
+    }
+
+    /// Dispatches one event to a node (`execEvent` from the host); the
+    /// `validate` activity validates the node's subtree. Calculations and
+    /// validations of changed values follow.
+    pub(crate) fn session_dispatch(
+        &mut self,
+        som: &str,
+        activity: &str,
+    ) -> Result<ActionOutcome, String> {
+        self.runner.begin_action();
+        let (log, errors) = self.marks();
+        let activity = activity.trim();
+        if activity.is_empty() {
+            return Err("empty event activity".into());
+        }
+        let id = self.session_node(som)?;
+        let mut outcome = ActionOutcome::default();
+        if activity == "validate" {
+            self.runner.guarded(|runner| {
+                runner.run_node(id, Activity::Other, Some("validate"));
+                runner.validate_subtree(id);
+            });
+            let som = self.runner.dom.borrow().som_expression(id);
+            outcome.fired.push(FiredEvent {
+                som,
+                activity: activity.to_string(),
+                scripts: 0,
+            });
+        } else {
+            self.runner
+                .fire(id, activity, EventState::default(), &mut outcome.fired);
+        }
+        Ok(self.finish_action(outcome, log, errors))
+    }
+
+    /// Fires `activity` on every node that handles it, children first
+    /// (PDFium `ExecEventByDeepFirst`, e.g. `preSave` / `postSave`).
+    pub(crate) fn session_broadcast(&mut self, activity: &str) -> ActionOutcome {
+        self.runner.begin_action();
+        let (log, errors) = self.marks();
+        let mut outcome = ActionOutcome::default();
+        for id in self.runner.post_order() {
+            if self.runner.handlers(id, activity) > 0 {
+                self.runner
+                    .fire(id, activity, EventState::default(), &mut outcome.fired);
+            }
+        }
+        self.finish_action(outcome, log, errors)
+    }
+}
+
+/// Session queries (no template needed).
+impl ScriptState {
+    /// Failed validations and script diagnostics so far.
+    pub(crate) fn report(&self) -> ScriptReport {
+        report_of(&self.runner)
+    }
+
+    /// Resets the budgets before a render's `layout:ready` scripts.
+    pub(crate) fn begin_action(&mut self) {
+        self.runner.begin_action();
+    }
+
+    /// The raw value of the node `som` names (`None`: no value).
+    pub(crate) fn value_of(&self, som: &str) -> Result<Option<String>, String> {
+        let id = node_for(&self.runner, som)?;
+        Ok(match self.runner.dom.borrow().raw_value(id) {
+            Val::Null => None,
+            value => Some(value.to_text()),
+        })
+    }
+
+    /// Fields and exclusion groups in document order.
+    pub(crate) fn session_nodes(&self) -> Vec<SessionNode> {
+        let order = self.runner.pre_order();
+        let dom = self.runner.dom.borrow();
+        let mut out = Vec::new();
+        for id in order {
+            let node = &dom.nodes[id];
+            let class = match node.class {
+                Class::Field => "field",
+                Class::ExclGroup => "exclGroup",
+                _ => continue,
+            };
+            let value = match dom.raw_value(id) {
+                Val::Null => None,
+                value => Some(value.to_text()),
+            };
+            out.push(SessionNode {
+                som: dom.som_expression(id),
+                name: node.name.clone(),
+                class,
+                ui: node.ui.clone(),
+                value_kind: node.value_kind.clone(),
+                value,
+                presence: node.presence.clone(),
+                access: node.access.clone(),
+                caption: node.caption.clone(),
+                items: node.items.clone(),
+                on_value: node.on_value.clone(),
+                off_value: node.off_value.clone(),
+                interactive: effectively_visible(&dom, id),
+            });
+        }
+        out
+    }
+
+    /// `app.alert` / `messageBox` output so far.
+    pub(crate) fn session_log(&self) -> Vec<String> {
+        self.runner.dom.borrow().log.clone()
+    }
+
+    /// The datasets packet as XML, from the data DOM (PDFium
+    /// `CXFA_FFDoc::SavePackage(XFA_PacketType::Datasets)`).
+    pub(crate) fn datasets_xml(&self) -> String {
+        let dom = self.runner.dom.borrow();
+        let mut out = String::new();
+        let Some(model) = dom.datasets else {
+            return out;
+        };
+        let (name, mut declarations) = dom
+            .data_xml
+            .get(&model)
+            .cloned()
+            .unwrap_or_else(|| ("xfa:datasets".to_string(), Vec::new()));
+        let prefix = name.split_once(':').map(|(prefix, _)| prefix);
+        let needed = match prefix {
+            Some(prefix) => format!("xmlns:{prefix}"),
+            None => "xmlns".to_string(),
+        };
+        if !declarations.iter().any(|(decl, _)| *decl == needed) {
+            declarations.push((needed, XFA_DATA_NS.to_string()));
+        }
+        out.push('<');
+        out.push_str(&name);
+        for (decl, uri) in &declarations {
+            out.push(' ');
+            out.push_str(decl);
+            out.push_str("=\"");
+            escape_xml(uri, &mut out);
+            out.push('"');
+        }
+        out.push('>');
+        let data_name = match prefix {
+            Some(prefix) => format!("{prefix}:data"),
+            None => "data".to_string(),
+        };
+        for &child in &dom.nodes[model].children {
+            let default = (Some(child) == dom.data).then_some(data_name.as_str());
+            write_data_node(&dom, child, default, &mut out, 0);
+        }
+        out.push_str("</");
+        out.push_str(&name);
+        out.push('>');
+        out
+    }
+}
+
+fn report_of(runner: &Runner) -> ScriptReport {
+    let mut report = runner.report.clone();
+    let dom = runner.dom.borrow();
+    report.log = dom.log.clone();
+    // Document order of the (still attached) containers.
+    let mut order = HashMap::new();
+    let mut stack = vec![dom.root];
+    while let Some(id) = stack.pop() {
+        order.insert(id, order.len());
+        stack.extend(dom.nodes[id].children.iter().rev().copied());
+    }
+    let mut failed: Vec<(usize, usize)> = runner
+        .validations
+        .keys()
+        .filter_map(|&id| order.get(&id).map(|&rank| (rank, id)))
+        .collect();
+    failed.sort_unstable();
+    for (_, id) in failed {
+        let som = dom_som(&dom, id);
+        for failure in &runner.validations[&id] {
+            if report.validations.len() >= MAX_VALIDATION_RECORDS {
+                break;
+            }
+            report.validations.push(ValidationRecord {
+                som: som.clone(),
+                test: failure.test,
+                severity: failure.severity.clone(),
+                message: failure.message.clone(),
+            });
+        }
+    }
+    report
+}
+
+/// Resolves a host SOM expression (`form1.name`,
+/// `xfa[0].form[0].form1[0].name[0]`, `xfa.form.form1.name`) to a form
+/// node.
+fn node_for(runner: &Runner, som: &str) -> Result<usize, String> {
+    let som = som.trim();
+    if som.is_empty() {
+        return Err("empty SOM expression".into());
+    }
+    let resolved = {
+        let mut dom = runner.dom.borrow_mut();
+        dom.resolve(None, som).map_err(|error| error.0)?
+    };
+    let id = match resolved.first() {
+        Some(Obj::Node(id)) => Some(*id),
+        Some(Obj::Nodes(ids)) => ids.first().copied(),
+        _ => None,
+    }
+    .ok_or_else(|| format!("no XFA form node matches {som}"))?;
+    let dom = runner.dom.borrow();
+    if dom.nodes[id].class.is_data() {
+        return Err(format!("{som} names a data node, not a form node"));
+    }
+    Ok(id)
+}
+
+/// Whether a node and all its ancestors are visible.
+fn effectively_visible(dom: &Dom, id: usize) -> bool {
+    let mut current = Some(id);
+    let mut guard = 0;
+    while let Some(node) = current {
+        guard += 1;
+        if guard > 512 {
+            break;
+        }
+        let presence = dom.nodes[node].presence.as_str();
+        if matches!(presence, "hidden" | "invisible" | "inactive") {
+            return false;
+        }
+        current = dom.nodes[node].parent;
+    }
+    true
+}
+
+fn write_data_node(
+    dom: &Dom,
+    id: usize,
+    default_name: Option<&str>,
+    out: &mut String,
+    depth: usize,
+) {
+    let node = &dom.nodes[id];
+    if node.meta || depth > 256 {
+        return;
+    }
+    let (name, declarations) = match dom.data_xml.get(&id) {
+        Some((name, declarations)) => (name.as_str(), declarations.as_slice()),
+        None => (default_name.unwrap_or(node.name.as_str()), &[][..]),
+    };
+    out.push('<');
+    out.push_str(name);
+    for (decl, uri) in declarations {
+        out.push(' ');
+        out.push_str(decl);
+        out.push_str("=\"");
+        escape_xml(uri, out);
+        out.push('"');
+    }
+    let mut elements = Vec::new();
+    for &child in &node.children {
+        let child_node = &dom.nodes[child];
+        if child_node.meta {
+            out.push(' ');
+            out.push_str(&child_node.name);
+            out.push_str("=\"");
+            escape_xml(child_node.value.as_deref().unwrap_or(""), out);
+            out.push('"');
+        } else {
+            elements.push(child);
+        }
+    }
+    if node.class == Class::DataGroup {
+        if elements.is_empty() {
+            if default_name.is_none() {
+                out.push_str(" xfa:dataNode=\"dataGroup\" xmlns:xfa=\"");
+                out.push_str(XFA_DATA_NS);
+                out.push('"');
+            }
+            out.push_str("/>");
+            return;
+        }
+        out.push('>');
+        for child in elements {
+            write_data_node(dom, child, None, out, depth + 1);
+        }
+    } else {
+        let value = node.value.as_deref().unwrap_or("");
+        if value.is_empty() {
+            out.push_str("/>");
+            return;
+        }
+        out.push('>');
+        escape_xml(value, out);
+    }
+    out.push_str("</");
+    out.push_str(name);
+    out.push('>');
 }
 
 fn apply_changes(snode: &SNode, node: &mut FormNode<'_>) {
@@ -967,6 +1647,16 @@ fn add_data_element(
     }
     let id = dom.add(node, Some(parent));
     by_xml.insert(key(element), id);
+    let declarations: Vec<(String, String)> = element
+        .attributes
+        .iter()
+        .filter(|attr| attr.name == "xmlns" || attr.name.starts_with("xmlns:"))
+        .map(|attr| (attr.name.clone(), attr.value.clone()))
+        .collect();
+    if element.name != element.local_name || !declarations.is_empty() {
+        dom.data_xml
+            .insert(id, (element.name.clone(), declarations));
+    }
     for attr in &element.attributes {
         let skip = attr.name == "xmlns"
             || attr.name.starts_with("xmlns:")
@@ -1177,6 +1867,83 @@ impl Runner {
             validations: HashMap::new(),
             depth: 0,
         }
+    }
+
+    /// Fresh time, operation and mutation budgets for one host action of a
+    /// session (each user event runs under its own budget, as PDFium's
+    /// per-script timeout). A script engine panic stays fatal.
+    fn begin_action(&mut self) {
+        let panicked = self.report.errors.iter().any(|e| e == PANICKED);
+        {
+            let mut dom = self.dom.borrow_mut();
+            dom.started = super::RuntimeInstant::now();
+            dom.ops = 0;
+            dom.mutations = 0;
+            dom.requests.clear();
+            dom.event = EventState::default();
+            if !panicked {
+                dom.exhausted = false;
+            }
+        }
+        self.runs = 0;
+        self.depth = 0;
+    }
+
+    /// Scripts of `id` handling `activity`.
+    fn handlers(&self, id: usize, activity: &str) -> usize {
+        let kind = activity_kind(activity, None);
+        let dom = self.dom.borrow();
+        dom.nodes.get(id).map_or(0, |node| {
+            node.scripts
+                .iter()
+                .filter(|s| match kind {
+                    Activity::Other => s.activity_name == activity,
+                    kind => s.activity == kind,
+                })
+                .count()
+        })
+    }
+
+    /// Dispatches one interactive event to `id` with `event` as `$event`;
+    /// returns `$event` as the scripts left it.
+    fn fire(
+        &mut self,
+        id: usize,
+        activity: &str,
+        event: EventState,
+        fired: &mut Vec<FiredEvent>,
+    ) -> EventState {
+        let scripts = self.handlers(id, activity);
+        let saved = {
+            let mut dom = self.dom.borrow_mut();
+            let event = EventState {
+                name: activity.to_string(),
+                target: Some(id),
+                ..event
+            };
+            std::mem::replace(&mut dom.event, event)
+        };
+        if scripts > 0 {
+            let kind = activity_kind(activity, None);
+            let name = (kind == Activity::Other).then_some(activity);
+            self.guarded(|runner| runner.run_node(id, kind, name));
+        }
+        let som = self.dom.borrow().som_expression(id);
+        fired.push(FiredEvent {
+            som,
+            activity: activity.to_string(),
+            scripts,
+        });
+        std::mem::replace(&mut self.dom.borrow_mut().event, saved)
+    }
+
+    /// After a host action: recalculates what depends on changed values,
+    /// then validates the changed containers (PDFium `UpdateDocView`).
+    fn settle(&mut self) {
+        self.guarded(|runner| {
+            runner.calculate_all(false);
+            runner.revalidate_changed();
+        });
     }
 
     /// The initial validation pass (PDFium `InitValidate`): every

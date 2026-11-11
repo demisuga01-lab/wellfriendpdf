@@ -471,3 +471,94 @@ fn deep_xml_and_javascript_host_access_fail_closed_with_exact_status() {
         .sandbox_default_policy
         .contains("no_external_side_effects"));
 }
+
+const SESSION_TEMPLATE: &str = r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/">
+  <subform name="form1" layout="tb">
+    <pageSet><pageArea name="P"><contentArea w="300pt" h="200pt"/><medium short="300pt" long="200pt"/></pageArea></pageSet>
+    <field name="name" w="180pt" h="24pt"><ui><textEdit/></ui><value><text>Default name</text></value></field>
+    <field name="amount" w="180pt" h="24pt"><ui><numericEdit/></ui><value><decimal>0</decimal></value></field>
+    <field name="total" w="180pt" h="24pt"><ui><numericEdit/></ui><value><decimal>0</decimal></value>
+      <calculate><script contentType="application/x-formcalc">amount + 2</script></calculate></field>
+    <field name="unsafe" w="180pt" h="24pt"><value><text>unchanged</text></value>
+      <event activity="click"><script contentType="application/x-javascript">app.launchURL('https://blocked.invalid')</script></event></field>
+  </subform>
+</template>"#;
+
+/// Interactive sessions over a whole-XDP stream: edits recalculate, saving
+/// splices the datasets element into the single stream.
+#[test]
+fn xfa_session_edits_and_saves_single_stream_xdp() {
+    let template = SESSION_TEMPLATE;
+    let xdp = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?><xdp:xdp xmlns:xdp="http://ns.adobe.com/xdp/" xmlns:xfaData="http://www.xfa.org/schema/xfa-data/1.0/">{template}<xfaData:datasets><xfaData:data><form1><name>Alice Example</name><amount>3</amount></form1></xfaData:data></xfaData:datasets></xdp:xdp>"#
+    );
+    let engine = ContentEngine::open_bytes(single_stream_xfa_pdf(xdp.as_bytes())).unwrap();
+    let mut session = engine.xfa_session().unwrap();
+    let total = "form1.total";
+    assert_eq!(session.field_value(total).unwrap(), Some("5".into()));
+    let outcome = session.set_field_value("form1.amount", "40").unwrap();
+    assert!(outcome.committed);
+    assert_eq!(session.field_value(total).unwrap(), Some("42".into()));
+    // Blocked host access in a click handler fails closed.
+    session.click("form1.unsafe").unwrap();
+    assert_eq!(
+        session.field_value("form1.unsafe").unwrap(),
+        Some("unchanged".into())
+    );
+    let xml = session.export_data_xml().unwrap();
+    assert!(
+        xml.starts_with(
+            "<xfaData:datasets xmlns:xfaData=\"http://www.xfa.org/schema/xfa-data/1.0/\"><xfaData:data>"
+        ),
+        "{xml}"
+    );
+    assert!(xml.contains("<amount>40</amount>"), "{xml}");
+    let saved = session.save_to_pdf().unwrap();
+    let reopened = ContentEngine::open_bytes(saved).unwrap();
+    let mut again = reopened.xfa_session().unwrap();
+    assert_eq!(again.field_value(total).unwrap(), Some("42".into()));
+}
+
+/// Saving into a packet array without a datasets packet inserts one (PDFium
+/// `SaveXFADocumentData`); the JSON command transport drives the session.
+#[test]
+fn xfa_session_json_commands_and_new_datasets_packet() {
+    let pdf = array_xfa_pdf(&[("template", SESSION_TEMPLATE.as_bytes())]);
+    let engine = ContentEngine::open_bytes(pdf).unwrap();
+    let mut session = engine.xfa_session().unwrap();
+    let fields: serde_json::Value =
+        serde_json::from_str(&session.command_json(r#"{"op":"fields"}"#).unwrap()).unwrap();
+    let names: Vec<&str> = fields["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["name", "amount", "total", "unsafe"]);
+    assert_eq!(fields["fields"][0]["ui"], "textEdit");
+    let outcome: serde_json::Value = serde_json::from_str(
+        &session
+            .command_json(r#"{"op":"set_value","som":"form1.amount","value":7}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(outcome["committed"], true);
+    let value: serde_json::Value = serde_json::from_str(
+        &session
+            .command_json(r#"{"op":"value","som":"form1.total"}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(value["value"], "9");
+    let xml: serde_json::Value =
+        serde_json::from_str(&session.command_json(r#"{"op":"export_data_xml"}"#).unwrap())
+            .unwrap();
+    assert!(xml["xml"].as_str().unwrap().contains("<amount>7</amount>"));
+    assert!(session.command_json(r#"{"op":"nonesuch"}"#).is_err());
+    assert!(session.command_json("not json").is_err());
+    let saved = ContentEngine::open_bytes(session.save_to_pdf().unwrap()).unwrap();
+    let inventory = xfa_inventory(&saved, &XfaLimits::default()).unwrap();
+    assert_eq!(inventory.packet_order, ["datasets", "template"]);
+    let mut again = saved.xfa_session().unwrap();
+    assert_eq!(again.field_value("form1.total").unwrap(), Some("9".into()));
+}

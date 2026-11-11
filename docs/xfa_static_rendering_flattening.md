@@ -84,8 +84,8 @@ presence, captions, choice-list items, fill/border/font colours and
 repeating-subform instances (`instanceManager` `setInstances`,
 `addInstance`, `insertInstance`, `removeInstance`, `moveInstance`, `count`,
 `_name` shorthand); new instances run their initialize scripts. Interactive
-events (click, enter, exit, change...) and `runAt="server"` scripts never
-run.
+events (click, enter, exit, change...) run only in an interactive session
+(below); `runAt="server"` scripts never run.
 
 **Validation** runs without a user interface. After the initialize and
 calculate scripts (PDFium's `InitValidate`), every field, exclusion group
@@ -181,6 +181,47 @@ they stay inside the budget. Code reached only through native callbacks
 is bounded by the per-frame loop and recursion limits rather than by the
 cycle budget. Script errors stop only that script; they are listed by
 `ContentEngine::xfa_script_errors` and flagged as `xfa.script.error`.
+
+## Interactive sessions
+
+`ContentEngine::xfa_session()` returns an `XfaFormSession`
+(`crates/engine/src/xfa/session.rs`) that drives the events a viewer's form
+filler would (PDFium `CXFA_FFField`, `CXFA_FFTextEdit`,
+`CXFA_FFCheckButton`, `CXFA_FFComboBox`, `CXFA_FFDocView`) without a GUI,
+keeping the script DOM (values, presence, instances, script variables, the
+JavaScript engine) between calls:
+
+* `set_field_value(som, value)`: `enter`, `preOpen` (drop-down lists),
+  `change` with `xfa.event.prevText`/`change`/`newText` (scripts may rewrite
+  `xfa.event.change` or set `cancelAction`), `full` when the text reaches
+  `<text maxChars>` (it is truncated), `postOpen`, the commit (open access
+  only), `exit`; drop-down lists accept display text for their save value;
+  an exclusion group takes the on value of the member to select.
+* `click(som)`: `mouseEnter`, `enter`, `mouseDown`, `mouseUp`; check boxes
+  toggle and radio buttons select (clearing their exclusion group), firing
+  `change` then `click` on the group and the button (a selected radio
+  button stays selected and fires neither); other fields fire `click`;
+  then `exit`, `mouseExit`.
+* `dispatch_event(som, activity)`: one event (`validate` validates the
+  subtree).
+
+After every action the calculations that read changed values run and the
+changed containers are validated (PDFium `UpdateDocView`). Hidden, invisible
+or non-open fields reject interaction. Each action runs under fresh script
+time/operation/mutation budgets; `XfaSessionOptions { run_scripts: false }`
+disables scripts. `fields()`, `field_value()`, `validation_results()`,
+`script_log()` report the state; `render_xfa_page()` / `render_page_png()` /
+`layout_pdf()` re-merge and re-lay out the form with the session's changes
+(instances, presence, values); `export_data_xml()` serializes the data DOM
+as the `datasets` packet and `save_to_pdf()` fires `preSave`, writes it into
+the PDF as an incremental update (replacing the array's `datasets` stream,
+inserting one before the last packet as PDFium does, or splicing a whole-XDP
+stream), then fires `postSave`. Unlike PDFium, the `form` packet (form-DOM
+state such as presence changes) is not saved, and encrypted PDFs cannot be
+saved. The C ABI (`wellfriendpdf_xfa_session_*`), Python
+(`Document.xfa_session()`), WASM (`XfaSession`) and the `xfa-fill` CLI
+command (`--set SOM=VALUE`, `--click SOM`, `--event SOM=ACTIVITY`, `-o`,
+`--png`, `--json`) wrap it; bindings use `XfaFormSession::command_json`.
 
 ## Barcodes
 
