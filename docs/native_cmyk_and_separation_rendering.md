@@ -64,6 +64,25 @@ its alternate colour inks at full tint (Poppler's overprint mask). Images
 and shadings overprint as a whole by their colour space. Luminosity soft
 masks are still computed from the mask group's RGB rendering.
 
+Spot overprint in a CMYK render: `pdftoppm -jpegcmyk` / `-overprint`
+composite in `splashModeDeviceN8`, where the first four spots the page uses
+(`SPOT_NCOMPS`) get their own plates, and on output
+`SplashBitmap::getCMYKLine` converts each spot plate through its alternate
+and *adds* it to the process plates, clamped (`dblToByte(clip01(c + ...))`).
+So a spot overprinting a backdrop that already carries ink in the same
+process plates adds to it (magenta 102 + 61 = 163) rather than replacing
+it. When overprint is honoured and the page paints spots, the CMYK render
+does the same: it renders the first four spots as separate plates (the
+separation compositor above, overprint per plate), records each spot's
+process ink at every tint byte (the alternate through the tint transform,
+at Poppler's `byteToCol` tints; a DeviceN colorant uses its `/Colorants`
+Separation, else the DeviceN alternate with that colorant alone), and
+flattens the plates additively with Poppler's arithmetic. Further spots map
+through their alternates as before. Without overprint the render is
+unchanged (spots knock out, which the additive flattening would reproduce
+anyway). The RGB overprint preview does not simulate spot overprint (it
+imitates PDFium, which has no spot plates), so it has no such discrepancy.
+
 Non-separable blend modes (Hue, Saturation, Color, Luminosity) follow the
 PDF rule for CMYK (PDF 32000-2 11.3.5.3, Poppler `splashModeCMYK8`): the
 RGB formulas run on the complements of C, M and Y, and K is the backdrop's
@@ -133,6 +152,13 @@ converted RGB render and leaves spot plates empty.
 - Synthetic page against `pdftoppm -jpegcmyk -overprint`: every probe point
   within JPEG noise (DeviceCMYK fill 51/102/0/26, OPM 1 overlap 255/255/0/0,
   spot overprint on cyan 255/61/240/0, CMYK image and shading values).
+- Spot overprint onto process ink (2026-11, `render --cmyk --overprint
+  preview -f tiff --tiff-compression none` against `pdftoppm -tiff
+  -tiffcompression none -overprint`, Poppler 26.07): a page with magenta
+  102, a spot (alternate 0/61/240/0) overprinting it, a second spot at half
+  tint overlapping both, a knockout spot and OPM 1 yellow is byte-identical
+  to Poppler over all 10,000 pixels (163 = 102 + 61, 201/255 where both
+  spots add, clamped).
 - tests/corpus/pdfs + engine fixtures (629 pages at 50 dpi): all render
   natively except one page with a `Color` blend mode (fallback as designed).
   Differences to Poppler's CMYK output track the RGB renderer's own

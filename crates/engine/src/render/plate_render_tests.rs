@@ -98,7 +98,7 @@ fn overprint_mode_one_and_spot_alternates_overprint_per_plate() {
     assert!(raster.native, "{:?}", raster.diagnostics);
     // OPM 1: the zero cyan component leaves the cyan plate untouched.
     assert_eq!(at(&raster, 25, 25), [255, 255, 0, 0]);
-    // The spot names the plates its alternate inks at full tint (M, Y).
+    // The overprinting spot adds its alternate ink (M, Y) to the cyan.
     assert_eq!(at(&raster, 75, 25), [255, 61, 240, 0]);
     // Without overprint the spot knocks the cyan out.
     assert_eq!(at(&raster, 25, 75), [0, 31, 120, 0]);
@@ -106,6 +106,27 @@ fn overprint_mode_one_and_spot_alternates_overprint_per_plate() {
     let knockout = render_cmyk(bytes, OverprintPolicy::Disabled);
     assert_eq!(at(&knockout, 25, 25), [0, 255, 0, 0]);
     assert_eq!(at(&knockout, 75, 25), [0, 61, 240, 0]);
+}
+
+/// A spot overprinting process ink in the plates its alternate inks adds to
+/// it, as Poppler renders spots into their own plates and flattens them
+/// additively (`SplashBitmap::getCMYKLine`, `pdftoppm -jpegcmyk
+/// -overprint`): magenta 102 + 61 = 163.
+#[test]
+fn spot_overprint_adds_to_process_ink_like_poppler() {
+    let resources = "/ExtGState << /GSop 6 0 R >> /ColorSpace << /CS0 5 0 R >>";
+    let content = "0 0.4 0 0 k 0 0 100 100 re f                    q /GSop gs /CS0 cs 1 scn 0 0 50 100 re f Q                    /CS0 cs 1 scn 50 50 50 50 re f";
+    let bytes = pdf(content, resources, &[SPOT, OVERPRINT_GS]);
+    let raster = render_cmyk(bytes.clone(), OverprintPolicy::Preview);
+    assert!(raster.native, "{:?}", raster.diagnostics);
+    assert_eq!(at(&raster, 25, 50), [0, 163, 240, 0]);
+    // Without overprint the spot knocks the magenta out.
+    assert_eq!(at(&raster, 75, 75), [0, 61, 240, 0]);
+    assert_eq!(at(&raster, 75, 25), [0, 102, 0, 0]);
+    // Overprint disabled by policy: knockout.
+    let knockout = render_cmyk(bytes, OverprintPolicy::Disabled);
+    assert_eq!(at(&knockout, 25, 50), [0, 61, 240, 0]);
+    assert_eq!(at(&knockout, 75, 25), [0, 102, 0, 0]);
 }
 
 #[test]
