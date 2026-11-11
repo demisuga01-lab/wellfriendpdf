@@ -3023,8 +3023,9 @@ struct RenderArgs {
     /// How --cmyk produces CMYK. native composites in CMYK (DeviceCMYK paint
     /// stays exact, other colours convert to CMYK, spot colours go through
     /// their alternates, overprint is honoured per plate); a page using a
-    /// feature the CMYK compositor lacks (non-separable blend modes, transfer
-    /// functions, colour-font glyphs) falls back to convert with a warning.
+    /// feature the CMYK compositor lacks (forced colour schemes, form-field
+    /// highlights, linear-light compositing) falls back to convert with a
+    /// warning.
     /// convert renders RGB and applies the uncalibrated DeviceRGB to
     /// DeviceCMYK formula.
     #[arg(long, default_value = "native", value_parser = ["native", "convert"])]

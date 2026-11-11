@@ -5,6 +5,17 @@ stability policy in `docs/stability.md`.
 
 ## Unreleased
 
+- Native CMYK and separation renders no longer fall back to RGB for
+  non-separable blend modes, transfer functions or colour-font glyphs.
+  Hue, Saturation, Color and Luminosity blend on the complements of C, M
+  and Y with K (and spot plates) from the backdrop, or from the source for
+  Luminosity (PDF 32000-2 11.3.5.3, Poppler `splashModeCMYK8`); a
+  separation render using them composites C, M and Y in one pass and every
+  other plate alone. `/TR` and `/TR2` curves apply per plate (C, M, Y take
+  the red, green and blue curves, K and spots the grey curve, on `1 - ink`,
+  as Poppler). COLR/CPAL, SVG and bitmap glyph colours convert from sRGB to
+  ink like DeviceRGB paint; the text colour stays exact. RGB output is
+  unchanged.
 - Anti-aliased strokes and fills whose outline is a set of separate
   axis-aligned boxes (dashed horizontal and vertical rules, dashed
   rectangles, multi-rectangle fills) add each box's spans directly instead

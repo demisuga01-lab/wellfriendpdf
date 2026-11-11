@@ -12336,16 +12336,17 @@ impl<'a> RenderState<'a> {
         if lut.is_none() {
             log::warn!("render: {label} transfer function could not be evaluated; using identity");
         }
+        let lut = lut.filter(|lut| !lut.is_identity());
+        // A plate pass applies each plate's curve to its `255 - ink` values.
+        let lut = match (lut, self.plate.as_deref()) {
+            (Some(lut), Some(plate)) => Some(plate.transfer_for_pass(&lut)),
+            (lut, _) => lut,
+        };
         self.gs.transfer = lut.filter(|lut| !lut.is_identity()).map(Arc::new);
     }
 
     /// Apply the active transfer curves to an output paint colour.
     fn apply_paint_transfer(&self, pixel: PixelColor) -> PixelColor {
-        if self.plate.is_some() {
-            // RGB transfer curves do not apply to plate ink; the plate paint
-            // path reports active transfer functions for an RGB fallback.
-            return pixel;
-        }
         match self.gs.transfer.as_deref() {
             Some(lut) => lut.apply_rgba(pixel),
             None => pixel,
@@ -12357,13 +12358,6 @@ impl<'a> RenderState<'a> {
     /// current blend mode and soft mask. Used for per-pixel sources
     /// (shadings) whose colours are not produced by the paint-colour path.
     fn paint_through_transfer(&mut self, paint: impl FnOnce(&mut Self)) {
-        if let Some(plate) = self.plate.as_deref() {
-            if self.gs.transfer.is_some() {
-                plate.note_issue("transfer functions");
-            }
-            paint(self);
-            return;
-        }
         let Some(lut) = self.gs.transfer.clone() else {
             paint(self);
             return;
@@ -12465,10 +12459,6 @@ impl<'a> RenderState<'a> {
         raw: &crate::images::decoder::RawImage,
     ) -> Option<crate::images::decoder::RawImage> {
         let lut = self.gs.transfer.as_deref()?;
-        if let Some(plate) = self.plate.as_deref() {
-            plate.note_issue("transfer functions");
-            return None;
-        }
         if raw.bits_per_sample != 8 {
             return None;
         }
@@ -13086,15 +13076,13 @@ impl<'a> RenderState<'a> {
             }
     }
 
-    /// Plate pass: report a blend mode a per-plate compositor cannot
-    /// reproduce (the non-separable modes mix colour channels).
+    /// Plate pass: check a blend mode against the pass's plates (the
+    /// non-separable modes need C, M and Y in one pass, see
+    /// [`crate::render::plate::PlateTarget::check_blend_mode`]).
     fn plate_check_blend(&self, mode: BlendMode) {
         if let Some(plate) = self.plate.as_deref() {
-            if matches!(
-                mode,
-                BlendMode::Hue | BlendMode::Saturation | BlendMode::Color | BlendMode::Luminosity
-            ) {
-                plate.note_issue(format!("non-separable blend mode {mode:?}"));
+            if !mode.is_separable() {
+                plate.check_blend_mode(true, &format!("{mode:?}"));
             }
         }
     }
@@ -13147,9 +13135,6 @@ impl<'a> RenderState<'a> {
     ) -> PixelColor {
         use crate::render::plate::{InkResult, PlateTarget};
         self.plate_check_blend(self.gs.blend_mode);
-        if self.gs.transfer.is_some() {
-            plate.note_issue("transfer functions");
-        }
         let overprint = self.plate_overprint_active(stroke);
         let opm_nonzero = overprint && self.active_overprint_mode() == 1;
         let device =
@@ -19288,10 +19273,16 @@ impl<'a> RenderState<'a> {
         fill_color: PixelColor,
         glyph_pixel_size: f64,
     ) -> bool {
-        if let Some(plate) = self.plate.as_deref() {
-            // COLR/SVG/bitmap glyph colours are sRGB paint, not plate ink.
-            plate.note_issue("colour font glyphs");
-        }
+        // In a plate pass, COLR/SVG/bitmap glyph colours are sRGB and convert
+        // to plate ink; the foreground colour is already plate ink. Building
+        // the paint again with a probe foreground tells the two apart.
+        let plate = self.plate.clone();
+        let probe_foreground = [
+            fill_color[0] ^ 0xff,
+            fill_color[1] ^ 0xff,
+            fill_color[2] ^ 0xff,
+            fill_color[3],
+        ];
         match crate::render::color_glyph::colr_cpal_layers(
             request.font_bytes,
             glyph_id,
@@ -19299,7 +19290,24 @@ impl<'a> RenderState<'a> {
             fill_color[3],
             request.variation,
         ) {
-            Ok(Some(layers)) => {
+            Ok(Some(mut layers)) => {
+                if let Some(plate) = plate.as_deref() {
+                    let probe = crate::render::color_glyph::colr_cpal_layers(
+                        request.font_bytes,
+                        glyph_id,
+                        probe_foreground,
+                        fill_color[3],
+                        request.variation,
+                    );
+                    match probe {
+                        Ok(Some(probe)) if probe.len() == layers.len() => {
+                            for (layer, probe) in layers.iter_mut().zip(&probe) {
+                                layer.color = plate_glyph_color(plate, layer.color, probe.color);
+                            }
+                        }
+                        _ => plate.note_issue("colour font glyphs"),
+                    }
+                }
                 let ops: Vec<_> = layers
                     .into_iter()
                     .map(|layer| crate::render::color_glyph::ColrPaintOp {
@@ -19322,7 +19330,23 @@ impl<'a> RenderState<'a> {
                 fill_color[3],
                 request.variation,
             ) {
-                Ok(Some(ops)) => {
+                Ok(Some(mut ops)) => {
+                    if let Some(plate) = plate.as_deref() {
+                        let probe = crate::render::color_glyph::colr_cpal_paint_ops(
+                            request.font_bytes,
+                            glyph_id,
+                            probe_foreground,
+                            fill_color[3],
+                            request.variation,
+                        );
+                        let converted = match probe {
+                            Ok(Some(probe)) => plate_colr_paint_ops(plate, &mut ops, &probe),
+                            _ => false,
+                        };
+                        if !converted {
+                            plate.note_issue("colour font glyphs");
+                        }
+                    }
                     if self.paint_colr_paint_ops(request, &ops, glyph_ctm, glyph_hinting) {
                         return true;
                     }
@@ -19346,7 +19370,28 @@ impl<'a> RenderState<'a> {
             fill_color,
             fill_color[3],
         ) {
-            Ok(Some(paths)) => {
+            Ok(Some(mut paths)) => {
+                if let Some(plate) = plate.as_deref() {
+                    let probe = crate::render::color_glyph::svg_static_glyph_paints(
+                        request.font_bytes,
+                        glyph_id,
+                        probe_foreground,
+                        fill_color[3],
+                    );
+                    match probe {
+                        Ok(Some(probe)) if probe.len() == paths.len() => {
+                            for (path, probe) in paths.iter_mut().zip(&probe) {
+                                if let (Some(color), Some(probe)) = (path.fill, probe.fill) {
+                                    path.fill = Some(plate_glyph_color(plate, color, probe));
+                                }
+                                if let (Some(color), Some(probe)) = (path.stroke, probe.stroke) {
+                                    path.stroke = Some(plate_glyph_color(plate, color, probe));
+                                }
+                            }
+                        }
+                        _ => plate.note_issue("colour font glyphs"),
+                    }
+                }
                 let mut painted = false;
                 for svg_path in paths {
                     let path_ctm = svg_path.transform.concat(glyph_ctm);
@@ -19422,9 +19467,10 @@ impl<'a> RenderState<'a> {
             f64::from(raster.y) * units_per_pixel,
         ))
         .concat(glyph_ctm);
+        let image = self.plate_convert_device_image(raster.image);
         ImagePainter::paint_image_with_alpha(
             &mut self.buf,
-            &raster.image,
+            &image,
             &image_ctm,
             &self.viewport,
             f32::from(fill_color[3]) / 255.0,
@@ -19574,6 +19620,7 @@ impl<'a> RenderState<'a> {
         }
         let saved_blend = buf.blend_mode;
         buf.blend_mode = colr_blend_to_pdf(op.blend_mode);
+        self.plate_check_blend(buf.blend_mode);
         let op_ctm = op.transform.concat(glyph_ctm);
         self.paint_colr_paint_to_buffer(buf, &path, &op_ctm, glyph_hinting, &op.paint);
         buf.blend_mode = saved_blend;
@@ -23034,10 +23081,12 @@ impl<'a, 'b> RenderStatePlanAdapter<'a, 'b> {
                 return inherited_type3_vector_color_with_fallback_alpha(color, fallback);
             }
         }
-        if self.forced_vector_color.is_some() {
-            return self.effective_vector_color(fallback);
-        }
-        self.state.plate_vector_color(plate, draw_state, stroke)
+        let color = if self.forced_vector_color.is_some() {
+            self.effective_vector_color(fallback)
+        } else {
+            self.state.plate_vector_color(plate, draw_state, stroke)
+        };
+        self.state.apply_paint_transfer(color)
     }
 }
 
@@ -31629,6 +31678,143 @@ fn transfer_lut_from_object(
         }
     };
     Some(crate::content::state::TransferLut { channels })
+}
+
+/// Plate pass colour of a colour-glyph paint: `probe` is the same paint
+/// built with a different foreground, so a colour that differs is the
+/// foreground (already plate ink) and any other is an sRGB palette colour.
+fn plate_glyph_color(
+    plate: &crate::render::plate::PlateTarget,
+    color: PixelColor,
+    probe: PixelColor,
+) -> PixelColor {
+    if color[..3] == probe[..3] {
+        plate.srgb_pixel(color)
+    } else {
+        color
+    }
+}
+
+/// Convert COLR paint colours to plate ink (see [`plate_glyph_color`]).
+/// Returns false when `probe` does not have the shape of `ops`.
+fn plate_colr_paint_ops(
+    plate: &crate::render::plate::PlateTarget,
+    ops: &mut [crate::render::color_glyph::ColrPaintOp],
+    probe: &[crate::render::color_glyph::ColrPaintOp],
+) -> bool {
+    use crate::render::color_glyph::ColrPaint;
+    if ops.len() != probe.len() {
+        return false;
+    }
+    for (op, probe) in ops.iter_mut().zip(probe) {
+        match (&mut op.paint, &probe.paint) {
+            (ColrPaint::Solid(color), ColrPaint::Solid(probe)) => {
+                *color = plate_glyph_color(plate, *color, *probe);
+            }
+            (
+                ColrPaint::LinearGradient { stops, .. },
+                ColrPaint::LinearGradient {
+                    stops: probe_stops, ..
+                },
+            )
+            | (
+                ColrPaint::RadialGradient { stops, .. },
+                ColrPaint::RadialGradient {
+                    stops: probe_stops, ..
+                },
+            )
+            | (
+                ColrPaint::SweepGradient { stops, .. },
+                ColrPaint::SweepGradient {
+                    stops: probe_stops, ..
+                },
+            ) if stops.len() == probe_stops.len() => {
+                for (stop, probe) in stops.iter_mut().zip(probe_stops) {
+                    stop.color = plate_glyph_color(plate, stop.color, probe.color);
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod plate_glyph_color_tests {
+    use super::*;
+    use crate::render::color_glyph::{
+        ColrBlendMode, ColrColorStop, ColrGradientExtend, ColrPaint, ColrPaintOp,
+    };
+    use crate::render::plate::PlateTarget;
+
+    fn op(paint: ColrPaint) -> ColrPaintOp {
+        ColrPaintOp {
+            glyph_id: 1,
+            transform: Transform2D::identity(),
+            paint,
+            clips: Vec::new(),
+            blend_mode: ColrBlendMode::Normal,
+        }
+    }
+
+    fn gradient(colors: [PixelColor; 2]) -> ColrPaint {
+        ColrPaint::LinearGradient {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 1.0,
+            y1: 0.0,
+            x2: 0.0,
+            y2: 1.0,
+            extend: ColrGradientExtend::Pad,
+            stops: colors
+                .iter()
+                .enumerate()
+                .map(|(index, &color)| ColrColorStop {
+                    offset: index as f64,
+                    color,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn palette_colours_convert_and_foreground_stays_plate_ink() {
+        // A C/M/Y pass; the foreground is already plate ink.
+        let plate = PlateTarget::new([0, 1, 2], Vec::new().into(), false);
+        let foreground = [10, 20, 30, 255];
+        let probe_foreground = [245, 235, 225, 255];
+        let red = [255, 0, 0, 200];
+        let mut ops = vec![
+            op(ColrPaint::Solid(foreground)),
+            op(ColrPaint::Solid(red)),
+            op(gradient([red, foreground])),
+        ];
+        let probe = vec![
+            op(ColrPaint::Solid(probe_foreground)),
+            op(ColrPaint::Solid(red)),
+            op(gradient([red, probe_foreground])),
+        ];
+        assert!(plate_colr_paint_ops(&plate, &mut ops, &probe));
+        // Red is magenta + yellow ink: plates C/M/Y hold 255 - ink.
+        let red_ink = [255, 0, 0, 200];
+        assert!(matches!(ops[0].paint, ColrPaint::Solid(c) if c == foreground));
+        assert!(matches!(ops[1].paint, ColrPaint::Solid(c) if c == red_ink));
+        match &ops[2].paint {
+            ColrPaint::LinearGradient { stops, .. } => {
+                assert_eq!(stops[0].color, red_ink);
+                assert_eq!(stops[1].color, foreground);
+            }
+            other => panic!("{other:?}"),
+        }
+        // A probe of another shape is refused.
+        assert!(!plate_colr_paint_ops(&plate, &mut ops, &probe[..1]));
+        // Black plate: grey (64) is 191 units of black ink.
+        let black = PlateTarget::new([3, 3, 3], Vec::new().into(), false);
+        assert_eq!(
+            plate_glyph_color(&black, [64, 64, 64, 255], [64, 64, 64, 255]),
+            [64, 64, 64, 255]
+        );
+    }
 }
 
 /// The rendering intents an image `/Intent` may select; unknown names keep
