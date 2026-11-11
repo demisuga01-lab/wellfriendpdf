@@ -21,6 +21,7 @@ use wellfriendpdf_engine::{
 mod ocr_backend;
 use ocr_backend::PyOcrEngine;
 mod story_session;
+mod xfa_session;
 
 create_exception!(wellfriendpdf, WellfriendError, PyException);
 
@@ -3502,6 +3503,13 @@ impl PyDocument {
         ))
     }
 
+    /// Open an interactive XFA form session (set values, click, dispatch
+    /// events, render, export data, save) over this document.
+    #[pyo3(signature = (run_scripts=true))]
+    fn xfa_session(&self, run_scripts: bool) -> PyResult<xfa_session::PyXfaFormSession> {
+        xfa_session::PyXfaFormSession::open(&self.engine, run_scripts)
+    }
+
     /// Render a supported XFA preview as PDF overlay bytes plus a versioned
     /// report. The result can be written to `output`.
     #[pyo3(signature = (script_policy="disabled", execute_events=false, dpi=72, output=None))]
@@ -5416,6 +5424,7 @@ fn wellfriendpdf(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRenderCache>()?;
     module.add_class::<PyRenderCancellation>()?;
     module.add_class::<story_session::PyStoryEditSession>()?;
+    module.add_class::<xfa_session::PyXfaFormSession>()?;
     module.add_class::<PySignatureTrustStore>()?;
     module.add_class::<PySignatureIntermediateStore>()?;
     module.add_class::<PySignatureEvidenceStore>()?;
