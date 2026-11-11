@@ -5,6 +5,12 @@ stability policy in `docs/stability.md`.
 
 ## Unreleased
 
+- Anti-aliased strokes and fills whose outline is a set of separate
+  axis-aligned boxes (dashed horizontal and vertical rules, dashed
+  rectangles, multi-rectangle fills) add each box's spans directly instead
+  of collecting and sorting edge crossings per sample line, and dash pieces
+  are outlined without intermediate allocations. Output is byte-identical;
+  1,500 page-wide dashed rules at 150 dpi render in 68 ms instead of 107 ms.
 - XFA form scripts run before an XFA form is drawn, as in PDFium:
   `initialize`, `calculate` (re-run when their inputs change), form:ready,
   `docReady` and layout:ready (per page for master-page fields, so
