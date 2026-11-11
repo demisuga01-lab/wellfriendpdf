@@ -101,7 +101,13 @@ pub(crate) const MIXED_OVERPRINT_ISSUE: &str =
 /// renders neither exactly the C/M/Y plates nor a single black or spot plate;
 /// the page is then repeated with [`PassLayout::ProcessTogether`].
 pub(crate) const NONSEPARABLE_LAYOUT_ISSUE: &str =
-    "non-separable blend mode in a pass mixing black or spot plates";
+    "non-separable blend mode in a pass that does not render C, M and Y together";
+
+/// Issue reported when the C/M/Y pass of [`PassLayout::ProcessTogether`]
+/// cannot mask an overprinting paint per plate (several paints with
+/// different plate masks in one operator, or a paint outside an operator).
+pub(crate) const UNMASKED_OVERPRINT_ISSUE: &str =
+    "overprint naming only some of C, M and Y could not be masked per plate";
 
 const PROCESS_MASK: u64 = 0b1111;
 const MAX_RESOLVE_DEPTH: u8 = 8;
@@ -112,6 +118,7 @@ pub(crate) struct PlateTarget {
     channels: [usize; 3],
     spots: Arc<[String]>,
     honour_overprint: bool,
+    mask_overprint: bool,
     issues: Mutex<Vec<String>>,
 }
 
@@ -123,8 +130,38 @@ impl PlateTarget {
             channels,
             spots,
             honour_overprint,
+            mask_overprint: false,
             issues: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Mask overprinting paints per plate instead of reporting
+    /// [`MIXED_OVERPRINT_ISSUE`]: the renderer saves the pixels before such
+    /// a paint and restores the plates the paint does not name afterwards
+    /// (Poppler's per-channel `overprintMask`). Used for the C/M/Y pass of
+    /// [`PassLayout::ProcessTogether`], where C, M and Y must stay in one
+    /// pass for the non-separable blend modes.
+    pub(crate) fn with_overprint_masking(mut self, mask: bool) -> Self {
+        self.mask_overprint = mask && !self.single_plate();
+        self
+    }
+
+    pub(crate) fn masks_overprint(&self) -> bool {
+        self.mask_overprint
+    }
+
+    /// The channels an overprinting `ink` leaves untouched, when it names
+    /// some but not all plates of this pass and per-plate masking is on.
+    pub(crate) fn overprint_keep_mask(&self, ink: &Ink) -> Option<[bool; 3]> {
+        if !self.mask_overprint {
+            return None;
+        }
+        let keep = self
+            .channels
+            .map(|plate| plate != NO_PLATE && !ink.names(plate));
+        let plates = self.channels.iter().filter(|&&p| p != NO_PLATE).count();
+        let kept = keep.iter().filter(|&&k| k).count();
+        (kept > 0 && kept < plates).then_some(keep)
     }
 
     /// One plate in all three channels.
@@ -172,19 +209,16 @@ impl PlateTarget {
     /// so the RGB formulas are that rule. A pass rendering one plate holds it
     /// as a grey triple, for which the formulas reduce to the backdrop (Hue,
     /// Saturation, Color) or the source (Luminosity): the K rule, which spot
-    /// plates follow as well. Other passes cannot compute the modes: a pass
-    /// mixing K or spots asks for [`PassLayout::ProcessTogether`]; a pass
-    /// with C, M or Y alone (per-plate overprint) needs the RGB fallback.
-    pub(crate) fn check_blend_mode(&self, nonseparable: bool, mode_name: &str) {
+    /// plates follow as well. Other passes cannot compute the modes and ask
+    /// for [`PassLayout::ProcessTogether`]: a pass mixing K or spots, and a
+    /// pass with C, M or Y alone (one plate per pass for overprint), whose
+    /// overprint the C/M/Y pass then masks per plate (see
+    /// [`Self::with_overprint_masking`]).
+    pub(crate) fn check_blend_mode(&self, nonseparable: bool) {
         if !nonseparable || self.channels == [0, 1, 2] {
             return;
         }
-        if self.single_plate() {
-            if self.channels[0] < 3 {
-                self.note_issue(format!(
-                    "non-separable blend mode {mode_name} with one process plate per pass"
-                ));
-            }
+        if self.single_plate() && self.channels[0] >= 3 {
             return;
         }
         self.note_issue(NONSEPARABLE_LAYOUT_ISSUE);
@@ -259,7 +293,7 @@ impl PlateTarget {
             if !named_any {
                 return [0, 0, 0, 0];
             }
-            if unnamed_any {
+            if unnamed_any && !self.mask_overprint {
                 self.note_issue(MIXED_OVERPRINT_ISSUE);
             }
         }
@@ -272,23 +306,27 @@ impl PlateTarget {
 
     /// Whether an overprinting paint in this colour space leaves every plate
     /// of the pass untouched (image and shading paints, whose colour varies
-    /// per pixel, are skipped as a whole).
+    /// per pixel, are skipped as a whole), and the channels to keep when it
+    /// names only some of them and the pass masks overprint per plate.
     pub(crate) fn overprint_skips_space(
         &self,
         space: &PdfObject,
         reader: &PdfReader,
         options: ColorTransformOptions,
         resources: FunctionResources<'_>,
-    ) -> bool {
+    ) -> (bool, Option<[bool; 3]>) {
         let Some(count) = component_count(space, reader, 0) else {
-            return false;
+            return (false, None);
         };
         let ones = vec![1.0; count];
         let ink = match self.resolve(space, None, &ones, reader, options, resources, false) {
             InkResult::Ink(ink) => ink,
-            InkResult::NoPaint => return true,
-            _ => return false,
+            InkResult::NoPaint => return (true, None),
+            _ => return (false, None),
         };
+        if let Some(keep) = self.overprint_keep_mask(&ink) {
+            return (false, Some(keep));
+        }
         let mut named = 0usize;
         let mut plates = 0usize;
         for &plate in &self.channels {
@@ -303,7 +341,7 @@ impl PlateTarget {
         if named > 0 && named < plates {
             self.note_issue(MIXED_OVERPRINT_ISSUE);
         }
-        plates > 0 && named == 0
+        (plates > 0 && named == 0, None)
     }
 
     /// Ink of a device colour (`g`, `rg`, `k` and friends).
@@ -1175,23 +1213,46 @@ mod tests {
     #[test]
     fn non_separable_blend_needs_process_plates_together() {
         let cmy = target([0, 1, 2], &[]);
-        cmy.check_blend_mode(true, "Hue");
+        cmy.check_blend_mode(true);
         let black = target([3, 3, 3], &[]);
-        black.check_blend_mode(true, "Color");
+        black.check_blend_mode(true);
         let spot = target([4, 4, 4], &["Gold"]);
-        spot.check_blend_mode(true, "Luminosity");
+        spot.check_blend_mode(true);
         assert!(cmy.issues().is_empty());
         assert!(black.issues().is_empty());
         assert!(spot.issues().is_empty());
         let mixed = target([3, 4, 5], &["Gold", "Silver"]);
-        mixed.check_blend_mode(false, "Multiply");
+        mixed.check_blend_mode(false);
         assert!(mixed.issues().is_empty());
-        mixed.check_blend_mode(true, "Saturation");
+        mixed.check_blend_mode(true);
         assert_eq!(mixed.issues(), vec![NONSEPARABLE_LAYOUT_ISSUE.to_string()]);
+        // One process plate per pass (overprint): C/M/Y go back together
+        // with per-plate overprint masking.
         let cyan = target([0, 0, 0], &[]);
-        cyan.check_blend_mode(true, "Hue");
-        assert_eq!(cyan.issues().len(), 1);
-        assert_ne!(cyan.issues()[0], NONSEPARABLE_LAYOUT_ISSUE);
+        cyan.check_blend_mode(true);
+        assert_eq!(cyan.issues(), vec![NONSEPARABLE_LAYOUT_ISSUE.to_string()]);
+    }
+
+    #[test]
+    fn overprint_masking_keeps_the_unnamed_process_plates() {
+        // OPM 1 with a zero cyan component names magenta, yellow and black.
+        let ink = PlateTarget::device_ink("DeviceCMYK", &[0.0, 1.0, 0.5, 0.0], true).unwrap();
+        let plain = target([0, 1, 2], &[]);
+        assert_eq!(plain.overprint_keep_mask(&ink), None);
+        plain.pixel(&ink, 1.0, true);
+        assert_eq!(plain.issues(), vec![MIXED_OVERPRINT_ISSUE.to_string()]);
+        let masked = target([0, 1, 2], &[]).with_overprint_masking(true);
+        assert_eq!(masked.overprint_keep_mask(&ink), Some([true, false, false]));
+        assert_eq!(masked.pixel(&ink, 1.0, true), [255, 0, 127, 255]);
+        assert!(masked.issues().is_empty());
+        // Every plate named, or none: nothing to mask.
+        let full = PlateTarget::device_ink("DeviceCMYK", &[0.1, 1.0, 0.5, 0.0], true).unwrap();
+        assert_eq!(masked.overprint_keep_mask(&full), None);
+        let black = PlateTarget::device_ink("DeviceCMYK", &[0.0, 0.0, 0.0, 1.0], true).unwrap();
+        assert_eq!(masked.overprint_keep_mask(&black), None);
+        // A single-plate pass never masks.
+        let single = target([0, 0, 0], &[]).with_overprint_masking(true);
+        assert_eq!(single.overprint_keep_mask(&ink), None);
     }
 
     #[test]

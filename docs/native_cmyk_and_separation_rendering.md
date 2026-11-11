@@ -35,7 +35,8 @@ modes on complemented values are the PDF rule for subtractive spaces
 CMYK pages take two passes (C/M/Y, then K). A separation render takes
 `ceil((4 + spots) / 3)` passes. When an overprinting paint names only some of
 the plates of a pass (OPM 1 with a zero component, or a spot overprinting the
-process plates), the page is re-rendered with one plate per pass.
+process plates), the page is re-rendered with one plate per pass, unless the
+page also uses a non-separable blend mode (below).
 
 Colour to ink:
 
@@ -69,9 +70,19 @@ RGB formulas run on the complements of C, M and Y, and K is the backdrop's
 (Hue, Saturation, Color) or the source's (Luminosity). The C/M/Y pass holds
 exactly those complements, and a pass with one plate holds it as a grey
 triple, for which the formulas reduce to the backdrop or the source, so the
-ordinary compositor computes both. Spot plates follow the K rule. A
-separation render whose K-and-spots pass meets such a mode is repeated with
-C/M/Y together and every other plate alone.
+ordinary compositor computes both. Spot plates follow the K rule. A page
+whose non-separable mode meets a pass that does not hold C, M and Y together
+(K with spots, or one process plate per pass for overprint) is repeated
+with C/M/Y together and every other plate alone.
+
+In that layout the C/M/Y pass masks overprint per plate, like Poppler's
+per-channel `overprintMask`: before an operator whose overprinting paint
+names only some of C, M and Y, the pass saves the pixels, and once the
+operator is done it restores the plates the paint left untouched. So the
+non-separable blend sees all three process complements and overprint keeps
+the unnamed plates. Operators that mix such a paint with a paint of a
+different plate mask (for instance `B` with an OPM 1 fill and stroke naming
+different plates) cannot be masked and fall back.
 
 Transfer functions (`/TR`, `/TR2`) apply per plate to `255 - ink`, like
 Poppler's `cmykTransfer*[i] = 255 - transfer[255 - i]`: C, M and Y take the
@@ -90,8 +101,8 @@ Pages that use something the plate compositor cannot reproduce are rendered
 in RGB and converted with the formula above; `CmykRaster::native` is
 `false`, `diagnostics` names the feature and the CLI prints a warning:
 
-- a non-separable blend mode on a page that also needs one plate per pass
-  for overprint (C, M and Y are then never in one pass);
+- an operator whose overprinting paints name different subsets of C, M and
+  Y, on a page that also uses a non-separable blend mode;
 - forced colour schemes and form-field highlights;
 - linear-light (`high`) compositing;
 - proof print profile, halftone screen and colour-scheme post-processing.
@@ -117,7 +128,8 @@ converted RGB render and leaves spot plates empty.
   RGB conversion, OPM 1 and spot overprint per plate, knockout without
   overprint, constant alpha, Multiply, CMYK images and shadings,
   separation plates; native Hue and Luminosity in CMYK and with spot plates,
-  per-plate transfer curves, COLR palette and foreground ink.
+  Hue on a page with OPM 1 overprint (per-plate masking), per-plate transfer
+  curves, COLR palette and foreground ink.
 - Synthetic page against `pdftoppm -jpegcmyk -overprint`: every probe point
   within JPEG noise (DeviceCMYK fill 51/102/0/26, OPM 1 overlap 255/255/0/0,
   spot overprint on cyan 255/61/240/0, CMYK image and shading values).

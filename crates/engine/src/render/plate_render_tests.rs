@@ -229,6 +229,37 @@ fn non_separable_blend_with_spot_plates_renders_process_plates_together() {
 }
 
 #[test]
+fn non_separable_blend_with_per_plate_overprint_renders_natively() {
+    // OPM 1 overprint names only magenta (C/M/Y can then not share a pass
+    // unmasked) and a Hue paint needs C, M and Y together: the C/M/Y pass
+    // masks the overprint per plate.
+    let resources = "/ExtGState << /OP 5 0 R /H 6 0 R >>";
+    let content = "0.2 0.4 0.6 0.3 k 0 0 100 100 re f \
+                   q /OP gs 0 1 0 0 k 0 0 50 100 re f Q \
+                   q /H gs 1 0 0 0 k 0 0 100 50 re f Q";
+    let bytes = pdf(
+        content,
+        resources,
+        &[OVERPRINT_GS, b"<< /Type /ExtGState /BM /Hue >>"],
+    );
+    let raster = render_cmyk(bytes.clone(), OverprintPolicy::Preview);
+    assert!(raster.native, "{:?}", raster.diagnostics);
+    // Overprint alone: magenta replaced, C, Y and K kept.
+    assert_eq!(at(&raster, 25, 75), [51, 255, 153, 77]);
+    assert_eq!(at(&raster, 75, 75), [51, 102, 153, 77]);
+    // Hue of pure cyan over the overprinted backdrop, complements
+    // (0.8, 0, 0.4): SetLum(SetSat((0, 1, 1), 0.8), 0.284) = (0, 0.406,
+    // 0.406); K from the backdrop.
+    assert_near(at(&raster, 25, 25), [255, 151, 151, 77]);
+    // Hue over the plain backdrop, as without overprint.
+    assert_near(at(&raster, 75, 25), [164, 62, 62, 77]);
+    // Overprint disabled: the magenta paint knocks C, Y and K out.
+    let knockout = render_cmyk(bytes, OverprintPolicy::Disabled);
+    assert!(knockout.native, "{:?}", knockout.diagnostics);
+    assert_eq!(at(&knockout, 25, 75), [0, 255, 0, 0]);
+}
+
+#[test]
 fn transfer_functions_apply_per_plate() {
     // A single curve y = x^2 on the additive value (255 - ink), and a
     // four-curve array that only changes the black plate.

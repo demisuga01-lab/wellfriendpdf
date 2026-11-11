@@ -2397,8 +2397,9 @@ impl ContentEngine {
     /// Run the plate passes for the four process plates plus `spots`, three
     /// plates per pass. An overprinting paint that names only some of the
     /// plates rendered together repeats the page with one plate per pass; a
-    /// non-separable blend mode in a pass mixing black and spot plates
-    /// repeats it with C/M/Y together and every other plate alone.
+    /// non-separable blend mode in a pass that does not hold C, M and Y
+    /// together repeats it with C/M/Y together and every other plate alone,
+    /// masking overprint per plate in the C/M/Y pass.
     fn render_contract_plates(
         &self,
         contract: &RenderContract,
@@ -2408,7 +2409,7 @@ impl ContentEngine {
     ) -> Result<PlateRender> {
         use crate::render::plate::{
             plate_pass_channels, PassLayout, PlateTarget, MIXED_OVERPRINT_ISSUE,
-            NONSEPARABLE_LAYOUT_ISSUE, NO_PLATE,
+            NONSEPARABLE_LAYOUT_ISSUE, NO_PLATE, UNMASKED_OVERPRINT_ISSUE,
         };
         let plate_contract = plate_pass_contract(contract);
         let plate_count = 4 + spots.len();
@@ -2419,11 +2420,10 @@ impl ContentEngine {
             let mut planes: Vec<Option<Vec<u8>>> = vec![None; plate_count];
             let mut next_layout = None;
             for channels in plate_pass_channels(plate_count, layout) {
-                let target = Arc::new(PlateTarget::new(
-                    channels,
-                    Arc::clone(&spots),
-                    honour_overprint,
-                ));
+                let target = Arc::new(
+                    PlateTarget::new(channels, Arc::clone(&spots), honour_overprint)
+                        .with_overprint_masking(layout == PassLayout::ProcessTogether),
+                );
                 let (buffer, _, log, telemetry) = self
                     .render_contract_pixels_with_telemetry_report_inner(
                         &plate_contract,
@@ -2455,12 +2455,20 @@ impl ContentEngine {
                 if !issues.is_empty() {
                     return Ok(PlateRender::Fallback { issues });
                 }
-                if mixed && layout != PassLayout::Single {
+                // Grouped -> Single (mixed overprint) -> ProcessTogether
+                // (non-separable blend) -> fallback: each layout is tried
+                // at most once.
+                if mixed {
+                    if layout != PassLayout::Grouped {
+                        return Ok(PlateRender::Fallback {
+                            issues: vec![UNMASKED_OVERPRINT_ISSUE.to_string()],
+                        });
+                    }
                     next_layout = Some(PassLayout::Single);
                     break;
                 }
                 if nonseparable {
-                    if layout != PassLayout::Grouped {
+                    if layout == PassLayout::ProcessTogether {
                         return Ok(PlateRender::Fallback {
                             issues: vec![NONSEPARABLE_LAYOUT_ISSUE.to_string()],
                         });

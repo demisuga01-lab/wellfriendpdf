@@ -3131,6 +3131,10 @@ pub trait PlanDispatcher {
     fn should_stop(&self) -> bool {
         false
     }
+    /// Called before each display-list operator.
+    fn begin_operator(&mut self) {}
+    /// Called after each display-list operator, also when it failed.
+    fn end_operator(&mut self) {}
 }
 
 impl PackedDisplayList {
@@ -3148,91 +3152,106 @@ impl PackedDisplayList {
                 return Ok(());
             }
             let op_bounds = self.bounds.get(hot.bounds_id as usize).copied().flatten();
-            match hot.opcode {
-                OP_SAVE => dispatcher.dispatch_save(),
-                OP_RESTORE => dispatcher.dispatch_restore(),
-                OP_CLIP => {
-                    let path = self.paths.get(hot.payload_offset as usize).ok_or_else(|| {
-                        WellfriendError::MalformedPdf("packed clip path missing".to_string())
-                    })?;
-                    let ctm = self
-                        .clip_transforms
-                        .get(hot.state_id as usize)
-                        .ok_or_else(|| {
-                            WellfriendError::MalformedPdf(
-                                "packed clip transform missing".to_string(),
-                            )
-                        })?;
-                    dispatcher.dispatch_clip(path, ctm, fill_rule_from_flag(hot.flags));
-                }
-                OP_FILL => {
-                    let path = self.paths.get(hot.payload_offset as usize).ok_or_else(|| {
-                        WellfriendError::MalformedPdf("packed fill path missing".to_string())
-                    })?;
-                    let state = self.states.get(hot.state_id as usize).ok_or_else(|| {
-                        WellfriendError::MalformedPdf("packed fill state missing".to_string())
-                    })?;
-                    dispatcher.dispatch_fill(path, state, fill_rule_from_flag(hot.flags));
-                }
-                OP_STROKE => {
-                    let path = self.paths.get(hot.payload_offset as usize).ok_or_else(|| {
-                        WellfriendError::MalformedPdf("packed stroke path missing".to_string())
-                    })?;
-                    let state = self.states.get(hot.state_id as usize).ok_or_else(|| {
-                        WellfriendError::MalformedPdf("packed stroke state missing".to_string())
-                    })?;
-                    dispatcher.dispatch_stroke(path, state);
-                }
-                OP_STATE
-                | OP_NATIVE_TEXT
-                | OP_NATIVE_IMAGE
-                | OP_NATIVE_SHADING
-                | OP_NATIVE_PATTERN
-                | OP_NATIVE_INLINE_IMAGE
-                | OP_NATIVE_FORM => {
-                    let desc = self
-                        .descriptors
-                        .get(hot.payload_offset as usize)
-                        .ok_or_else(|| {
-                            WellfriendError::MalformedPdf(
-                                "packed descriptor index out of bounds".to_string(),
-                            )
-                        })?;
-                    match desc {
-                        NativeDescriptor::Text(text) => {
-                            dispatcher.dispatch_text(text, op_bounds.as_ref());
-                        }
-                        NativeDescriptor::Image(img) => {
-                            dispatcher.dispatch_image(img, op_bounds.as_ref());
-                        }
-                        NativeDescriptor::Form(form) => {
-                            dispatcher.dispatch_form(form, op_bounds.as_ref());
-                        }
-                        NativeDescriptor::Shading(shading) => {
-                            dispatcher.dispatch_shading(shading, op_bounds.as_ref());
-                        }
-                        NativeDescriptor::State(gs_desc) => {
-                            dispatcher.dispatch_state(gs_desc);
-                        }
-                        NativeDescriptor::Pattern(pattern) => {
-                            dispatcher.dispatch_pattern(pattern, op_bounds.as_ref());
-                        }
-                        NativeDescriptor::InlineImage(inline_img) => {
-                            dispatcher.dispatch_inline_image(inline_img, op_bounds.as_ref());
-                        }
-                        NativeDescriptor::CompileRefusal(refusal) => {
-                            dispatcher.dispatch_compile_refusal(refusal, op_bounds.as_ref());
-                        }
-                    }
-                }
-                _ => {
-                    return Err(WellfriendError::UnsupportedFeature(
-                        "packed plan encountered an unknown opcode".to_string(),
-                    ));
-                }
-            }
+            // Bracket each operator so a plate pass can mask overprint per
+            // plate around exactly one paint.
+            dispatcher.begin_operator();
+            let step = self.execute_hot_op(hot, op_bounds.as_ref(), dispatcher);
+            dispatcher.end_operator();
+            step?;
             if dispatcher.should_stop() {
                 return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    fn execute_hot_op(
+        &self,
+        hot: &HotDisplayOp,
+        op_bounds: Option<&RenderBounds>,
+        dispatcher: &mut dyn PlanDispatcher,
+    ) -> Result<()> {
+        match hot.opcode {
+            OP_SAVE => dispatcher.dispatch_save(),
+            OP_RESTORE => dispatcher.dispatch_restore(),
+            OP_CLIP => {
+                let path = self.paths.get(hot.payload_offset as usize).ok_or_else(|| {
+                    WellfriendError::MalformedPdf("packed clip path missing".to_string())
+                })?;
+                let ctm = self
+                    .clip_transforms
+                    .get(hot.state_id as usize)
+                    .ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "packed clip transform missing".to_string(),
+                        )
+                    })?;
+                dispatcher.dispatch_clip(path, ctm, fill_rule_from_flag(hot.flags));
+            }
+            OP_FILL => {
+                let path = self.paths.get(hot.payload_offset as usize).ok_or_else(|| {
+                    WellfriendError::MalformedPdf("packed fill path missing".to_string())
+                })?;
+                let state = self.states.get(hot.state_id as usize).ok_or_else(|| {
+                    WellfriendError::MalformedPdf("packed fill state missing".to_string())
+                })?;
+                dispatcher.dispatch_fill(path, state, fill_rule_from_flag(hot.flags));
+            }
+            OP_STROKE => {
+                let path = self.paths.get(hot.payload_offset as usize).ok_or_else(|| {
+                    WellfriendError::MalformedPdf("packed stroke path missing".to_string())
+                })?;
+                let state = self.states.get(hot.state_id as usize).ok_or_else(|| {
+                    WellfriendError::MalformedPdf("packed stroke state missing".to_string())
+                })?;
+                dispatcher.dispatch_stroke(path, state);
+            }
+            OP_STATE
+            | OP_NATIVE_TEXT
+            | OP_NATIVE_IMAGE
+            | OP_NATIVE_SHADING
+            | OP_NATIVE_PATTERN
+            | OP_NATIVE_INLINE_IMAGE
+            | OP_NATIVE_FORM => {
+                let desc = self
+                    .descriptors
+                    .get(hot.payload_offset as usize)
+                    .ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "packed descriptor index out of bounds".to_string(),
+                        )
+                    })?;
+                match desc {
+                    NativeDescriptor::Text(text) => {
+                        dispatcher.dispatch_text(text, op_bounds);
+                    }
+                    NativeDescriptor::Image(img) => {
+                        dispatcher.dispatch_image(img, op_bounds);
+                    }
+                    NativeDescriptor::Form(form) => {
+                        dispatcher.dispatch_form(form, op_bounds);
+                    }
+                    NativeDescriptor::Shading(shading) => {
+                        dispatcher.dispatch_shading(shading, op_bounds);
+                    }
+                    NativeDescriptor::State(gs_desc) => {
+                        dispatcher.dispatch_state(gs_desc);
+                    }
+                    NativeDescriptor::Pattern(pattern) => {
+                        dispatcher.dispatch_pattern(pattern, op_bounds);
+                    }
+                    NativeDescriptor::InlineImage(inline_img) => {
+                        dispatcher.dispatch_inline_image(inline_img, op_bounds);
+                    }
+                    NativeDescriptor::CompileRefusal(refusal) => {
+                        dispatcher.dispatch_compile_refusal(refusal, op_bounds);
+                    }
+                }
+            }
+            _ => {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "packed plan encountered an unknown opcode".to_string(),
+                ));
             }
         }
         Ok(())
