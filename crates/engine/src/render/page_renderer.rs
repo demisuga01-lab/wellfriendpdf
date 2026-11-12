@@ -13962,6 +13962,129 @@ impl<'a> RenderState<'a> {
         self.apply_clip_after_paint(pending);
     }
 
+    /// PDFium (`CFX_RenderDevice::DrawFillStrokePath`) draws a fill-and-stroke
+    /// whose stroke is translucent as one knockout pair: where the stroke
+    /// covers, it is composited over the backdrop instead of over the fill,
+    /// so the fill never shows through the stroke.
+    fn fill_stroke_knockout_applies(&self) -> bool {
+        !self.buf.render_mode().is_high_quality()
+            && self.gs.stroke_alpha < 1.0
+            && self.gs.fill_alpha > 0.0
+            && self.gs.blend_mode == BlendMode::Normal
+            && self.buf.smask_mask().is_none()
+            && self.plate.is_none()
+            && self.forced_color_scheme.is_none()
+            && !self.is_pattern_fill()
+            && !self.is_pattern_stroke()
+            && !self.fill_overprint_preview_enabled()
+            && !self.stroke_overprint_preview_enabled()
+    }
+
+    /// The stroke's coverage over its device bounds, and the backdrop there
+    /// before the fill is painted.
+    fn knockout_stroke_coverage(
+        &mut self,
+        ctm: &Transform2D,
+        raster_options: VectorRasterOptions,
+        binary_alpha: bool,
+    ) -> Option<KnockoutStroke> {
+        let (width, height) = (self.buf.width, self.buf.height);
+        let render_mode = self.buf.render_mode();
+        let mut surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
+        let dash = self.dash_state();
+        PathPainter::stroke_path_with_options(
+            &mut surface,
+            &self.path,
+            ctm,
+            &self.viewport,
+            [0, 0, 0, 255],
+            self.gs.line_width,
+            &dash,
+            &self.gs.line_cap,
+            &self.gs.line_join,
+            self.gs.miter_limit,
+            self.gs.path_flatness_tolerance(),
+            binary_alpha,
+            raster_options,
+            &self.cancel,
+        );
+        let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for y in 0..height as i32 {
+            for x in 0..width as i32 {
+                if surface.get_pixel(x, y)[3] != 0 {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x + 1);
+                    y1 = y1.max(y + 1);
+                }
+            }
+        }
+        let knockout = (x0 < x1 && y0 < y1).then(|| {
+            let mut coverage = Vec::with_capacity(((x1 - x0) * (y1 - y0)) as usize);
+            let mut backdrop = Vec::with_capacity(coverage.capacity());
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    coverage.push(surface.get_pixel(x, y)[3]);
+                    backdrop.push(self.buf.get_pixel(x, y));
+                }
+            }
+            KnockoutStroke {
+                x0,
+                y0,
+                width: x1 - x0,
+                coverage,
+                backdrop,
+            }
+        });
+        self.recycle_offscreen_buffer(surface);
+        knockout
+    }
+
+    /// Paint the stroke of a knockout fill-and-stroke: each pixel becomes
+    /// the stroke over the saved backdrop, blended with the filled result by
+    /// the stroke's coverage (AGG's knockout span compositing).
+    fn composite_knockout_stroke(&mut self, knockout: KnockoutStroke, stroke: PixelColor) {
+        let unit = |v: u8| f32::from(v) / 255.0;
+        let alpha = unit(stroke[3]);
+        for (index, (&cover, backdrop)) in
+            knockout.coverage.iter().zip(&knockout.backdrop).enumerate()
+        {
+            if cover == 0 {
+                continue;
+            }
+            let x = knockout.x0 + (index as i32 % knockout.width);
+            let y = knockout.y0 + (index as i32 / knockout.width);
+            let clip = self.buf.clip_mask().map_or(1.0, |clip| clip.opacity(x, y));
+            let weight = unit(cover) * clip;
+            if weight <= 0.0 {
+                continue;
+            }
+            // Stroke over backdrop, premultiplied.
+            let back_alpha = unit(backdrop[3]);
+            let over_alpha = alpha + back_alpha * (1.0 - alpha);
+            let over: [f32; 3] = std::array::from_fn(|c| {
+                unit(stroke[c]) * alpha + unit(backdrop[c]) * back_alpha * (1.0 - alpha)
+            });
+            let current = self.buf.get_pixel(x, y);
+            let current_alpha = unit(current[3]);
+            let out_alpha = current_alpha * (1.0 - weight) + over_alpha * weight;
+            let mut out = [0u8; 4];
+            for c in 0..3 {
+                let premultiplied =
+                    unit(current[c]) * current_alpha * (1.0 - weight) + over[c] * weight;
+                out[c] = if out_alpha > 0.0 {
+                    (premultiplied / out_alpha * 255.0)
+                        .round()
+                        .clamp(0.0, 255.0) as u8
+                } else {
+                    0
+                };
+            }
+            out[3] = (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+            self.buf.set_pixel(x, y, out);
+        }
+    }
+
     fn fill_stroke_and_clear_unclipped(&mut self, rule: FillRule) {
         if !self.reject_current_fill_ext_g_state_paint_if_needed("fill-stroke fill paint")
             || !self.reject_current_stroke_ext_g_state_paint_if_needed("fill-stroke stroke paint")
@@ -13972,8 +14095,14 @@ impl<'a> RenderState<'a> {
         let ctm = self.ctm();
         let path_binary_alpha = self.path_smoothing_disabled();
         let raster_options = self.path_raster_options();
+        let stroke_raster_options = self.stroke_raster_options_for(self.gs.stroke_adjustment);
         let fill_color_state = self.gs.fill_color.clone();
         let stroke_color_state = self.gs.stroke_color.clone();
+        let knockout = if self.fill_stroke_knockout_applies() {
+            self.knockout_stroke_coverage(&ctm, stroke_raster_options, path_binary_alpha)
+        } else {
+            None
+        };
         self.record_plate_contribution(&fill_color_state, self.gs.fill_alpha as f32, "fill");
         if self.is_pattern_fill() {
             if let Some(pattern_name) = self.gs.fill_pattern_name.clone() {
@@ -14072,6 +14201,11 @@ impl<'a> RenderState<'a> {
             return;
         }
         let stroke = self.stroke_pixel_color();
+        if let Some(knockout) = knockout {
+            self.composite_knockout_stroke(knockout, stroke);
+            self.path.clear();
+            return;
+        }
         let width = self.gs.line_width;
         let dash = self.dash_state();
         if self.stroke_overprint_preview_enabled() && self.forced_stroke_pixel_color().is_none() {
@@ -14092,7 +14226,7 @@ impl<'a> RenderState<'a> {
                     self.gs.miter_limit,
                     self.gs.path_flatness_tolerance(),
                     path_binary_alpha,
-                    raster_options,
+                    stroke_raster_options,
                 );
                 self.path.clear();
                 return;
@@ -14112,7 +14246,7 @@ impl<'a> RenderState<'a> {
             self.gs.miter_limit,
             self.gs.path_flatness_tolerance(),
             path_binary_alpha,
-            raster_options,
+            stroke_raster_options,
         ) {
             PathPainter::stroke_path_with_options(
                 &mut self.buf,
@@ -14127,7 +14261,7 @@ impl<'a> RenderState<'a> {
                 self.gs.miter_limit,
                 self.gs.path_flatness_tolerance(),
                 path_binary_alpha,
-                raster_options,
+                stroke_raster_options,
                 &self.cancel,
             );
         }
@@ -22244,6 +22378,16 @@ struct GlyphRenderRequest<'a> {
     glyph_lookup: crate::render::glyph_outline::SimpleGlyphLookup,
     /// The program is a tricky TrueType font: draw hinted outlines.
     tricky: bool,
+}
+
+/// A translucent stroke's coverage and the backdrop under it, saved before
+/// the fill of a knockout fill-and-stroke is painted.
+struct KnockoutStroke {
+    x0: i32,
+    y0: i32,
+    width: i32,
+    coverage: Vec<u8>,
+    backdrop: Vec<PixelColor>,
 }
 
 /// The TrueType glyph lookup rules for a simple font (PDFium's

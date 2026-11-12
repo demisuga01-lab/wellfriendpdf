@@ -2913,7 +2913,10 @@ impl<'a> DisplayListBuilder<'a> {
     }
 
     fn fill_stroke_and_clear_unclipped(&mut self, paint_op: &ContentOperation, rule: FillRule) {
-        if self.active_soft_mask || self.uses_pattern_or_named_space() {
+        // A translucent stroke over a fill is painted as a knockout pair by
+        // the immediate renderer in compat mode.
+        let knockout_pair = self.gs.stroke_alpha < 1.0 && self.gs.fill_alpha > 0.0;
+        if self.active_soft_mask || self.uses_pattern_or_named_space() || knockout_pair {
             self.push_stateful_path_run(paint_op);
             self.path.clear();
             self.clear_path_ops();
