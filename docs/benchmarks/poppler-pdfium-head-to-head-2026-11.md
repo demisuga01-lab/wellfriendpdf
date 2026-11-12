@@ -536,3 +536,63 @@ with a pattern (bug_1772), non-embedded TrueType Symbol fonts (bug_1442723), a
 Type 3 image-mask glyph painted with a pattern (bug_40721524), truncated JBIG2
 partial decode (bug_867501), and bug_554151, where PDFium fills a nearly empty
 612x104000 image black while Wellfriend fills it white as Poppler does.
+
+## PDFium pixel tests and performance after rounds 10 and 11 (main 7264092, 2026-11-12)
+
+Same harness as the previous section, run on a release build of 7264092.
+
+| | Mean SSIM | Median | Pages < 0.90 | Render failures | Pages where Poppler is closer |
+|---|---:|---:|---:|---:|---:|
+| Wellfriend c2e326b | 0.973 | 0.994 | 12 | 0 | 21 |
+| Wellfriend 7264092 | **0.989** | **0.998** | **3** | **0** | **4** |
+| Poppler 26.07 | 0.931 | 0.989 | 28 | 4 | - |
+
+Wellfriend is closer to PDFium than Poppler on 79 pages.
+
+What round 10 added (all compat-mode, matching PDFium's source):
+- shadings drawn with PDFium's own algorithm, including its Coons/tensor patch
+  subdivision and Lab/Indexed mesh colours;
+- text stroked with a pattern; pattern fills reaching Type 3 glyphs and their image masks;
+- a non-embedded symbolic TrueType "Symbol" font uses the Symbol face;
+- JBIG2 segments walked the way PDFium walks them, including zero-length segments
+  (hayro-jbig2 vendored under `vendor/hayro-jbig2`);
+- rows past the end of a short image are zero samples (black or palette entry 0), as in PDFium and MuPDF;
+- JPX images whose /ColorSpace contradicts the JP2 colour box are not drawn;
+- translucent fill-and-stroke painted as a knockout pair; form alpha inside tiling
+  cells; no stroke adjustment inside pattern cells or soft-mask groups;
+- inline images without `EI` dropped, `scn` naming a pattern in a device colour space.
+
+Remaining pages below Poppler or below 0.90 are either drawn by PDFium's test
+harness rather than the PDF (form highlight, open drop-down, selected text,
+popup) or have expected PNGs that current PDFium itself no longer reproduces
+(bug_42270524, bug_42270980, bug_42270979_3, bug_42271010).
+
+Round 11 (performance, from PDFium's design):
+- **Optional PDFium rectangle snapping** (`--rect-snapping pdfium`, contract field
+  `rect_snapping`, C API / Python / WASM / .NET / Java): axis-aligned filled rectangles
+  are snapped to whole pixels exactly as `CFX_RenderDevice::DrawPath` does, so
+  touching table cells and chart bars show no seams. Pixel-identical to PDFium on a
+  19,200-cell table and a 1,000-bar chart; in HighQuality mode it also renders those
+  pages 2.5x to 7x faster. Default output is unchanged.
+- **One annotation pass:** the page fingerprint, AcroForm and widget font tables are
+  computed once per render pass instead of once per widget. The annotation pass of
+  `prefilled_f1040` falls from 28.6 to 12.8 ms of CPU time.
+- **Compact content operations:** operators are interned and up to two operands are
+  stored inline. On the dense atlas pages, memory per operation falls from 177 to 83
+  bytes and allocations per operation from 2.04 to 0.06; parse time falls from 269 to
+  234 ms.
+
+Every page of `tests/corpus/pdfs` renders byte-identically to the previous build
+with default options; rounds 10 and 11 together changed only the 12 pages listed in
+round 10 (all closer to PDFium).
+
+A/B on the VPS, 91 bench documents (157 pages, up to 40 pages each), 150 dpi, one
+pinned core, best of two runs each:
+
+| Build | Total CPU time | Median peak RSS | Max peak RSS |
+|---|---:|---:|---:|
+| c2e326b | 6.38 s | 37 MB | 172 MB |
+| 7264092 | **5.63 s** | 39 MB | 174 MB |
+
+Tests on the VPS for 7264092: workspace check clean; engine 5,712 passed, 0 failed;
+CLI + C API 162 passed, 0 failed.
