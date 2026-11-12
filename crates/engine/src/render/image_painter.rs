@@ -2223,6 +2223,412 @@ impl ImagePainter {
     }
 }
 
+/// An image mask (stencil) read as the RGBA image the renderer used to build
+/// for it, without allocating that image: each mask sample selects `painted`
+/// or `unpainted` exactly as the RGBA expansion did. A stencil decoded at
+/// scanner resolution (say 9,000 x 12,000) is drawn a few hundred pixels
+/// wide; expanding it to RGBA first cost four bytes per source pixel, about
+/// 450 MB for one page.
+pub(crate) struct StencilMask<'a> {
+    mask: &'a RawImage,
+    channels: usize,
+    painted: [u8; 4],
+    unpainted: [u8; 4],
+    paint_ones: bool,
+}
+
+impl<'a> StencilMask<'a> {
+    /// `mask` must hold `width * height * channels` bytes (the caller
+    /// validates it the same way the RGBA expansion does).
+    pub(crate) fn new(
+        mask: &'a RawImage,
+        painted: [u8; 4],
+        unpainted: [u8; 4],
+        paint_ones: bool,
+    ) -> Option<Self> {
+        let channels = mask.channels as usize;
+        let expected = (mask.width as usize)
+            .checked_mul(mask.height as usize)?
+            .checked_mul(channels)?;
+        (channels > 0 && mask.pixels.len() == expected).then_some(Self {
+            mask,
+            channels,
+            painted,
+            unpainted,
+            paint_ones,
+        })
+    }
+
+    #[inline]
+    fn width(&self) -> u32 {
+        self.mask.width
+    }
+
+    #[inline]
+    fn height(&self) -> u32 {
+        self.mask.height
+    }
+
+    /// The RGBA pixel the expansion would hold at `(x, y)`.
+    #[inline]
+    fn rgba(&self, x: usize, y: usize) -> [u8; 4] {
+        let sample = self.mask.pixels[(y * self.mask.width as usize + x) * self.channels];
+        let paint = if self.paint_ones {
+            sample >= 128
+        } else {
+            sample < 128
+        };
+        if paint {
+            self.painted
+        } else {
+            self.unpainted
+        }
+    }
+}
+
+impl ImagePainter {
+    /// Paint an image mask without expanding it to RGBA, when the paint
+    /// shrinks the mask (the area-averaging paths, which every large mask
+    /// takes). The samples, their weights and the accumulation order are
+    /// those of [`Self::paint_stencil_with_options_and_alpha`] on the RGBA
+    /// expansion, so the output bytes are identical. Returns `false`, having
+    /// painted nothing, for paints this does not cover (magnified masks,
+    /// non-default-profile affine paints); the caller then expands the mask
+    /// and uses the general painter.
+    pub(crate) fn paint_stencil_mask(
+        buf: &mut PixelBuffer,
+        stencil: &StencilMask<'_>,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        paint_alpha: f32,
+    ) -> bool {
+        // paint_stencil_with_options_and_alpha requests Interpolate or
+        // Nearest; neither is NoSmooth, so a shrinking paint always
+        // area-averages whatever /Interpolate says.
+        let paint_alpha = paint_alpha.clamp(0.0, 1.0);
+        if paint_alpha <= 0.0 {
+            return true;
+        }
+        let (width, height) = (stencil.width(), stencil.height());
+        if width == 0 || height == 0 {
+            return true;
+        }
+        if ctm.determinant().abs() < 1e-10 {
+            log::warn!("ImagePainter: singular transform, skipping image");
+            return true;
+        }
+        let combined = ctm.concat(&viewport.to_transform());
+
+        if Self::is_top_down_axis_aligned(&combined) {
+            let corners = [
+                combined.transform_point(0.0, 0.0),
+                combined.transform_point(1.0, 0.0),
+                combined.transform_point(0.0, 1.0),
+                combined.transform_point(1.0, 1.0),
+            ];
+            let (px_min, px_max, py_min, py_max) = bounding_box(&corners);
+            if !px_min.is_finite()
+                || !px_max.is_finite()
+                || !py_min.is_finite()
+                || !py_max.is_finite()
+            {
+                return true;
+            }
+            let dst_w = (px_max - px_min).max(1.0);
+            let dst_h = (py_max - py_min).max(1.0);
+            let footprint_x = width as f64 / dst_w;
+            let footprint_y = height as f64 / dst_h;
+            if !(footprint_x > 1.0 || footprint_y > 1.0) {
+                return false;
+            }
+            let (x0, x1, y0, y1) = clipped_bounds(buf, px_min, px_max, py_min, py_max);
+            if x0 > x1 || y0 > y1 {
+                return true;
+            }
+            let axes = SeparableAxes {
+                columns: (x0..=x1)
+                    .map(|px| (px as f64 + 0.5 - px_min) / dst_w)
+                    .collect(),
+                rows: (y0..=y1)
+                    .map(|py| (py as f64 + 0.5 - py_min) / dst_h)
+                    .collect(),
+                swapped: false,
+            };
+            Self::paint_stencil_separable_area_average(
+                buf,
+                stencil,
+                &axes,
+                (footprint_x.max(1.0), footprint_y.max(1.0)),
+                (x0, x1, y0, y1),
+                paint_alpha,
+            );
+            return true;
+        }
+        if !crate::render::vector_quality::contract_profile().is_default() {
+            return false;
+        }
+
+        // paint_affine
+        let inv = match combined.inverse() {
+            Some(matrix) => matrix,
+            None => {
+                log::warn!("ImagePainter: singular transform, skipping image");
+                return true;
+            }
+        };
+        let corners = [
+            combined.transform_point(0.0, 0.0),
+            combined.transform_point(1.0, 0.0),
+            combined.transform_point(1.0, 1.0),
+            combined.transform_point(0.0, 1.0),
+        ];
+        let (px_min, px_max, py_min, py_max) = bounding_box(&corners);
+        if !px_min.is_finite() || !px_max.is_finite() || !py_min.is_finite() || !py_max.is_finite()
+        {
+            return true;
+        }
+        let (footprint_x, footprint_y) = source_footprint_for_size(&inv, width, height);
+        if !(footprint_x > 1.0 || footprint_y > 1.0) {
+            return false;
+        }
+        let (x0, x1, y0, y1) = clipped_bounds(buf, px_min, px_max, py_min, py_max);
+        if x0 > x1 || y0 > y1 {
+            return true;
+        }
+        let axes = if inv.b == 0.0 && inv.c == 0.0 {
+            Some(SeparableAxes {
+                columns: (x0..=x1)
+                    .map(|px| inv.a * (px as f64 + 0.5) + inv.c * 0.5 + inv.e)
+                    .collect(),
+                rows: (y0..=y1)
+                    .map(|py| 1.0 - (inv.b * 0.5 + inv.d * (py as f64 + 0.5) + inv.f))
+                    .collect(),
+                swapped: false,
+            })
+        } else if inv.a == 0.0 && inv.d == 0.0 {
+            Some(SeparableAxes {
+                columns: (x0..=x1)
+                    .map(|px| 1.0 - (inv.b * (px as f64 + 0.5) + inv.d * 0.5 + inv.f))
+                    .collect(),
+                rows: (y0..=y1)
+                    .map(|py| inv.a * 0.5 + inv.c * (py as f64 + 0.5) + inv.e)
+                    .collect(),
+                swapped: true,
+            })
+        } else {
+            None
+        };
+        if let Some(axes) = axes {
+            Self::paint_stencil_separable_area_average(
+                buf,
+                stencil,
+                &axes,
+                (footprint_x.max(1.0), footprint_y.max(1.0)),
+                (x0, x1, y0, y1),
+                paint_alpha,
+            );
+            return true;
+        }
+        for py in y0..=y1 {
+            for px in x0..=x1 {
+                let (u, pdf_v) = inv.transform_point(px as f64 + 0.5, py as f64 + 0.5);
+                let v = 1.0 - pdf_v;
+                if !inside_unit_image_sample(u) || !inside_unit_image_sample(v) {
+                    continue;
+                }
+                let sample = Self::stencil_area_average_sample(
+                    stencil,
+                    u,
+                    v,
+                    footprint_x.max(1.0),
+                    footprint_y.max(1.0),
+                );
+                let coverage = sample[3] as f32 / 255.0 * paint_alpha;
+                buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
+            }
+        }
+        true
+    }
+
+    /// [`Self::paint_separable_area_average`]'s per-pixel path for a
+    /// four-channel source, reading the stencil through its two colours.
+    fn paint_stencil_separable_area_average(
+        buf: &mut PixelBuffer,
+        stencil: &StencilMask<'_>,
+        axes: &SeparableAxes,
+        (footprint_x, footprint_y): (f64, f64),
+        (x0, x1, y0, y1): (i32, i32, i32, i32),
+        paint_alpha: f32,
+    ) {
+        let u_taps = AreaAxisTaps::new(
+            axes.u_coords().iter().copied(),
+            stencil.width(),
+            footprint_x,
+        );
+        let v_taps = AreaAxisTaps::new(
+            axes.v_coords().iter().copied(),
+            stencil.height(),
+            footprint_y,
+        );
+        for (row_index, py) in (y0..=y1).enumerate() {
+            for (column_index, px) in (x0..=x1).enumerate() {
+                let (u_index, v_index) = axes.uv_index(column_index, row_index);
+                let sample = match (&u_taps.taps[u_index], &v_taps.taps[v_index]) {
+                    (AreaTap::Outside, _) | (_, AreaTap::Outside) => continue,
+                    (AreaTap::Box { first: ux, end: ue }, AreaTap::Box { first: vy, end: ve }) => {
+                        Self::stencil_area_average_box(
+                            stencil,
+                            &u_taps.weights[*ux..*ue],
+                            &v_taps.weights[*vy..*ve],
+                        )
+                        .unwrap_or_else(|| {
+                            Self::stencil_nearest_sample(
+                                stencil,
+                                u_taps.coords[u_index],
+                                v_taps.coords[v_index],
+                            )
+                        })
+                    }
+                    _ => Self::stencil_nearest_sample(
+                        stencil,
+                        u_taps.coords[u_index],
+                        v_taps.coords[v_index],
+                    ),
+                };
+                let coverage = sample[3] as f32 / 255.0 * paint_alpha;
+                buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
+            }
+        }
+    }
+
+    /// [`Self::area_average_box`]'s four-channel branch. A transparent
+    /// sample adds exactly zero to every sum except `total`, so it only
+    /// advances `total`.
+    #[inline]
+    fn stencil_area_average_box(
+        stencil: &StencilMask<'_>,
+        x_taps: &[(usize, f64)],
+        y_taps: &[(usize, f64)],
+    ) -> Option<[u8; 4]> {
+        let mut accum = [0.0_f64; 4];
+        let mut total = 0.0_f64;
+        let mut alpha_total = 0.0_f64;
+        for &(y, oy) in y_taps {
+            for &(x, ox) in x_taps {
+                let weight = ox * oy;
+                let px = stencil.rgba(x, y);
+                if px[3] == 0 {
+                    total += weight;
+                    continue;
+                }
+                let alpha_weight = weight * px[3] as f64 / 255.0;
+                accum[0] += px[0] as f64 * alpha_weight;
+                accum[1] += px[1] as f64 * alpha_weight;
+                accum[2] += px[2] as f64 * alpha_weight;
+                accum[3] += px[3] as f64 * weight;
+                alpha_total += alpha_weight;
+                total += weight;
+            }
+        }
+        if alpha_total > 0.0 {
+            for value in accum.iter_mut().take(3) {
+                *value *= total / alpha_total;
+            }
+        }
+        if total <= 0.0 {
+            return None;
+        }
+        Some([
+            (accum[0] / total).round_byte(),
+            (accum[1] / total).round_byte(),
+            (accum[2] / total).round_byte(),
+            (accum[3] / total).round_byte(),
+        ])
+    }
+
+    /// [`Self::nearest_sample`] on the RGBA expansion.
+    fn stencil_nearest_sample(stencil: &StencilMask<'_>, u: f64, v: f64) -> [u8; 4] {
+        let w = stencil.width() as f64;
+        let h = stencil.height() as f64;
+        let x = (u * w).floor().clamp(0.0, w - 1.0) as usize;
+        let y = (v * h).floor().clamp(0.0, h - 1.0) as usize;
+        stencil.rgba(x, y)
+    }
+
+    /// [`Self::area_average_sample`]'s four-channel branch.
+    fn stencil_area_average_sample(
+        stencil: &StencilMask<'_>,
+        u: f64,
+        v: f64,
+        footprint_x: f64,
+        footprint_y: f64,
+    ) -> [u8; 4] {
+        let w = stencil.width() as f64;
+        let h = stencil.height() as f64;
+        let cx = (u * w).clamp(0.0, w);
+        let cy = (v * h).clamp(0.0, h);
+        let half_w = (footprint_x.max(1e-6) * 0.5).min(w * 0.5);
+        let half_h = (footprint_y.max(1e-6) * 0.5).min(h * 0.5);
+        let x0 = snap_source_box_edge((cx - half_w).clamp(0.0, w), w);
+        let x1 = snap_source_box_edge((cx + half_w).clamp(0.0, w), w);
+        let y0 = snap_source_box_edge((cy - half_h).clamp(0.0, h), h);
+        let y1 = snap_source_box_edge((cy + half_h).clamp(0.0, h), h);
+        if x1 <= x0 || y1 <= y0 {
+            return Self::stencil_nearest_sample(stencil, u, v);
+        }
+        let ix0 = x0.floor().max(0.0) as usize;
+        let ix1 = x1.ceil().min(w) as usize;
+        let iy0 = y0.floor().max(0.0) as usize;
+        let iy1 = y1.ceil().min(h) as usize;
+        let mut accum = [0.0_f64; 4];
+        let mut total = 0.0_f64;
+        let mut alpha_total = 0.0_f64;
+        for y in iy0..iy1 {
+            let oy = ((y + 1) as f64).min(y1) - (y as f64).max(y0);
+            if oy <= 0.0 {
+                continue;
+            }
+            for x in ix0..ix1 {
+                let ox = ((x + 1) as f64).min(x1) - (x as f64).max(x0);
+                if ox <= 0.0 {
+                    continue;
+                }
+                let weight = ox * oy;
+                let px = stencil.rgba(x, y);
+                let alpha_weight = weight * px[3] as f64 / 255.0;
+                for c in 0..3 {
+                    accum[c] += px[c] as f64 * alpha_weight;
+                }
+                accum[3] += px[3] as f64 * weight;
+                alpha_total += alpha_weight;
+                total += weight;
+            }
+        }
+        if alpha_total > 0.0 {
+            for value in accum.iter_mut().take(3) {
+                *value *= total / alpha_total;
+            }
+        }
+        if total <= 0.0 {
+            return Self::stencil_nearest_sample(stencil, u, v);
+        }
+        [
+            (accum[0] / total).round_byte(),
+            (accum[1] / total).round_byte(),
+            (accum[2] / total).round_byte(),
+            (accum[3] / total).round_byte(),
+        ]
+    }
+}
+
+fn source_footprint_for_size(inv: &Transform2D, width: u32, height: u32) -> (f64, f64) {
+    let dx = inv.transform_vector(1.0, 0.0);
+    let dy = inv.transform_vector(0.0, 1.0);
+    let footprint_x = (dx.0.abs() + dy.0.abs()) * width as f64;
+    let footprint_y = (dx.1.abs() + dy.1.abs()) * height as f64;
+    (footprint_x.max(1e-6), footprint_y.max(1e-6))
+}
+
 fn source_footprint_from_inverse(inv: &Transform2D, image: &RawImage) -> (f64, f64) {
     let dx = inv.transform_vector(1.0, 0.0);
     let dy = inv.transform_vector(0.0, 1.0);
@@ -2990,6 +3396,113 @@ mod tests {
         );
         assert_eq!(stencil.get_pixel(97, 40), WHITE);
         assert_eq!(stencil.get_pixel(96, 40), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn stencil_mask_paints_like_its_rgba_expansion() {
+        // A pseudo-random mask, decoded to 0/255 samples, shrunk through
+        // upright, mirrored, quarter-turned and rotated placements.
+        let (width, height) = (97u32, 61u32);
+        let mut state = 0x2545_f491u32;
+        let samples: Vec<u8> = (0..width * height)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                if state & 1 == 1 {
+                    255
+                } else {
+                    0
+                }
+            })
+            .collect();
+        let mask = RawImage {
+            width,
+            height,
+            channels: 1,
+            bits_per_sample: 8,
+            pixels: samples,
+        };
+        let vp = Viewport::new([0.0, 0.0, 60.0, 60.0], 72);
+        let placements = [
+            Transform2D::new(23.7, 0.0, 0.0, 17.3, 5.25, 9.5),
+            Transform2D::new(-23.7, 0.0, 0.0, 17.3, 40.25, 9.5),
+            Transform2D::new(0.0, 19.1, -21.4, 0.0, 40.0, 3.0),
+            Transform2D::new(17.0, 9.0, -8.0, 15.0, 20.0, 5.0),
+        ];
+        for color in [[20, 90, 200, 255], [200, 30, 10, 128]] {
+            let painted = color;
+            let unpainted = [color[0], color[1], color[2], 0];
+            for paint_ones in [true, false] {
+                let expanded = RawImage {
+                    width,
+                    height,
+                    channels: 4,
+                    bits_per_sample: 8,
+                    pixels: mask
+                        .pixels
+                        .iter()
+                        .flat_map(|&sample| {
+                            let paint = if paint_ones {
+                                sample >= 128
+                            } else {
+                                sample < 128
+                            };
+                            if paint {
+                                painted
+                            } else {
+                                unpainted
+                            }
+                        })
+                        .collect(),
+                };
+                let stencil = StencilMask::new(&mask, painted, unpainted, paint_ones)
+                    .expect("valid stencil");
+                for ctm in &placements {
+                    for paint_alpha in [1.0, 0.6] {
+                        let mut expected = PixelBuffer::new_filled(60, 60, WHITE);
+                        ImagePainter::paint_stencil_with_options_and_alpha(
+                            &mut expected,
+                            &expanded,
+                            ctm,
+                            &vp,
+                            false,
+                            paint_alpha,
+                        );
+                        let mut direct = PixelBuffer::new_filled(60, 60, WHITE);
+                        assert!(ImagePainter::paint_stencil_mask(
+                            &mut direct,
+                            &stencil,
+                            ctm,
+                            &vp,
+                            paint_alpha
+                        ));
+                        assert_eq!(
+                            direct.to_rgba_bytes(),
+                            expected.to_rgba_bytes(),
+                            "{ctm:?} alpha {paint_alpha} color {color:?} ones {paint_ones}"
+                        );
+                    }
+                }
+                // A magnified mask is left to the general painter.
+                let mut untouched = PixelBuffer::new_filled(60, 60, WHITE);
+                let enlarged = Transform2D::new(200.0, 0.0, 0.0, 150.0, 0.0, 0.0);
+                assert!(!ImagePainter::paint_stencil_mask(
+                    &mut untouched,
+                    &stencil,
+                    &enlarged,
+                    &vp,
+                    1.0
+                ));
+                assert!(untouched.to_rgba_bytes().chunks(4).all(|px| px == &WHITE[..]));
+            }
+        }
+        // A short sample buffer is refused, as the RGBA expansion refuses it.
+        let short = RawImage {
+            pixels: vec![0; 10],
+            ..mask.clone()
+        };
+        assert!(StencilMask::new(&short, [0; 4], [0; 4], true).is_none());
     }
 
     #[test]

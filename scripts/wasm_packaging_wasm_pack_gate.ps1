@@ -199,6 +199,14 @@ if ($smoke.status -ne "passed") {
     throw "packaged Node smoke failed"
 }
 
+# The hand-written wellfriendpdf.d.ts (the published types) must declare
+# everything wasm-bindgen generated; the check uses the WASM package's
+# TypeScript dev dependency.
+if (!(Test-Path -LiteralPath (Join-Path $Repo "crates/wellfriendpdf-wasm/node_modules/typescript"))) {
+    Invoke-Logged "npm ci (wasm package)" "npm" @("ci", "--prefix", "crates/wellfriendpdf-wasm", "--no-audit", "--no-fund") (Join-Path $EvidenceDir "wasm-npm-ci-log.txt")
+}
+Invoke-Logged "declaration parity" "node" @("scripts/check-wasm-dts-parity.mjs", (Join-Path $WebPackage "wellfriendpdf_wasm.d.ts")) (Join-Path $EvidenceDir "wasm-dts-parity-log.txt")
+
 Write-JsonNoBom (Join-Path $EvidenceDir "wasm-pack-gate.json") ([ordered]@{
     schema_version = 1
     status = "passed"

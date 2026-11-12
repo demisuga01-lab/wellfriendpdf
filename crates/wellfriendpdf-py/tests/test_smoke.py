@@ -54,6 +54,16 @@ def test_region_profile_and_markdown_controls():
     assert isinstance(doc.to_markdown(detect_headings=False, profile="fast-text"), str)
 
 
+def test_extract_text_reading_order():
+    doc = wellfriendpdf.open(FIXTURE)
+    pages = [doc.extract_text_reading_order(page=n) for n in range(1, doc.page_count + 1)]
+    assert "Hello" in pages[0]
+    # The whole document is each page followed by a newline, as `extract-text` prints it.
+    assert doc.extract_text_reading_order() == "".join(text + "\n" for text in pages)
+    with pytest.raises(wellfriendpdf.WellfriendError):
+        doc.extract_text_reading_order(page=doc.page_count + 1)
+
+
 def test_iteration_yields_pages():
     doc = wellfriendpdf.open(FIXTURE)
     assert [page.number for page in doc] == list(range(1, doc.page_count + 1))

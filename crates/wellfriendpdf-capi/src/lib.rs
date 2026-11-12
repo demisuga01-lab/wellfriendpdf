@@ -1448,6 +1448,43 @@ pub unsafe extern "C" fn wellfriendpdf_document_extract_text(
     })
 }
 
+/// Extracts text in reading order: columns, blocks and lines in the order a
+/// reader follows them, the `wellfriendpdf extract-text` default.
+/// [`wellfriendpdf_document_extract_text`] returns the faster content order.
+///
+/// `page` is 1-based; `0` extracts every page, each page's text followed by
+/// a newline, exactly as `extract-text` prints the whole document.
+///
+/// # Safety
+///
+/// `document` must be a valid open document. `out_text` must be writable and
+/// any returned string must be freed with `wellfriendpdf_string_free`. If `error_out`
+/// is non-null, it must be writable and any returned string must be freed with
+/// `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_extract_text_reading_order(
+    document: *const WellfriendDocument,
+    page: usize,
+    out_text: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_text.is_null() {
+            return Err("out_text pointer is null".into());
+        }
+        let text = if page == 0 {
+            wellfriendpdf(doc.engine.get_text_reading_order())?
+        } else {
+            wellfriendpdf(doc.engine.get_page_text_reading_order(page))?
+        };
+        unsafe {
+            *out_text = into_c_string(text);
+        }
+        Ok(())
+    })
+}
+
 /// Extracts the tags-first semantic document as JSON.
 ///
 /// # Safety
@@ -11415,6 +11452,82 @@ mod tests {
         assert!(extracted.contains("Hello C API"));
         unsafe {
             wellfriendpdf_string_free(text);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    /// Two columns whose content stream draws the right column first.
+    fn two_column_pdf() -> Vec<u8> {
+        let mut content = String::from("BT /F1 11 Tf\n");
+        for (x, column) in [(320, "Right"), (72, "Left")] {
+            for (index, word) in ["one", "two", "three", "four", "five"].iter().enumerate() {
+                let y = 700 - index * 14;
+                content.push_str(&format!(
+                    "1 0 0 1 {x} {y} Tm ({column} column line {word} of text) Tj\n"
+                ));
+            }
+        }
+        content.push_str("ET");
+        let mut b = PdfBuilder::new();
+        b.add("<< /Type /Catalog /Pages 2 0 R >>");
+        b.add("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        b.add(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        );
+        b.add_stream(content.as_bytes());
+        b.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+        b.build()
+    }
+
+    fn capi_reading_order_text(doc: *const WellfriendDocument, page: usize) -> String {
+        let mut text = std::ptr::null_mut();
+        let mut error = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_extract_text_reading_order(doc, page, &mut text, &mut error)
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(error.is_null());
+        let extracted = unsafe { CStr::from_ptr(text) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { wellfriendpdf_string_free(text) };
+        extracted
+    }
+
+    #[test]
+    fn capi_extract_text_reading_order_matches_engine_and_cli_layout() {
+        let pdf = two_column_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let engine = wellfriendpdf_engine::ContentEngine::open_bytes(pdf.clone()).unwrap();
+        let expected_page = engine.get_page_text_reading_order(1).unwrap();
+
+        let page = capi_reading_order_text(doc, 1);
+        assert_eq!(page, expected_page);
+        let left = page.find("Left column line five").expect("left column");
+        let right = page.find("Right column line one").expect("right column");
+        assert!(
+            left < right,
+            "reading order reads the left column first: {page:?}"
+        );
+        // Page 0 is the whole document as `extract-text` prints it.
+        assert_eq!(
+            capi_reading_order_text(doc, 0),
+            format!("{expected_page}\n")
+        );
+
+        let mut text = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_extract_text_reading_order(doc, 2, &mut text, &mut error)
+        };
+        assert_ne!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(text.is_null());
+        assert!(!error.is_null());
+        unsafe {
+            wellfriendpdf_error_free(error);
             wellfriendpdf_document_free(doc);
         }
     }

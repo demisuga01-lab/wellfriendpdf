@@ -637,6 +637,13 @@ pub struct RenderDocumentCache {
     /// a later render of the same page. Off for single-pass workloads that
     /// render every page once (see [`Self::single_pass`]).
     retain_page_programs: bool,
+    /// Upper bound on the resource-cache bytes kept between pages, on top of
+    /// the render contract's `max_cache_bytes` (see
+    /// [`Self::set_retained_byte_limit`]).
+    retained_byte_limit: usize,
+    /// Decoded images at or above this size are not kept between pages
+    /// (see [`Self::single_pass`]).
+    retained_image_byte_limit: usize,
     transparent_page_group_cache: HashMap<String, bool>,
     transparent_page_group_cache_order: VecDeque<String>,
     clip_dag_stats: ClipDagStats,
@@ -662,10 +669,36 @@ impl RenderDocumentCache {
     /// pages, but it does not retain per-page display lists, render plans or
     /// final rasters, which a single pass never reads back. Output is
     /// identical; peak memory and per-page copies are lower.
+    ///
+    /// Like PDFium's page image cache, which keeps a decoded bitmap only
+    /// below `kHugeImageSize` (60,000,000 bytes) and otherwise re-reads the
+    /// image when it is drawn again, a decoded image of that size or more is
+    /// dropped when its page finishes instead of staying cached for later
+    /// pages; a scanned 9,000 x 12,000 stencil otherwise stays resident for
+    /// the rest of the document.
     pub fn single_pass() -> Self {
         let mut cache = Self::resources_only();
         cache.retain_page_programs = false;
+        cache.retained_image_byte_limit = SINGLE_PASS_RETAINED_IMAGE_BYTE_LIMIT;
         cache
+    }
+
+    /// Bound the resource-cache bytes (fonts, glyphs, decoded and scaled
+    /// images, programs, masks) kept from one page to the next; the cache is
+    /// trimmed, oldest entries first, to this size when each page finishes.
+    /// The render contract's `max_cache_bytes` still applies when it is
+    /// smaller. A caller that renders with several workers, each with its
+    /// own cache, can split one budget between them so that the retained
+    /// total does not grow with the worker count. Caches never change the
+    /// rendered output, only how much is decoded again.
+    pub fn set_retained_byte_limit(&mut self, bytes: usize) {
+        self.retained_byte_limit = bytes;
+    }
+
+    /// The limit set by [`Self::set_retained_byte_limit`] (`usize::MAX`
+    /// when unset).
+    pub fn retained_byte_limit(&self) -> usize {
+        self.retained_byte_limit
     }
 
     pub fn resources_only() -> Self {
@@ -742,6 +775,8 @@ impl RenderDocumentCache {
             display_list_raster_cache,
             final_raster_cache_policy: policy,
             retain_page_programs: true,
+            retained_byte_limit: usize::MAX,
+            retained_image_byte_limit: usize::MAX,
             transparent_page_group_cache: HashMap::new(),
             transparent_page_group_cache_order: VecDeque::new(),
             clip_dag_stats: ClipDagStats::default(),
@@ -921,6 +956,8 @@ impl RenderDocumentCache {
     pub(crate) fn retain_text_resources_only(&mut self) {
         let mut kept = Self::new_with_final_raster_cache_policy(self.final_raster_cache_policy);
         kept.retain_page_programs = self.retain_page_programs;
+        kept.retained_byte_limit = self.retained_byte_limit;
+        kept.retained_image_byte_limit = self.retained_image_byte_limit;
         std::mem::swap(&mut kept.glyph_cache, &mut self.glyph_cache);
         std::mem::swap(&mut kept.glyph_mask_cache, &mut self.glyph_mask_cache);
         std::mem::swap(&mut kept.type3_mask_cache, &mut self.type3_mask_cache);
@@ -1085,6 +1122,34 @@ impl RenderDocumentCache {
             .saturating_add(functions.bytes)
     }
 
+    /// Drop decoded images at or above `retained_image_byte_limit`.
+    fn drop_retained_huge_images(&mut self) {
+        let limit = self.retained_image_byte_limit;
+        if limit == usize::MAX || self.image_xobject_cache_bytes < limit {
+            return;
+        }
+        let huge: Vec<String> = self
+            .image_xobject_cache
+            .iter()
+            .filter(|(_, raw)| raw.byte_count() >= limit)
+            .map(|(key, _)| key.clone())
+            .collect();
+        if huge.is_empty() {
+            return;
+        }
+        for key in &huge {
+            if let Some(removed) = self.image_xobject_cache.remove(key) {
+                self.image_xobject_cache_bytes = self
+                    .image_xobject_cache_bytes
+                    .saturating_sub(removed.byte_count());
+                self.image_xobject_cache_stats.evictions =
+                    self.image_xobject_cache_stats.evictions.saturating_add(1);
+            }
+        }
+        self.image_xobject_cache_order
+            .retain(|key| self.image_xobject_cache.contains_key(key));
+    }
+
     fn enforce_bounded_maps(&mut self, budget: RenderResourceBudget) {
         const FONT_BYTES_BUDGET: usize = 64 * 1024 * 1024;
         const FONT_RESOLVER_ENTRIES: usize = 2_048;
@@ -1094,7 +1159,8 @@ impl RenderDocumentCache {
         const DISPLAY_LIST_ENTRIES: usize = 512;
         const OFFSCREEN_POOL_BYTES: usize = 64 * 1024 * 1024;
         const DISPLAY_LIST_CACHE_BYTES: usize = 128 * 1024 * 1024;
-        let max_cache_bytes = budget_to_usize(budget.max_cache_bytes);
+        let max_cache_bytes = budget_to_usize(budget.max_cache_bytes).min(self.retained_byte_limit);
+        self.drop_retained_huge_images();
         if self.function_cache.is_poisoned() {
             self.function_cache =
                 Arc::new(Mutex::new(crate::render::function::FunctionCache::default()));
@@ -6833,6 +6899,9 @@ impl AnnotationReplayPolicy {
 /// books give every page a unique image, so a large budget only holds memory
 /// per render thread without ever hitting.
 const RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
+/// PDFium's `kHugeImageSize`: [`RenderDocumentCache::single_pass`] does not
+/// keep decoded images this large between pages.
+const SINGLE_PASS_RETAINED_IMAGE_BYTE_LIMIT: usize = 60_000_000;
 const TRANSPARENT_PAGE_GROUP_CACHE_ENTRIES: usize = 512;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -8795,6 +8864,32 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    /// Paint an image mask filled with `color` straight from its decoded
+    /// samples, without the RGBA expansion `image_mask_to_stencil_rgba`
+    /// builds (four bytes per source pixel). Covers the shrinking paints that
+    /// large masks take; returns `false`, having painted nothing, when the
+    /// caller must expand the mask and use the general painter. The output
+    /// is byte-identical either way.
+    fn paint_image_mask_without_expansion(
+        &mut self,
+        raw: &RawImage,
+        color: PixelColor,
+        paints_ones: bool,
+        paint_ctm: &Transform2D,
+    ) -> bool {
+        if self.image_smoothing_policy == SmoothingPolicy::Disabled {
+            return false;
+        }
+        let painted = [color[0], color[1], color[2], color[3]];
+        let unpainted = [color[0], color[1], color[2], 0];
+        let Some(stencil) =
+            crate::render::image_painter::StencilMask::new(raw, painted, unpainted, paints_ones)
+        else {
+            return false;
+        };
+        ImagePainter::paint_stencil_mask(&mut self.buf, &stencil, paint_ctm, &self.viewport, 1.0)
+    }
+
     fn effective_image_interpolate(&self, pdf_interpolate: bool) -> bool {
         match self.image_smoothing_policy {
             SmoothingPolicy::Disabled => false,
@@ -9234,6 +9329,8 @@ impl<'a> RenderState<'a> {
         let resource_budget = self.resource_budget;
         let final_raster_cache_policy = cache.final_raster_cache_policy;
         let retain_page_programs = cache.retain_page_programs;
+        let retained_byte_limit = cache.retained_byte_limit;
+        let retained_image_byte_limit = cache.retained_image_byte_limit;
         let display_list_cache = std::mem::take(&mut cache.display_list_cache);
         let display_list_cache_order = std::mem::take(&mut cache.display_list_cache_order);
         let display_list_cache_bytes = cache.display_list_cache_bytes;
@@ -9332,6 +9429,8 @@ impl<'a> RenderState<'a> {
             display_list_raster_cache,
             final_raster_cache_policy,
             retain_page_programs,
+            retained_byte_limit,
+            retained_image_byte_limit,
             transparent_page_group_cache,
             transparent_page_group_cache_order,
             clip_dag_stats,
@@ -9407,6 +9506,8 @@ impl<'a> RenderState<'a> {
         let clip_dag_stats = clip_dag.stats();
         let final_raster_cache_policy = cache.final_raster_cache_policy;
         let retain_page_programs = cache.retain_page_programs;
+        let retained_byte_limit = cache.retained_byte_limit;
+        let retained_image_byte_limit = cache.retained_image_byte_limit;
         let display_list_cache = std::mem::take(&mut cache.display_list_cache);
         let display_list_cache_order = std::mem::take(&mut cache.display_list_cache_order);
         let display_list_cache_bytes = cache.display_list_cache_bytes;
@@ -9503,6 +9604,8 @@ impl<'a> RenderState<'a> {
             display_list_raster_cache,
             final_raster_cache_policy,
             retain_page_programs,
+            retained_byte_limit,
+            retained_image_byte_limit,
             transparent_page_group_cache,
             transparent_page_group_cache_order,
             clip_dag_stats,
@@ -10049,11 +10152,20 @@ impl<'a> RenderState<'a> {
         }
         self.scaled_image_cache_stats.misses =
             self.scaled_image_cache_stats.misses.saturating_add(1);
+        let cache_max_bytes = self.cache_budget(SCALED_IMAGE_CACHE_MAX_BYTES);
+        let cache_max_entry_bytes = self.cache_entry_budget(SCALED_IMAGE_CACHE_MAX_ENTRY_BYTES);
+        // A device-size copy too large to cache would be painted once and
+        // dropped: the general painter paints the same pixels straight into
+        // the page without it (a full-page scan at 150 dpi is a 40 MB copy).
+        let scaled_bytes = (target.paint.width as usize)
+            .saturating_mul(target.paint.height as usize)
+            .saturating_mul(3);
+        if scaled_bytes > cache_max_entry_bytes.min(cache_max_bytes) {
+            return None;
+        }
         let scaled =
             ImagePainter::scale_axis_aligned_default_rgb_for_target(image, target, high_quality)?;
         let scaled = Arc::new(scaled);
-        let cache_max_bytes = self.cache_budget(SCALED_IMAGE_CACHE_MAX_BYTES);
-        let cache_max_entry_bytes = self.cache_entry_budget(SCALED_IMAGE_CACHE_MAX_ENTRY_BYTES);
         insert_scaled_image_cache_entry(
             &mut self.scaled_image_cache,
             &mut self.scaled_image_cache_order,
@@ -10349,7 +10461,7 @@ impl<'a> RenderState<'a> {
     fn scheduled_load_smask(
         &self,
         image_ref: &ImageReference,
-        raw: RawImage,
+        raw: &RawImage,
         source_region: ImageSourceRegion,
     ) -> Result<Option<RawImage>> {
         let source_window = raw_window_from_source_region(source_region);
@@ -10372,7 +10484,7 @@ impl<'a> RenderState<'a> {
             || {
                 SmaskLoader::load_and_combine_with_limits_and_source_window(
                     image_ref,
-                    raw,
+                    std::borrow::Cow::Borrowed(raw),
                     self.engine.document().reader(),
                     &limits,
                     source_window,
@@ -15500,6 +15612,12 @@ impl<'a> RenderState<'a> {
                     return;
                 }
             };
+            if !pattern_stencil {
+                let paint_ctm = image_ctm_for_source_region(&ctm, source_region, width, height);
+                if self.paint_image_mask_without_expansion(&raw, color, paints_ones, &paint_ctm) {
+                    return;
+                }
+            }
             match image_mask_to_stencil_rgba(&raw, color, paints_ones) {
                 Ok(masked) => masked,
                 Err(err) => {
@@ -16104,6 +16222,22 @@ impl<'a> RenderState<'a> {
                             return;
                         }
                     };
+                    if !pattern_stencil {
+                        let paint_ctm = image_ctm_for_source_region(
+                            &ctm,
+                            source_region,
+                            image_ref.width,
+                            image_ref.height,
+                        );
+                        if self.paint_image_mask_without_expansion(
+                            raw.as_ref(),
+                            color,
+                            paints_ones,
+                            &paint_ctm,
+                        ) {
+                            return;
+                        }
+                    }
                     match image_mask_to_stencil_rgba(raw.as_ref(), color, paints_ones) {
                         Ok(masked) => {
                             owned_raw = Some(masked);
@@ -16117,7 +16251,7 @@ impl<'a> RenderState<'a> {
                         }
                     }
                 } else if dict.contains_key("SMask") {
-                    match self.scheduled_load_smask(&image_ref, (*raw).clone(), source_region) {
+                    match self.scheduled_load_smask(&image_ref, raw.as_ref(), source_region) {
                         Ok(Some(masked)) => {
                             owned_raw = Some(masked);
                             owned_raw.as_ref().expect("soft mask owned raw")
@@ -39241,6 +39375,55 @@ mod tests {
         assert_ne!(annotation_a, annotation_b);
         assert_ne!(annotation_a, annotation_rect);
         assert!(annotation_a.contains(":page:1:"));
+    }
+
+    #[test]
+    fn single_pass_cache_drops_huge_images_and_keeps_its_retained_byte_limit() {
+        // Only the dimensions count: byte_count() is width * height * channels.
+        fn raw(bytes: usize) -> Arc<RawImage> {
+            Arc::new(RawImage {
+                width: bytes as u32,
+                height: 1,
+                channels: 1,
+                bits_per_sample: 8,
+                pixels: Vec::new(),
+            })
+        }
+        fn insert(cache: &mut RenderDocumentCache, key: &str, bytes: usize) {
+            insert_image_xobject_cache_entry(
+                &mut cache.image_xobject_cache,
+                &mut cache.image_xobject_cache_order,
+                &mut cache.image_xobject_cache_bytes,
+                key.to_string(),
+                raw(bytes),
+                bytes,
+                usize::MAX,
+            );
+        }
+        let budget = RenderResourceBudget::default();
+
+        let mut cache = RenderDocumentCache::single_pass();
+        insert(&mut cache, "small", 1024);
+        insert(&mut cache, "huge", SINGLE_PASS_RETAINED_IMAGE_BYTE_LIMIT);
+        cache.enforce_bounded_maps(budget);
+        assert!(cache.image_xobject_cache.contains_key("small"));
+        assert!(!cache.image_xobject_cache.contains_key("huge"));
+        assert_eq!(cache.image_xobject_cache_bytes, 1024);
+        assert_eq!(cache.image_xobject_cache_order.len(), 1);
+
+        // The retained limit trims what is kept between pages, oldest first.
+        insert(&mut cache, "second", 1024);
+        cache.set_retained_byte_limit(1500);
+        assert_eq!(cache.retained_byte_limit(), 1500);
+        cache.enforce_bounded_maps(budget);
+        assert!(!cache.image_xobject_cache.contains_key("small"));
+        assert!(cache.image_xobject_cache.contains_key("second"));
+
+        // Other caches keep large decoded images for later renders.
+        let mut retained = RenderDocumentCache::resources_only();
+        insert(&mut retained, "huge", SINGLE_PASS_RETAINED_IMAGE_BYTE_LIMIT);
+        retained.enforce_bounded_maps(budget);
+        assert!(retained.image_xobject_cache.contains_key("huge"));
     }
 
     #[test]

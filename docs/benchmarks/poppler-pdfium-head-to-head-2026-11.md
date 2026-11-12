@@ -684,7 +684,9 @@ round that added it.
 | Annotations drawn in the same pass, form data prepared once | `CPDF_AnnotList` in one `CPDF_RenderContext` | `Annots::draw` in same `Gfx` | yes | f1040 annotation pass 28.6 -> 12.8 ms |
 | Compact content operations (interned operators, inline operands) | `CPDF_PageObject` tree | streamed, not stored | yes | 177 -> 83 bytes/op, 2.04 -> 0.06 allocs/op |
 | Streaming page output instead of collecting every page | page by page | page by page | yes (streaming ZIP, reorder buffer) | 303-page atlas peak 5.4 GB -> 378 MB |
-| Parallel page rendering with one cache per worker | single-threaded per document | single-threaded | yes (`par_bridge`, per-worker cache) | 93 docs 11.8 s vs Poppler 101.8 s, PDFium 26.8 s |
+| Parallel page rendering, one cache per worker | single-threaded per document | single-threaded | yes (one thread per worker, workers split one 256 MiB retained-cache budget) | 93 docs 11.8 s vs Poppler 101.8 s, PDFium 26.8 s; atlas at 8 workers 2.68 -> 0.98 GB (round 14) |
+| Image masks shrunk without an expanded copy | 1 bpp `CPDF_DIB` | `ImageStream` | yes (`StencilMask`, round 14) | freeculture 671 -> 245 MB |
+| Huge decoded images not kept between pages | `kHugeImageSize` (60,000,000 bytes) | no image cache | yes (single-pass renders, round 14) | |
 | SIMD blending and colour conversion | AGG + Skia SIMD | limited | yes (`render-simd` crate) | |
 | Link-time optimisation in release builds | yes | distro-dependent | yes (`lto = "thin"`) | |
 | Tuned memory allocator | PartitionAlloc | system malloc | opt-in `mimalloc` feature (CLI, C API); default stays glibc with tuned settings | mimalloc: -9.5% CPU but +30-40% peak RSS, no multi-thread wall gain (see "Global allocator") |
@@ -747,3 +749,86 @@ deployments that prefer CPU time over peak memory. When it is enabled, the CLI
 skips its glibc tunables. The C API feature changes only the library's own Rust
 allocations. Every buffer it hands out is freed through its own `*_free`
 functions, so the host's allocator is never mixed with mimalloc.
+
+## Peak memory (round 14, 2026-11-13)
+
+The r13 head-to-head left Wellfriend fastest on the 93 small documents but
+with the highest peak RSS: 671 MB max (PDFium 97, Poppler 64, MuPDF 92), and
+2.7 GB for `atlas_animals` (303 scanned pages, 150 dpi) with 8 threads.
+Round 14 found the causes with heaptrack and per-page runs and removed them.
+Rendered output is unchanged: every page of `tests/corpus/pdfs` at 50 dpi
+(75 PDFs, 596 pages) and 424 pages of large scanned and image books at
+150 dpi (atlas_animals, freeculture, six realpdf200 books) hash identically
+to `ea7832d` (same engine as main `a8be500`).
+
+**The 671 MB document: `freeculture.pdf`.** Pages 171 and 255 each draw a
+scanned CCITT stencil mask (8992x10384 and 9258x12259 at 2,856 and 2,182 ppi)
+a few hundred pixels wide. The renderer decoded the mask to one byte per
+pixel (113 MB), expanded it to RGBA for the painter (454 MB), and kept the
+decoded mask in the document cache for the following pages. Page 255 alone
+peaked at 588 MB.
+
+| What | PDFium | Poppler | Wellfriend before | Wellfriend now |
+|---|---|---|---|---|
+| Stencil mask storage | 1 bpp `CPDF_DIB`, scanlines decoded on demand | `ImageStream`, one line at a time | 8 bpp + RGBA copy | 8 bpp, painted directly |
+| Shrinking a mask | `CFX_ImageStretcher` streams rows | `scaleMask` box filter, streamed | area average over the RGBA copy | same area average, read through the mask |
+| Huge decoded images between pages | not realised above `kHugeImageSize` (60,000,000 bytes) | never cached | kept up to 128 MB | dropped at page end above 60,000,000 bytes (single pass) |
+
+The direct mask painter (`StencilMask`, `ImagePainter::paint_stencil_mask`)
+reads each sample as the painted or unpainted RGBA pixel the expansion held,
+with the same taps, weights and accumulation order, so it is byte-identical;
+magnified masks and unsmoothed rendering still expand (they are small). A
+soft-masked image is now combined from the cached decoded image instead of a
+copy (`images.pdf`: 170 -> 147 MB).
+
+**Multi-thread scaling (`atlas_animals`).** heaptrack at 8 workers showed
+950 MB of live heap and about 0.9 GB more of freed but resident memory:
+
+- `par_bridge` ran pages on rayon workers; a worker waiting inside a page
+  (decoders run nested parallel work on the pool) stole and started another
+  page, so ten pages (each with a 55 MB page raster) were in flight for eight
+  workers. Pages now run on one plain thread per worker; nested work still
+  uses the rayon pool.
+- Every page also built a 40 MB device-size copy of its scan for the
+  scaled-image cache, which could never cache it (32 MB entry limit). Such
+  copies are no longer built; the general painter paints the same pixels.
+  This also saves about a third of the CPU time on scanned books.
+- Each worker kept full-size caches. The workers now split one 256 MiB
+  retained-cache budget (`RenderDocumentCache::set_retained_byte_limit`,
+  at least 32 MiB each), applied when each page finishes.
+- With more than two workers the CLI kept glibc's one-shot retention
+  (32 MiB mmap threshold, 1 GiB trim threshold), so every arena kept its own
+  high-water mark. The lean settings (1 MiB, 64 MiB, no top pad) now apply at
+  every worker count: about 7 s more system time on atlas at 8 workers, 0.9 GB
+  less peak RSS.
+
+`atlas_animals`, 150 dpi PNG to `/dev/null`, `/usr/bin/time`, same session,
+before (`ea7832d`) and after (round 14):
+
+| Workers | Wall (s) | User + sys CPU (s) | Peak RSS |
+|---:|---:|---:|---:|
+| 8 | 34.5 -> **23.7** | 270 -> **184** | 2.68 GB -> **0.98 GB** |
+| 4 | 42.1 -> **27.2** | 168 -> **110** | 1.57 GB -> **0.67 GB** |
+| 1 | 173 -> **107** | 174 -> **107** | 0.33 GB -> **0.32 GB** |
+
+A repeat in a later, busier session (load 6 to 14) gave, for 8 workers,
+42.5 -> 31.1 s wall, 264 -> 182 s CPU and 2.65 -> 1.00 GB; for 4 workers
+55.9 -> 30.6 s, 216 -> 123 s and 1.54 -> 0.68 GB; for 1 worker 196 -> 113 s,
+194 -> 113 s and 0.33 -> 0.32 GB.
+
+About 170 MB of every figure is the 168 MB input file, which Wellfriend reads
+into memory (pypdfium2 on the same file: 416 MB single-process; pdftoppm
+132 MB).
+
+**93-document Wellfriend column** (fixtures + corpus sets, 150 dpi, one pinned
+core, `run_tool.py`; the r13 comparator columns are unchanged):
+
+| Build | Docs rendered | Pages | Total wall (s) | CPU (s) | Peak RSS max / median (MB) | Largest |
+|---|---:|---:|---:|---:|---:|---|
+| r13 run (`69828bc`) | 91/93 | 629 | 11.8 | 10.6 | 671 / 39 | freeculture 671, images 173 |
+| `ea7832d`, same session | 91/93 | 629 | 12.1 | 10.0 | 671 / 36 | freeculture 671, images 170 |
+| round 14 | 91/93 | 629 | 11.6 | 9.2 | **245 / 38** | freeculture 245, images 147 |
+
+PDFium's max on this set is 97 MB, Poppler's 64 MB, MuPDF's 92 MB. The
+remaining freeculture peak is the 113 MB one-byte-per-pixel mask; decoding
+stencils to 1 bpp, as PDFium does, would remove most of it.

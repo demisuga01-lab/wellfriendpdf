@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::{Cursor, Read};
 
 use crate::error::{Result, WellfriendError};
@@ -32,13 +33,20 @@ impl SmaskLoader {
         limits: &DecodeLimits,
     ) -> Result<Option<RawImage>> {
         Self::load_and_combine_with_limits_and_source_window(
-            main_image, main_raw, reader, limits, None,
+            main_image,
+            Cow::Owned(main_raw),
+            reader,
+            limits,
+            None,
         )
     }
 
+    /// `main_raw` may be borrowed (a decoded image kept in a render cache):
+    /// the combined RGBA image is a new buffer either way, so the main image
+    /// is copied only if it must be resampled or refitted first.
     pub(crate) fn load_and_combine_with_limits_and_source_window(
         main_image: &ImageReference,
-        main_raw: RawImage,
+        main_raw: Cow<'_, RawImage>,
         reader: &PdfReader,
         limits: &DecodeLimits,
         source_window: Option<RawImageDecodeWindow>,
@@ -166,7 +174,7 @@ impl SmaskLoader {
             ))
         })?;
 
-        Self::combine_rgba_with_matte(main_raw, smask_raw, matte).map(Some)
+        Self::combine_rgba_cow(main_raw, smask_raw, matte).map(Some)
     }
 
     /// Combine a main image with a grayscale alpha mask into RGBA.
@@ -177,7 +185,15 @@ impl SmaskLoader {
     /// Combine a main image with a grayscale alpha mask into RGBA, optionally
     /// undoing producer-side matte preblending from an image SMask `/Matte`.
     pub fn combine_rgba_with_matte(
-        mut main: RawImage,
+        main: RawImage,
+        mask: RawImage,
+        matte: Option<[u8; 3]>,
+    ) -> Result<RawImage> {
+        Self::combine_rgba_cow(Cow::Owned(main), mask, matte)
+    }
+
+    fn combine_rgba_cow(
+        mut main: Cow<'_, RawImage>,
         mut mask: RawImage,
         matte: Option<[u8; 3]>,
     ) -> Result<RawImage> {
@@ -189,7 +205,9 @@ impl SmaskLoader {
             let width = main.width.max(mask.width);
             let height = main.height.max(mask.height);
             if (main.width, main.height) != (width, height) {
-                main = crate::images::decoder::resample_raw_image_nearest(&main, width, height)?;
+                main = Cow::Owned(crate::images::decoder::resample_raw_image_nearest(
+                    &main, width, height,
+                )?);
             }
             if (mask.width, mask.height) != (width, height) {
                 mask = crate::images::decoder::resample_raw_image_nearest(&mask, width, height)?;
@@ -211,8 +229,13 @@ impl SmaskLoader {
         }
         fit_smask_buffer_len("mask", &mut mask.pixels, pixel_count)?;
         match main.channels {
-            1 => fit_smask_buffer_len("main image", &mut main.pixels, pixel_count)?,
-            3 => fit_smask_buffer_len("main image", &mut main.pixels, pixel_count * 3)?,
+            1 if main.pixels.len() != pixel_count => {
+                fit_smask_buffer_len("main image", &mut main.to_mut().pixels, pixel_count)?
+            }
+            3 if main.pixels.len() != pixel_count * 3 => {
+                fit_smask_buffer_len("main image", &mut main.to_mut().pixels, pixel_count * 3)?
+            }
+            1 | 3 => {}
             4 => {
                 return Err(WellfriendError::UnsupportedFeature(
                     "image SMask combine does not support a pre-alpha main image".to_string(),
@@ -891,7 +914,7 @@ mod tests {
 
         let combined = SmaskLoader::load_and_combine_with_limits_and_source_window(
             &main_image,
-            main_raw,
+            Cow::Owned(main_raw),
             &reader,
             &DecodeLimits::default(),
             Some(RawImageDecodeWindow {

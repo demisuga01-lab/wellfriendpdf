@@ -50,7 +50,9 @@
   "scripts": {
     "build:web": "wasm-pack build . --target web --out-dir pkg",
     "build:node": "wasm-pack build . --target nodejs --out-dir pkg-node",
-    "typecheck": "tsc --noEmit --allowJs false"
+    "typecheck": "tsc --noEmit --allowJs false",
+    "check:dts": "node ../../scripts/check-wasm-dts-parity.mjs pkg/wellfriendpdf_wasm.d.ts",
+    "sync:dts": "node ../../scripts/check-wasm-dts-parity.mjs pkg/wellfriendpdf_wasm.d.ts --write"
   },
   "devDependencies": {
     "typescript": "^5.5.0",

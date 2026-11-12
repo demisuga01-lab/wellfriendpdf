@@ -262,6 +262,22 @@ public sealed partial class WellfriendDocument : IDisposable
         return NativeMethods.TakeString(text);
     }
 
+    /// <summary>
+    /// Text in reading order (columns, blocks and lines in the order a reader
+    /// follows them), the <c>wellfriendpdf extract-text</c> default.
+    /// <see cref="ExtractText(int)"/> returns the faster content order.
+    /// </summary>
+    /// <param name="pageNumber">1-based page; 0 returns every page, each followed
+    /// by a newline, as the CLI prints the document.</param>
+    public string ExtractTextReadingOrder(int pageNumber = 0)
+    {
+        ThrowIfDisposed();
+        if (pageNumber < 0) throw new ArgumentOutOfRangeException(nameof(pageNumber), "Page numbers are 1-based; 0 means every page.");
+        var status = NativeMethods.wellfriendpdf_document_extract_text_reading_order(_handle, (UIntPtr)pageNumber, out var text, out var error);
+        NativeMethods.ThrowIfError(status, error);
+        return NativeMethods.TakeString(text);
+    }
+
     public byte[] RenderPagePng(int pageNumber, uint dpi = 72)
     {
         ThrowIfDisposed();
@@ -3425,6 +3441,9 @@ public sealed class Page
     public int Number { get; }
 
     public string Text => _document.ExtractText(Number);
+
+    /// <summary>This page's text in reading order (see <see cref="WellfriendDocument.ExtractTextReadingOrder"/>).</summary>
+    public string ReadingOrderText => _document.ExtractTextReadingOrder(Number);
 
     public byte[] RenderPng(uint dpi = 72) => _document.RenderPagePng(Number, dpi);
 
