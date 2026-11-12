@@ -85,7 +85,7 @@ use crate::render::vector_fallback::{
     form_program_is_opaque_normal_group_subset, transparency_group_color_space_is_vector_inert,
 };
 use crate::render::widget_synthesis;
-use crate::render::vector_quality::{stroke_adjusted_fill_rect, VectorRasterOptions};
+use crate::render::vector_quality::{snapped_fill_rect, VectorRasterOptions};
 use crate::render::RoundByte;
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
@@ -5073,6 +5073,7 @@ impl PageRenderer {
         plan_contract.thin_line_mode = contract.thin_line_mode;
         plan_contract.vector_antialias_gamma = contract.vector_antialias_gamma;
         plan_contract.text_gamma = contract.text_gamma;
+        plan_contract.rect_snapping = contract.rect_snapping;
         plan_contract.forced_colors = contract.forced_colors;
         let mut plan_resource_budget = resource_budget;
         let full_plan_pixels =
@@ -5803,6 +5804,7 @@ impl PageRenderer {
         accepted_expected.thin_line_mode = contract.thin_line_mode;
         accepted_expected.vector_antialias_gamma = contract.vector_antialias_gamma;
         accepted_expected.text_gamma = contract.text_gamma;
+        accepted_expected.rect_snapping = contract.rect_snapping;
         if contract.overprint != OverprintPolicy::PreserveSeparations {
             accepted_expected.overprint = contract.overprint;
         }
@@ -5947,6 +5949,8 @@ impl PageRenderer {
         );
         let _text_raster_guard =
             crate::render::vector_quality::TextRasterContractGuard::enter(contract.text_gamma);
+        let _rect_snap_guard =
+            crate::render::vector_quality::RectSnapContractGuard::enter(contract.rect_snapping);
         let mut state = RenderState::new_with_shared_document_cache(
             buf,
             viewport.clone(),
@@ -6527,6 +6531,8 @@ struct RenderState<'a> {
     /// Immutable original page scope, distinct from nested program scopes and
     /// from already-selected (object-bound) graphics-state resources.
     page_resources: Arc<PageResources>,
+    /// Page-constant cache-key inputs, shared with nested group states.
+    pass_memo: Arc<crate::render::render_pass_memo::RenderPassMemo>,
     initial_rendering_intent: String,
     clip_stack: Vec<Arc<ClipNode>>,
     smask_stack: Vec<Option<AlphaMask>>,
@@ -8499,6 +8505,7 @@ impl<'a> RenderState<'a> {
             buf,
             viewport,
             page_resources: Arc::clone(&resources),
+            pass_memo: Arc::default(),
             resources: SharedPageResources::from(Arc::clone(&resources)),
             gs,
             initial_rendering_intent,
@@ -11314,12 +11321,27 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    /// Fingerprint of the immutable page resource scope, hashed once per
+    /// render pass.
+    fn page_resources_fingerprint(&self) -> u64 {
+        self.pass_memo
+            .page_resources_fingerprint(|| page_resources_fingerprint(&self.page_resources))
+    }
+
     fn current_retained_plan_contract(&self) -> Option<RenderContract> {
-        let page = self.engine.get_page(self.page_number).ok()?;
-        let page_identity = self.engine.canonical_document().page_identity_for(&page);
+        let page_identity = self.pass_memo.page_identity(|| {
+            let page = self.engine.get_page(self.page_number).ok()?;
+            Some(
+                self.engine
+                    .canonical_document()
+                    .page_identity_for(&page)
+                    .object
+                    .id,
+            )
+        })?;
         let mut contract = RenderContract::for_viewport(
             self.engine.canonical_document().revision(),
-            page_identity.object.id,
+            page_identity,
             self.page_number,
             &self.viewport,
             RenderTile::full(self.viewport.width_px, self.viewport.height_px),
@@ -11360,7 +11382,7 @@ impl<'a> RenderState<'a> {
         );
         let cache_key = format!(
             "{cache_key}:page-resources:{:016x}",
-            page_resources_fingerprint(&self.page_resources)
+            self.page_resources_fingerprint()
         );
         if let Some(cached) = self.annotation_appearance_program_cache.get(&cache_key) {
             touch_program_cache_key(
@@ -12411,7 +12433,7 @@ impl<'a> RenderState<'a> {
                 self.inline_begin_pending = false;
                 // Stash the inline image parameters; the pixel bytes arrive in
                 // the following `inline_image_data` operation.
-                self.pending_inline = Some(op.operands.clone());
+                self.pending_inline = Some(op.operands.to_vec());
             }
             "inline_image_data" => {
                 let Some(params) = self.pending_inline.take() else {
@@ -14716,6 +14738,7 @@ impl<'a> RenderState<'a> {
             viewport: mask_viewport.clone(),
             resources: g_resources.into(),
             page_resources: Arc::clone(&self.page_resources),
+            pass_memo: Arc::clone(&self.pass_memo),
             gs: mask_gs,
             initial_rendering_intent: self.initial_rendering_intent.clone(),
             clip_stack: Vec::new(),
@@ -15021,7 +15044,7 @@ impl<'a> RenderState<'a> {
             self.resource_budget.max_cache_bytes,
             self.optional_content.visibility_fingerprint(),
             self.inherited_paint_context_fingerprint(),
-            page_resources_fingerprint(&self.page_resources)
+            self.page_resources_fingerprint()
         )
     }
 
@@ -16638,6 +16661,7 @@ impl<'a> RenderState<'a> {
             viewport: group_viewport.clone(),
             resources: group_resources,
             page_resources: Arc::clone(&self.page_resources),
+            pass_memo: Arc::clone(&self.pass_memo),
             gs: group_gs,
             initial_rendering_intent: self.initial_rendering_intent.clone(),
             clip_stack: Vec::new(),
@@ -16969,6 +16993,7 @@ impl<'a> RenderState<'a> {
     }
 
     fn render_page_annotations(&mut self) {
+        let _pass_cache = crate::render::annotation_pass_cache::AnnotationPassCacheGuard::enter();
         // XFA foreground (static XFA forms): the XFA fields replace the
         // page's widget annotations and are drawn after the other annotations.
         let xfa_overlay = if self.form_policy == FormRenderPolicy::Include {
@@ -21250,7 +21275,7 @@ impl<'a> RenderState<'a> {
             self.type3_charproc_cache_key_for_render(font_name, font_dict, glyph_name),
             self.page_number,
             page_resources_fingerprint(&resources),
-            page_resources_fingerprint(&self.page_resources),
+            self.page_resources_fingerprint(),
             self.render_contract_fingerprint,
             self.optional_content.visibility_fingerprint(),
             self.viewport,
@@ -25842,11 +25867,9 @@ fn paint_cached_path_fill(
         return false;
     }
     let device_t = ctm.concat(&viewport.to_transform());
-    if options.stroke_adjust {
-        if let Some((x, y, width, height)) = stroke_adjusted_fill_rect(path, &device_t) {
-            buf.fill_rect(x, y, width, height, color);
-            return true;
-        }
+    if let Some((x, y, width, height)) = snapped_fill_rect(path, &device_t, options) {
+        buf.fill_rect(x, y, width, height, color);
+        return true;
     }
     if [
         device_t.a, device_t.b, device_t.c, device_t.d, device_t.e, device_t.f,
@@ -27541,11 +27564,8 @@ fn annotation_appearance_program_cache_key(
     let source = annotation_source_cache_key(annot_obj, annot_index);
     let raw_hash = fingerprint_bytes64(raw_bytes);
     let mut dict_hash = 0xcbf29ce484222325u64;
-    hash_pdf_object(
-        &mut dict_hash,
-        &PdfObject::Dictionary(appearance_dict.clone()),
-        0,
-    );
+    // Same hash as the dictionary wrapped in a `PdfObject`, without cloning it.
+    hash_pdf_dictionary(&mut dict_hash, appearance_dict, 1);
     format!(
         "annotation-appearance:{source}:raw:{raw_hash:016x}:dict:{dict_hash:016x}:rect:{}:page:{page_number}:contract:{contract_fingerprint}",
         rect_cache_key(rect)
@@ -31642,16 +31662,19 @@ fn inherited_field_integer(chain: &[PdfDictionary], key: &str) -> Option<i64> {
     chain.iter().find_map(|dict| dict.get_integer(key))
 }
 
+/// The catalog's `/AcroForm` dictionary, resolved once per annotation pass.
 fn resolve_acroform_dict(
     engine: &ContentEngine,
     reader: &crate::reader::PdfReader,
-) -> Option<PdfDictionary> {
-    let catalog = engine.document().get_catalog().ok()?;
-    let acroform = catalog.get("AcroForm")?.clone();
-    match reader.resolve(acroform).ok()? {
-        PdfObject::Dictionary(dict) => Some(dict),
-        _ => None,
-    }
+) -> Option<Arc<PdfDictionary>> {
+    crate::render::annotation_pass_cache::acroform(|| {
+        let catalog = engine.document().get_catalog().ok()?;
+        let acroform = catalog.get("AcroForm")?.clone();
+        match reader.resolve(acroform).ok()? {
+            PdfObject::Dictionary(dict) => Some(dict),
+            _ => None,
+        }
+    })
 }
 
 fn object_string_bytes(obj: &PdfObject) -> Option<Vec<u8>> {

@@ -1,5 +1,6 @@
 use std::io::Read;
 
+use crate::content::operation::Operator;
 use crate::error::{Result, WellfriendError};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -15,7 +16,7 @@ pub enum ContentToken {
     ArrayEnd,
     DictStart,
     DictEnd,
-    Operator(String),
+    Operator(Operator),
     InlineImageData(Vec<u8>),
 }
 
@@ -94,7 +95,7 @@ impl<'a> ContentTokenizer<'a> {
         if self.inline_image_state == InlineImageState::PendingEnd {
             self.inline_image_state = InlineImageState::Normal;
             self.last_span = self.pending_inline_end_span.take();
-            return Ok(Some(ContentToken::Operator("EI".to_string())));
+            return Ok(Some(ContentToken::Operator("EI".into())));
         }
         if self.inline_image_state == InlineImageState::Data {
             let start = self.pos;
@@ -134,7 +135,7 @@ impl<'a> ContentTokenizer<'a> {
             }
             b'>' => {
                 self.pos += 1;
-                ContentToken::Operator("?".to_string())
+                ContentToken::Operator("?".into())
             }
             b'/' => self.read_name(),
             b'(' => self.read_literal_string()?,
@@ -187,11 +188,11 @@ impl<'a> ContentTokenizer<'a> {
         if saw_dot {
             text.parse::<f64>()
                 .map(ContentToken::Real)
-                .unwrap_or_else(|_| ContentToken::Operator("?".to_string()))
+                .unwrap_or_else(|_| ContentToken::Operator("?".into()))
         } else {
             text.parse::<i64>()
                 .map(ContentToken::Integer)
-                .unwrap_or_else(|_| ContentToken::Operator("?".to_string()))
+                .unwrap_or_else(|_| ContentToken::Operator("?".into()))
         }
     }
 
@@ -322,14 +323,13 @@ impl<'a> ContentTokenizer<'a> {
         }
         if self.pos == start {
             self.pos += 1;
-            return ContentToken::Operator("?".to_string());
+            return ContentToken::Operator("?".into());
         }
-        let op = String::from_utf8_lossy(&self.data[start..self.pos]).into_owned();
-        match op.as_str() {
-            "null" => ContentToken::Null,
-            "true" => ContentToken::Boolean(true),
-            "false" => ContentToken::Boolean(false),
-            _ => ContentToken::Operator(op),
+        match &self.data[start..self.pos] {
+            b"null" => ContentToken::Null,
+            b"true" => ContentToken::Boolean(true),
+            b"false" => ContentToken::Boolean(false),
+            op => ContentToken::Operator(Operator::from_bytes(op)),
         }
     }
 
@@ -475,7 +475,7 @@ impl<R: Read> StreamingContentTokenizer<R> {
     fn next_token(&mut self) -> Result<Option<ContentToken>> {
         if self.inline_image_state == InlineImageState::PendingEnd {
             self.inline_image_state = InlineImageState::Normal;
-            return Ok(Some(ContentToken::Operator("EI".to_string())));
+            return Ok(Some(ContentToken::Operator("EI".into())));
         }
         if self.inline_image_state == InlineImageState::Data {
             return self.read_inline_image_data().map(Some);
@@ -507,7 +507,7 @@ impl<R: Read> StreamingContentTokenizer<R> {
             }
             b'>' => {
                 self.consume(1)?;
-                ContentToken::Operator("?".to_string())
+                ContentToken::Operator("?".into())
             }
             b'/' => self.read_name()?,
             b'(' => self.read_literal_string()?,
@@ -730,13 +730,13 @@ impl<R: Read> StreamingContentTokenizer<R> {
         if let Some(len) = self.regular_run() {
             if len == 0 {
                 self.consume(1)?;
-                return Ok(ContentToken::Operator("?".to_string()));
+                return Ok(ContentToken::Operator("?".into()));
             }
             let token = match &self.window[self.pos..self.pos + len] {
                 b"null" => ContentToken::Null,
                 b"true" => ContentToken::Boolean(true),
                 b"false" => ContentToken::Boolean(false),
-                op => ContentToken::Operator(String::from_utf8_lossy(op).into_owned()),
+                op => ContentToken::Operator(Operator::from_bytes(op)),
             };
             self.pos += len;
             return Ok(token);
@@ -750,13 +750,13 @@ impl<R: Read> StreamingContentTokenizer<R> {
         }
         if out.is_empty() {
             self.consume(1)?;
-            return Ok(ContentToken::Operator("?".to_string()));
+            return Ok(ContentToken::Operator("?".into()));
         }
         Ok(match out.as_slice() {
             b"null" => ContentToken::Null,
             b"true" => ContentToken::Boolean(true),
             b"false" => ContentToken::Boolean(false),
-            _ => ContentToken::Operator(utf8_lossy_owned(out)),
+            _ => ContentToken::Operator(Operator::from(utf8_lossy_owned(out))),
         })
     }
 
@@ -1063,16 +1063,16 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                ContentToken::Operator("BT".to_string()),
+                ContentToken::Operator("BT".into()),
                 ContentToken::Name("F1".to_string()),
                 ContentToken::Integer(12),
-                ContentToken::Operator("Tf".to_string()),
+                ContentToken::Operator("Tf".into()),
                 ContentToken::Integer(100),
                 ContentToken::Integer(700),
-                ContentToken::Operator("Td".to_string()),
+                ContentToken::Operator("Td".into()),
                 ContentToken::LiteralString(b"Hello World".to_vec()),
-                ContentToken::Operator("Tj".to_string()),
-                ContentToken::Operator("ET".to_string()),
+                ContentToken::Operator("Tj".into()),
+                ContentToken::Operator("ET".into()),
             ]
         );
     }
@@ -1173,7 +1173,7 @@ mod tests {
         assert_eq!(
             tokens,
             vec![
-                ContentToken::Operator("BI".to_string()),
+                ContentToken::Operator("BI".into()),
                 ContentToken::Name("W".to_string()),
                 ContentToken::Integer(2),
                 ContentToken::Name("H".to_string()),
@@ -1182,9 +1182,9 @@ mod tests {
                 ContentToken::Name("G".to_string()),
                 ContentToken::Name("BPC".to_string()),
                 ContentToken::Integer(8),
-                ContentToken::Operator("ID".to_string()),
+                ContentToken::Operator("ID".into()),
                 ContentToken::InlineImageData(vec![0x00, 0xFF, 0xFF, 0x00]),
-                ContentToken::Operator("EI".to_string()),
+                ContentToken::Operator("EI".into()),
             ]
         );
     }

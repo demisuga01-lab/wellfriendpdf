@@ -798,7 +798,7 @@ impl ParsedPageProgramArena {
                 None => {
                     let id = operators.len().min(u32::MAX as usize) as u32;
                     operator_ids.insert(operation.operator.as_str(), id);
-                    operators.push(operation.operator.clone());
+                    operators.push(operation.operator.to_string());
                     id
                 }
             };

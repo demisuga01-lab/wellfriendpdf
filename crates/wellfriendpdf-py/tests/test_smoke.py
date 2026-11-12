@@ -170,12 +170,14 @@ def test_render_contract_raster_policy_forced_color_and_form_highlight_builders(
     built = (
         contract.with_thin_line_mode("shape")
         .with_vector_antialias_gamma("gamma15")
+        .with_rect_snapping("pdfium")
         .with_forced_colors((0, 0, 0), path_stroke=(10, 20, 30, 255), convert_fill_to_stroke=True)
         .with_form_highlight((0, 0, 255, 80), check_box=(255, 0, 0, 40), focus_field="form.name")
     )
     value = json.loads(built.to_json())
     assert value["thin_line_mode"] == "Shape"
     assert value["vector_antialias_gamma"] == "Gamma15"
+    assert value["rect_snapping"] == "Pdfium"
     assert value["forced_colors"]["path_fill"] == {"r": 0, "g": 0, "b": 0, "a": 255}
     assert value["forced_colors"]["path_stroke"]["g"] == 20
     assert value["forced_colors"]["text_fill"] == value["forced_colors"]["path_fill"]

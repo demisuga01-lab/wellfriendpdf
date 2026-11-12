@@ -587,6 +587,7 @@ pub(crate) fn unsupported_active_cpu_contract_fields(
     push_if_changed!(thin_line_mode);
     push_if_changed!(vector_antialias_gamma);
     push_if_changed!(text_gamma);
+    push_if_changed!(rect_snapping);
     push_if_changed!(grayscale);
     push_if_changed!(forced_colors);
     push_if_changed!(color_scheme);
@@ -1286,6 +1287,13 @@ fn resolved_numeric_array<const N: usize>(
 const MAX_PAGE_ARTIFACT_CACHE_ENTRIES: usize = 256;
 const MAX_PAGE_ARTIFACT_CACHE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_SINGLE_PAGE_ARTIFACT_BYTES: usize = 32 * 1024 * 1024;
+/// Largest parsed page program the cache keeps. Interned operators and
+/// inline operands shrank a dense vector page from about 130 to about 82
+/// estimated bytes per operation; this keeps the same pages (up to roughly
+/// 250,000 operations) eligible as the 32 MiB cap did for the old
+/// representation, instead of letting one-shot renders of huge map pages
+/// fill the cache.
+const MAX_SINGLE_PAGE_OPERATIONS_BYTES: usize = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum PageArtifactKey {
@@ -1357,7 +1365,9 @@ impl PageArtifactCache {
     fn insert_operations_shared(&mut self, page: usize, value: Arc<Vec<ContentOperation>>) {
         let bytes = estimate_operations_bytes(&value);
         self.remove(PageArtifactKey::Operations(page));
-        if !self.reserve(PageArtifactKey::Operations(page), bytes) {
+        if bytes > MAX_SINGLE_PAGE_OPERATIONS_BYTES
+            || !self.reserve(PageArtifactKey::Operations(page), bytes)
+        {
             return;
         }
         self.operations.insert(page, (value, bytes));
@@ -1366,7 +1376,9 @@ impl PageArtifactCache {
     fn insert_strict_operations(&mut self, page: usize, value: Vec<ContentOperation>) {
         let bytes = estimate_operations_bytes(&value);
         self.remove(PageArtifactKey::StrictOperations(page));
-        if !self.reserve(PageArtifactKey::StrictOperations(page), bytes) {
+        if bytes > MAX_SINGLE_PAGE_OPERATIONS_BYTES
+            || !self.reserve(PageArtifactKey::StrictOperations(page), bytes)
+        {
             return;
         }
         self.strict_operations
@@ -1437,7 +1449,9 @@ impl PageArtifactCache {
 /// Whether the page artifact cache would keep these operations.
 fn operations_cacheable(operations: &[ContentOperation]) -> bool {
     let bytes = estimate_operations_bytes(operations);
-    bytes <= MAX_SINGLE_PAGE_ARTIFACT_BYTES.min(MAX_PAGE_ARTIFACT_CACHE_BYTES)
+    bytes <= MAX_SINGLE_PAGE_OPERATIONS_BYTES
+        .min(MAX_SINGLE_PAGE_ARTIFACT_BYTES)
+        .min(MAX_PAGE_ARTIFACT_CACHE_BYTES)
 }
 
 fn estimate_operations_bytes(operations: &[ContentOperation]) -> usize {
@@ -1446,13 +1460,8 @@ fn estimate_operations_bytes(operations: &[ContentOperation]) -> usize {
         .saturating_mul(std::mem::size_of::<ContentOperation>());
     let mut pending = Vec::new();
     for operation in operations {
-        bytes = bytes.saturating_add(operation.operator.capacity());
-        bytes = bytes.saturating_add(
-            operation
-                .operands
-                .capacity()
-                .saturating_mul(std::mem::size_of::<crate::content::Operand>()),
-        );
+        bytes = bytes.saturating_add(operation.operator.heap_bytes());
+        bytes = bytes.saturating_add(operation.operands.heap_bytes());
         pending.extend(operation.operands.iter());
     }
     while let Some(operand) = pending.pop() {
@@ -2786,6 +2795,7 @@ impl ContentEngine {
         accepted_expected.thin_line_mode = contract.thin_line_mode;
         accepted_expected.vector_antialias_gamma = contract.vector_antialias_gamma;
         accepted_expected.text_gamma = contract.text_gamma;
+        accepted_expected.rect_snapping = contract.rect_snapping;
         if contract.overprint != OverprintPolicy::PreserveSeparations {
             accepted_expected.overprint = contract.overprint;
         }
@@ -2811,6 +2821,8 @@ impl ContentEngine {
         );
         let _text_raster_guard =
             crate::render::vector_quality::TextRasterContractGuard::enter(contract.text_gamma);
+        let _rect_snap_guard =
+            crate::render::vector_quality::RectSnapContractGuard::enter(contract.rect_snapping);
         // Only the requested window is rasterized; objects outside it are
         // culled against their retained device bounds.
         let mut buffer = PageRenderer::render_contract_window_with_cache(
@@ -6934,6 +6946,7 @@ mod tests {
             crate::render::ContractColor::default(),
         ));
         every_field.text_gamma = crate::render::TextGamma::Pdfium;
+        every_field.rect_snapping = crate::render::RectSnapping::Pdfium;
         every_field.xfa = crate::render::XfaRenderPolicy::Foreground;
         let contract_fields = serde_json::to_value(&every_field)
             .expect("serialize contract")

@@ -22,7 +22,7 @@ use std::sync::OnceLock;
 
 use crate::content::state::LineCap;
 use crate::render::buffer::RenderMode;
-use crate::render::contract::{TextGamma, ThinLineMode, VectorAntialiasGamma};
+use crate::render::contract::{RectSnapping, TextGamma, ThinLineMode, VectorAntialiasGamma};
 use crate::render::path::{FlatPath, Path, PathSegment};
 use crate::render::transform::Transform2D;
 
@@ -86,6 +86,30 @@ pub(crate) fn contract_text_gamma() -> TextGamma {
     CONTRACT_TEXT_GAMMA.with(Cell::get)
 }
 
+thread_local! {
+    static CONTRACT_RECT_SNAPPING: Cell<RectSnapping> = const { Cell::new(RectSnapping::Default) };
+}
+
+/// Scoped render-contract guard installing the filled-rectangle snapping
+/// policy for path paints on the current thread (see
+/// [`VectorRasterContractGuard`] for the scoping rules).
+pub(crate) struct RectSnapContractGuard {
+    previous: RectSnapping,
+}
+
+impl RectSnapContractGuard {
+    pub(crate) fn enter(rect_snapping: RectSnapping) -> Self {
+        let previous = CONTRACT_RECT_SNAPPING.with(|cell| cell.replace(rect_snapping));
+        Self { previous }
+    }
+}
+
+impl Drop for RectSnapContractGuard {
+    fn drop(&mut self) {
+        CONTRACT_RECT_SNAPPING.with(|cell| cell.set(self.previous));
+    }
+}
+
 /// PDFium's text gamma table (`kTextGammaAdjust` in `cfx_renderdevice.cpp`),
 /// applied to glyph coverage before blending.
 pub(crate) const PDFIUM_TEXT_GAMMA: [u8; 256] = [
@@ -118,6 +142,10 @@ pub(crate) struct VectorRasterOptions {
     pub(crate) stroke_adjust: bool,
     pub(crate) thin_line_mode: ThinLineMode,
     pub(crate) coverage_gamma: VectorAntialiasGamma,
+    /// Filled-rectangle snapping rule; it only decides which fills bypass
+    /// the anti-aliasing rasterizer, so it is not part of
+    /// [`Self::cache_bits`].
+    pub(crate) rect_snapping: RectSnapping,
 }
 
 impl VectorRasterOptions {
@@ -135,6 +163,7 @@ impl VectorRasterOptions {
             stroke_adjust: !render_mode.is_high_quality() || stroke_adjustment_requested,
             thin_line_mode,
             coverage_gamma,
+            rect_snapping: CONTRACT_RECT_SNAPPING.with(Cell::get),
         }
     }
 
@@ -147,6 +176,7 @@ impl VectorRasterOptions {
             stroke_adjust: false,
             thin_line_mode: ThinLineMode::None,
             coverage_gamma,
+            rect_snapping: RectSnapping::Default,
         }
     }
 
@@ -274,6 +304,22 @@ pub(crate) fn stroke_adjusted_fill_rect(
     let (x0, x1) = snap_edge_pair(min_x, max_x);
     let (y0, y1) = snap_edge_pair(min_y, max_y);
     Some((x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32))
+}
+
+/// The whole-pixel rectangle `(x, y, w, h)` a fill of `path` is painted as
+/// without the anti-aliasing rasterizer, if any: PDFium's rectangle fast path
+/// under [`RectSnapping::Pdfium`], otherwise the stroke-adjusted rectangle
+/// when stroke adjustment applies.
+pub(crate) fn snapped_fill_rect(
+    path: &Path,
+    device_t: &Transform2D,
+    options: VectorRasterOptions,
+) -> Option<(i32, i32, i32, i32)> {
+    match options.rect_snapping {
+        RectSnapping::Pdfium => crate::render::rect_snap::pdfium_fill_rect(path, device_t),
+        RectSnapping::Default if options.stroke_adjust => stroke_adjusted_fill_rect(path, device_t),
+        RectSnapping::Default => None,
+    }
 }
 
 /// The four corners of a path that is exactly one rectangle-shaped subpath:

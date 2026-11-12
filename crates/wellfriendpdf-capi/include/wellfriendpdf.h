@@ -345,6 +345,14 @@ WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_vector_raster_policies(
     WellfriendRenderContract **out_contract,
     char **error_out);
 
+/* rect_snapping: Default|Pdfium (PDFium whole-pixel rectangle fills).
+ * NULL keeps the current value. */
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_rect_snapping(
+    const WellfriendRenderContract *contract,
+    const char *rect_snapping,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
 /* Forced (high-contrast) colours as packed straight-alpha 0xRRGGBBAA values. */
 WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_forced_colors(
     const WellfriendRenderContract *contract,

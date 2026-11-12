@@ -5,7 +5,7 @@ use crate::render::contract::ThinLineMode;
 use crate::render::line::DashState;
 use crate::render::transform::{Transform2D, Viewport};
 use crate::render::vector_quality::{
-    stroke_adjust_outline, stroke_adjusted_fill_rect, StrokePen, VectorRasterOptions,
+    snapped_fill_rect, stroke_adjust_outline, StrokePen, VectorRasterOptions,
 };
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1050,12 +1050,10 @@ impl PathPainter {
         if path.is_empty() || buf.width == 0 || buf.height == 0 {
             return true;
         }
-        if options.stroke_adjust {
-            let device_t = ctm.concat(&viewport.to_transform());
-            if let Some((x, y, w, h)) = stroke_adjusted_fill_rect(path, &device_t) {
-                buf.fill_rect(x, y, w, h, color);
-                return true;
-            }
+        let device_t = ctm.concat(&viewport.to_transform());
+        if let Some((x, y, w, h)) = snapped_fill_rect(path, &device_t, options) {
+            buf.fill_rect(x, y, w, h, color);
+            return true;
         }
         if let Some((x, y, w, h)) = axis_aligned_integer_rect(path, ctm, viewport) {
             buf.fill_rect(x, y, w, h, color);

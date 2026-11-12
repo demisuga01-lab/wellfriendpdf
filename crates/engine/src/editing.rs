@@ -6445,7 +6445,7 @@ mod h2_alt_text_tests {
         let ops: Vec<String> = ContentParser::parse(&out)
             .unwrap()
             .into_iter()
-            .map(|op| op.operator)
+            .map(|op| op.operator.to_string())
             .collect();
         assert!(ops.contains(&"BDC".to_string()) && ops.contains(&"EMC".to_string()));
     }

@@ -12,6 +12,7 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 /// A generated appearance plus the page-space rectangle its `/BBox` maps to.
 /// `rect` differs from the annotation `/Rect` for fixed-size icons and for
@@ -1864,8 +1865,17 @@ pub(crate) fn parse_da(bytes: &[u8]) -> DaSpec {
 struct SimpleFont {
     resource_name: String,
     object: PdfObject,
-    encode: BTreeMap<char, u8>,
-    widths: Vec<f64>,
+    encode: Arc<BTreeMap<char, u8>>,
+    widths: Arc<Vec<f64>>,
+    ascent: f64,
+    descent: f64,
+}
+
+/// The layout tables of a simple font, shared by every widget of an
+/// annotation pass that uses the font (see `render::annotation_pass_cache`).
+struct SimpleFontMetrics {
+    encode: Arc<BTreeMap<char, u8>>,
+    widths: Arc<Vec<f64>>,
     ascent: f64,
     descent: f64,
 }
@@ -1877,6 +1887,33 @@ impl SimpleFont {
         dict: &PdfDictionary,
         reader: Option<&PdfReader>,
     ) -> Self {
+        let metrics = match (&object, reader) {
+            (PdfObject::Reference { number, generation }, Some(_)) => {
+                crate::render::annotation_pass_cache::shared(
+                    crate::render::annotation_pass_cache::PassCacheKey::SimpleFont(
+                        *number,
+                        *generation,
+                    ),
+                    || Self::metrics(dict, reader),
+                )
+            }
+            _ => Arc::new(Self::metrics(dict, reader)),
+        };
+        Self::with_metrics(resource_name, object, &metrics)
+    }
+
+    fn with_metrics(resource_name: &str, object: PdfObject, metrics: &SimpleFontMetrics) -> Self {
+        Self {
+            resource_name: resource_name.to_string(),
+            object,
+            encode: Arc::clone(&metrics.encode),
+            widths: Arc::clone(&metrics.widths),
+            ascent: metrics.ascent,
+            descent: metrics.descent,
+        }
+    }
+
+    fn metrics(dict: &PdfDictionary, reader: Option<&PdfReader>) -> SimpleFontMetrics {
         let resolver = match reader {
             Some(reader) => crate::fonts::resolver::FontResolver::new(dict, reader),
             None => crate::fonts::resolver::FontResolver::new_from_dict_only(dict),
@@ -1898,11 +1935,9 @@ impl SimpleFont {
             encode.entry('\u{a0}').or_insert(code);
         }
         let (ascent, descent) = font_vertical_metrics(dict, reader);
-        Self {
-            resource_name: resource_name.to_string(),
-            object,
-            encode,
-            widths,
+        SimpleFontMetrics {
+            encode: Arc::new(encode),
+            widths: Arc::new(widths),
             ascent,
             descent,
         }
@@ -1914,12 +1949,11 @@ impl SimpleFont {
 
     fn standard_named(base: &str, resource_name: &str) -> Self {
         let dict = standard_font_dict(base);
-        Self::from_dict(
-            resource_name,
-            PdfObject::Dictionary(dict.clone()),
-            &dict,
-            None,
-        )
+        let metrics = crate::render::annotation_pass_cache::shared(
+            crate::render::annotation_pass_cache::PassCacheKey::StandardFont(base.to_string()),
+            || Self::metrics(&dict, None),
+        );
+        Self::with_metrics(resource_name, PdfObject::Dictionary(dict), &metrics)
     }
 
     fn code_width(&self, code: u8) -> f64 {

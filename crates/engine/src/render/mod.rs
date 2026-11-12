@@ -1,3 +1,4 @@
+pub(crate) mod annotation_pass_cache;
 pub(crate) mod annotation_synthesis;
 pub(crate) mod widget_synthesis;
 pub mod buffer;
@@ -29,6 +30,10 @@ pub mod postscript;
 pub(crate) mod print_profile;
 pub mod progressive;
 pub mod quality;
+pub(crate) mod rect_snap;
+#[cfg(test)]
+mod rect_snap_render_tests;
+pub(crate) mod render_pass_memo;
 pub mod shading;
 pub mod svg;
 pub(crate) mod synthetic_outline;
@@ -55,10 +60,10 @@ pub use contract::{
     ColorManagementPolicy, ColorScheme, CompositingPolicy, ContractColor, DeterminismPolicy,
     DeviceClip, DeviceMatrix, DisplayItemId, ExactnessPolicy, ExecutionMode, ForcedColorScheme,
     FormHighlightPolicy, FormRenderPolicy, HalftonePolicy, ObjectIdentityId,
-    OptionalContentStateId, OverprintPolicy, PageBox, PixelFormat, PrintProfile, RenderContract,
-    RenderContractFieldEffect, RenderResourceBudget, RenderingIntent, ResourceId, RevisionId,
-    SmoothingPolicy, SourceLinkId, TextGamma, ThinLineMode, VectorAntialiasGamma, XfaRenderPolicy,
-    RENDER_CONTRACT_FIELD_EFFECTS, RENDER_CONTRACT_SCHEMA_VERSION,
+    OptionalContentStateId, OverprintPolicy, PageBox, PixelFormat, PrintProfile, RectSnapping,
+    RenderContract, RenderContractFieldEffect, RenderResourceBudget, RenderingIntent, ResourceId,
+    RevisionId, SmoothingPolicy, SourceLinkId, TextGamma, ThinLineMode, VectorAntialiasGamma,
+    XfaRenderPolicy, RENDER_CONTRACT_FIELD_EFFECTS, RENDER_CONTRACT_SCHEMA_VERSION,
 };
 pub use display_list::{
     build_display_list, build_display_list_cancellable, render_display_list, replay_display_list,

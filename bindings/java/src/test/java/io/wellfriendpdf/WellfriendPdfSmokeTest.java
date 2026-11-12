@@ -930,11 +930,13 @@ public final class WellfriendPdfSmokeTest {
             WellfriendPdf.RenderContract contract = doc.defaultRenderContract(1, 72)
                 .withThinLineMode(WellfriendPdf.RenderContract.ThinLineMode.Shape)
                 .withVectorAntialiasGamma(WellfriendPdf.RenderContract.VectorAntialiasGamma.Gamma15)
+                .withRectSnapping(WellfriendPdf.RenderContract.RectSnapping.Pdfium)
                 .withForcedColors(0x000000ff, 0x0a141eff, 0xffff00c8, 0x010203ff, true)
                 .withFormHighlight(0x0000ff50, "form.name");
             String json = contract.toJson();
             assertTrue(json.contains("\"thin_line_mode\":\"Shape\""), "thin line mode builder");
             assertTrue(json.contains("\"vector_antialias_gamma\":\"Gamma15\""), "AA gamma builder");
+            assertTrue(json.contains("\"rect_snapping\":\"Pdfium\""), "rect snapping builder");
             assertTrue(json.contains("\"path_stroke\":{\"r\":10,\"g\":20,\"b\":30,\"a\":255}"),
                 "forced colour builder");
             assertTrue(json.contains("\"focus_field\":\"form.name\""), "form highlight builder");

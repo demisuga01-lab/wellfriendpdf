@@ -1164,7 +1164,7 @@ impl GraphicsStateDescriptor {
             || type3_glyph_metric_operand_refusal(op).is_some()
         {
             return Self::Unsupported {
-                operator: op.operator.clone(),
+                operator: op.operator.to_string(),
             };
         }
         match op.operator.as_str() {
@@ -2224,7 +2224,7 @@ impl PackedDisplayList {
             Some(phase) => phase,
             None => {
                 return NativeDescriptor::CompileRefusal(
-                    PackedCompileRefusal::UnrecognizedPaintOperator(paint_op.operator.clone()),
+                    PackedCompileRefusal::UnrecognizedPaintOperator(paint_op.operator.to_string()),
                 );
             }
         };
