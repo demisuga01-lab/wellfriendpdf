@@ -114,6 +114,41 @@ impl Drop for PixelSnapContractGuard {
     }
 }
 
+/// The filled-rectangle snapping installed by the active render contract.
+pub(crate) fn contract_rect_snapping() -> RectSnapping {
+    CONTRACT_PIXEL_SNAPPING.with(Cell::get).0
+}
+
+thread_local! {
+    static INTERMEDIATE_BITMAP_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Scoped marker for content PDFium draws into an intermediate bitmap of
+/// its own (a tiling-pattern cell, `CPDF_RenderTiling::DrawPatternBitmap`,
+/// or a Type 3 glyph, `CPDF_Type3Cache`) rather than straight onto the
+/// page: images there keep the pixel-centre placement (see
+/// `ImagePainter::paint_image_with_mode`).
+pub(crate) struct IntermediateBitmapGuard;
+
+impl IntermediateBitmapGuard {
+    pub(crate) fn enter() -> Self {
+        INTERMEDIATE_BITMAP_DEPTH.with(|cell| cell.set(cell.get() + 1));
+        Self
+    }
+}
+
+impl Drop for IntermediateBitmapGuard {
+    fn drop(&mut self) {
+        INTERMEDIATE_BITMAP_DEPTH.with(|cell| cell.set(cell.get().saturating_sub(1)));
+    }
+}
+
+/// Whether the current paint is inside a tiling-pattern cell or a Type 3
+/// glyph.
+pub(crate) fn in_intermediate_bitmap() -> bool {
+    INTERMEDIATE_BITMAP_DEPTH.with(Cell::get) > 0
+}
+
 thread_local! {
     static CONTRACT_PROFILE: Cell<RenderProfile> = const { Cell::new(RenderProfile::Default) };
 }

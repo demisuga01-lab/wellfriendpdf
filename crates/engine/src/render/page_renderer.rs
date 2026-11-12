@@ -8766,7 +8766,14 @@ impl<'a> RenderState<'a> {
         paint_alpha: f32,
     ) {
         if policy == SmoothingPolicy::Disabled {
-            ImagePainter::paint_image_unsmoothed_with_alpha(buf, image, ctm, viewport, paint_alpha);
+            ImagePainter::paint_image_unsmoothed_with_alpha(
+                buf,
+                image,
+                ctm,
+                viewport,
+                paint_alpha,
+                stencil,
+            );
         } else if stencil {
             ImagePainter::paint_stencil_with_options_and_alpha(
                 buf,
@@ -16205,6 +16212,13 @@ impl<'a> RenderState<'a> {
                                 target.paint,
                                 paint_alpha,
                             ) {
+                                ImagePainter::paint_image_edges(
+                                    &mut self.buf,
+                                    paint_raw,
+                                    &paint_ctm,
+                                    &self.viewport,
+                                    paint_alpha,
+                                );
                                 return;
                             }
                         }
@@ -18273,6 +18287,7 @@ impl<'a> RenderState<'a> {
         )>,
         clip_to_bbox: bool,
     ) {
+        let _cell_bitmap = crate::render::vector_quality::IntermediateBitmapGuard::enter();
         let saved_gs = self.gs.clone();
         let saved_resources = self.resources.clone();
         let saved_base_ctm = self.base_ctm;
@@ -18819,16 +18834,27 @@ impl<'a> RenderState<'a> {
         let (width, height) = (self.buf.width, self.buf.height);
         let render_mode = self.buf.render_mode();
         let mut surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
-        Self::paint_image_with_smoothing_policy(
-            self.image_smoothing_policy,
-            false,
-            &mut surface,
-            stencil,
-            paint_ctm,
-            &self.viewport,
-            interpolate,
-            1.0,
-        );
+        // The mask's coverage is sampled like an image but placed like a
+        // stencil.
+        if self.image_smoothing_policy == SmoothingPolicy::Disabled {
+            ImagePainter::paint_image_unsmoothed_with_alpha(
+                &mut surface,
+                stencil,
+                paint_ctm,
+                &self.viewport,
+                1.0,
+                true,
+            );
+        } else {
+            ImagePainter::paint_stencil_coverage_with_options_and_alpha(
+                &mut surface,
+                stencil,
+                paint_ctm,
+                &self.viewport,
+                interpolate,
+                1.0,
+            );
+        }
         let alpha = surface
             .to_rgba_bytes()
             .chunks_exact(4)
@@ -20735,6 +20761,7 @@ impl<'a> RenderState<'a> {
         font_dict: &PdfDictionary,
         glyph: &DecodedGlyph,
     ) -> Option<f64> {
+        let _glyph_bitmap = crate::render::vector_quality::IntermediateBitmapGuard::enter();
         let Some(glyph_name) = glyph.glyph_name.as_deref() else {
             log::debug!(
                 "PageRenderer: Type3 glyph code {} has no PDF Encoding glyph name; refusing Unicode-derived CharProc alias",
