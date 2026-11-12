@@ -186,6 +186,20 @@ fn subpath_lines(points: &[Point], to_device: &Transform2D) -> Option<ZeroAreaLi
             });
         }
     }
+    // A subpath with curves whose every point (control points included)
+    // lies on one line encloses no area either. PDFium's checks above skip
+    // curve points, so it only draws the parts that fold back over a line
+    // (crbug.com/42270524, a PDFium bug: its expected image, like Poppler,
+    // shows the whole path); the whole subpath is drawn instead.
+    if points.iter().any(|p| p.kind == Kind::Bezier) && collinear(points) {
+        return Some(ZeroAreaLines {
+            segments: points
+                .windows(2)
+                .map(|pair| [device(&pair[0]), device(&pair[1])])
+                .collect(),
+            thin: points.len() > 3,
+        });
+    }
     // Lines that fold back onto the previous one.
     let mut segments = Vec::new();
     let mut i = 0;
@@ -233,6 +247,28 @@ fn subpath_lines(points: &[Point], to_device: &Transform2D) -> Option<ZeroAreaLi
     Some(ZeroAreaLines {
         thin: points.len() > 3,
         segments,
+    })
+}
+
+/// Whether all points lie on one line through two distinct points.
+fn collinear(points: &[Point]) -> bool {
+    let Some(first) = points.first() else {
+        return false;
+    };
+    let Some(other) = points.iter().find(|p| !p.same(first)) else {
+        return false;
+    };
+    let (dx, dy) = (
+        f64::from(other.x) - f64::from(first.x),
+        f64::from(other.y) - f64::from(first.y),
+    );
+    let length = dx.hypot(dy);
+    points.iter().all(|p| {
+        let (px, py) = (
+            f64::from(p.x) - f64::from(first.x),
+            f64::from(p.y) - f64::from(first.y),
+        );
+        (dx * py - dy * px).abs() <= 1e-6 * length * px.hypot(py).max(1.0)
     })
 }
 
@@ -332,6 +368,44 @@ mod tests {
             }
         }
         path
+    }
+
+    #[test]
+    fn collinear_subpaths_with_curves_are_drawn_whole() {
+        // bug_42270524: 0,0 -> 130,130, a straight curve to 200,200, then
+        // lines to 400,400 and back and forth between 300 and 400.
+        let paint = zero_area_paint(
+            &path(&[
+                ("m", &[0.0, 0.0]),
+                ("l", &[130.0, 130.0]),
+                ("c", &[150.0, 150.0, 180.0, 180.0, 200.0, 200.0]),
+                ("l", &[400.0, 400.0]),
+                ("l", &[300.0, 300.0]),
+                ("l", &[400.0, 400.0]),
+                ("l", &[300.0, 300.0]),
+            ]),
+            &Transform2D::identity(),
+        );
+        let Some(ZeroAreaPaint::Lines(lines)) = paint else {
+            panic!("expected zero-area lines: {paint:?}");
+        };
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].thin);
+        assert_eq!(
+            lines[0].segments.first(),
+            Some(&[(0.0, 0.0), (130.0, 130.0)])
+        );
+        assert_eq!(lines[0].segments.len(), 8);
+        // A curve that bends is not zero-area.
+        let bent = zero_area_paint(
+            &path(&[
+                ("m", &[0.0, 0.0]),
+                ("c", &[0.0, 50.0, 50.0, 50.0, 50.0, 0.0]),
+                ("l", &[0.0, 0.0]),
+            ]),
+            &Transform2D::identity(),
+        );
+        assert_eq!(bent, None);
     }
 
     #[test]
