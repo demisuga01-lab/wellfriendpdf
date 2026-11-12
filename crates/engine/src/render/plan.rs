@@ -96,6 +96,16 @@ pub fn graphics_state_color_component_arity_refusal(
         ColorSpace::DeviceCMYK => ("DeviceCMYK", 4),
         ColorSpace::Named(_) => return None,
     };
+    // A trailing pattern name selects that pattern whatever the current
+    // space (PDFium's `Handle_SetColorPS_*`; see the graphics state).
+    if matches!(op.operator.as_str(), "SCN" | "scn")
+        && op
+            .operands
+            .last()
+            .is_some_and(|operand| operand.as_name().is_some())
+    {
+        return None;
+    }
     if op
         .operands
         .iter()
@@ -3178,9 +3188,7 @@ impl PackedDisplayList {
                     .clip_transforms
                     .get(hot.state_id as usize)
                     .ok_or_else(|| {
-                        WellfriendError::MalformedPdf(
-                            "packed clip transform missing".to_string(),
-                        )
+                        WellfriendError::MalformedPdf("packed clip transform missing".to_string())
                     })?;
                 dispatcher.dispatch_clip(path, ctm, fill_rule_from_flag(hot.flags));
             }

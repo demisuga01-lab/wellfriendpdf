@@ -23993,6 +23993,10 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                         return;
                     }
                     self.state.set_active_stroke_pattern(n, pattern.clone());
+                    crate::content::state::pattern_name_selects_pattern_space(
+                        &mut self.state.gs.stroke_color_space,
+                        &mut self.state.gs.stroke_color,
+                    );
                 }
                 if !components.is_empty() {
                     self.state.gs.stroke_color = Color {
@@ -24011,6 +24015,10 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                         return;
                     }
                     self.state.set_active_fill_pattern(n, pattern.clone());
+                    crate::content::state::pattern_name_selects_pattern_space(
+                        &mut self.state.gs.fill_color_space,
+                        &mut self.state.gs.fill_color,
+                    );
                 }
                 if !components.is_empty() {
                     self.state.gs.fill_color = Color {
