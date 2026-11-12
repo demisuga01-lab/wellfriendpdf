@@ -127,6 +127,7 @@ export class ImageFragmentOutput {
   bytes(): Uint8Array;
   reportJson(): ReportJson;
   free(): void;
+  private constructor();
 }
 
 /** Retained native PDF editor. Run synchronous WASM methods in a dedicated worker.
@@ -185,6 +186,8 @@ export class WellfriendOutput {
   bytes(): Uint8Array;
   byteLength(): number;
   reportJson(): ReportJson;
+  private constructor();
+  free(): void;
 }
 
 export type RenderContractPixelFormat = "Rgba8" | "Bgra8" | "Rgb8" | "Bgr8" | "Gray8" | "rgba8" | "bgra8" | "rgb8" | "bgr8" | "gray8" | "gray" | "grey8" | "grey";
@@ -250,6 +253,24 @@ export class WellfriendRenderContract {
   /** FormHighlightPolicy JSON: text/push_button/check_box/radio_button/combo_box/list_box/signature colours and focus_field. */
   withFormHighlightJson(policyJson: string): WellfriendRenderContract;
   withoutFormHighlight(): WellfriendRenderContract;
+  private constructor();
+  free(): void;
+  /**
+   * Render profile: default, pdfium (render like PDFium) or
+   * pdfium-test (pdfium plus pdfium_test's form highlight). Sets
+   * every field the profile bundles.
+   */
+  withProfile(profile: string): WellfriendRenderContract;
+  /**
+   * Filled-rectangle pixel snapping: default or pdfium (PDFium's
+   * whole-pixel rectangle fast path; abutting fills show no seams).
+   */
+  withRectSnapping(rect_snapping: string): WellfriendRenderContract;
+  /**
+   * Stroke adjustment: default or off (never snap strokes to whole
+   * pixels, like PDFium).
+   */
+  withStrokeAdjustment(stroke_adjustment: string): WellfriendRenderContract;
 }
 
 export class ProgressiveRenderJob {
@@ -277,24 +298,30 @@ export class ProgressiveRenderJob {
   finishPng(): Uint8Array;
   finishPngWithCancellation(cancellation: boolean | AbortSignal): Uint8Array;
   close(): void;
+  private constructor();
+  free(): void;
 }
 
 export class RenderCancellation {
   constructor();
   cancel(): void;
   isCancelled(): boolean;
+  free(): void;
 }
 
 export class RenderCache {
   constructor();
   clear(): void;
   applyRenderInvalidationPlanJson(planJson: string): ReportJson;
+  free(): void;
 }
 
 export class AdjacentPagePrefetchExecution {
   reportJson(): ReportJson;
   hasJob(): boolean;
   takeJob(): ProgressiveRenderJob | undefined;
+  private constructor();
+  free(): void;
 }
 
 export class WellfriendPdf {
@@ -517,4 +544,285 @@ export class WellfriendPdf {
   sanitize(policy?: string): WellfriendOutput;
   canonicalize(dateEpoch?: bigint | number): WellfriendOutput;
   redactTermsJson(termsJson: string, strict: boolean): WellfriendOutput;
+  free(): void;
+  advanced_editingInkFit(page: number, annotation_index: number, options_json: string | null | undefined, signature_policy_override: boolean): WellfriendOutput;
+  advanced_editingReportJson(): string;
+  advanced_editingTextEdit(page: number, old_text: string, new_text: string, mode: string, options_json?: string | null): WellfriendOutput;
+  advanced_editingVectorEdit(page: number, stable_id: string, operation_json: string, options_json?: string | null): WellfriendOutput;
+  advanced_editingVectorListJson(page: number): string;
+  advanced_editing_closeoutReportJson(): string;
+  aesGcmReportJson(): string;
+  annotationAppearanceGenerate(options_json?: string | null): WellfriendOutput;
+  annotationAppearanceReportJson(options_json?: string | null): string;
+  annotationXfdfExport(): WellfriendOutput;
+  annotationXfdfImport(xfdf: Uint8Array, options_json?: string | null): WellfriendOutput;
+  annotation_media_redactionReportJson(): string;
+  associatedFileAdd(payload: Uint8Array, options_json: string): WellfriendOutput;
+  associatedFileRemoveOwner(options_json: string): WellfriendOutput;
+  associatedFileUpdateOwner(payload: Uint8Array, options_json: string): WellfriendOutput;
+  associatedFilesRemove(stable_ids_json: string): WellfriendOutput;
+  associatedFilesReportJson(): string;
+  associatedFilesSanitize(options_json?: string | null): WellfriendOutput;
+  static compression_officeOfficeInspectJson(bytes: Uint8Array, format: string): string;
+  static compression_officeOfficeToPdf(bytes: Uint8Array, format: string): WellfriendOutput;
+  compression_officeOptimize(options_json?: string | null): WellfriendOutput;
+  compression_officeReportJson(): string;
+  static cryptoTamperTestJson(): string;
+  crypto_writerReportJson(): string;
+  document_securityAnalyzeJson(): string;
+  document_securityApply(request_json: string): WellfriendOutput;
+  document_securityPlanJson(request_json: string): string;
+  document_securityReportJson(): string;
+  document_securityUndo(output_pdf: Uint8Array, request_json: string): WellfriendOutput;
+  document_securityVerifyResidualJson(terms_json: string): string;
+  document_subsystemsAnalyzeJson(): string;
+  document_subsystemsApply(request_json: string): WellfriendOutput;
+  document_subsystemsPlanJson(request_json: string): string;
+  document_subsystemsReportJson(): string;
+  document_subsystemsUndo(output_pdf: Uint8Array, request_json: string): WellfriendOutput;
+  editPolicyReportJson(operation: string): string;
+  editing_transactionsFontSubsetPlanJson(text: string, direction?: string | null, policy?: string | null): string;
+  editing_transactionsFontSubstitutionReportJson(requested_family: string, text: string, policy?: string | null): string;
+  editing_transactionsShapeTextJson(text: string, direction?: string | null): string;
+  editing_transactionsTextMapJson(text: string, direction?: string | null): string;
+  /**
+   * Text in reading order (columns, blocks and lines in the order a
+   * reader follows them), the `wellfriendpdf extract-text` default;
+   * `extractText` returns the faster content order. `page` is 1-based;
+   * 0 returns every page, each followed by a newline, as the CLI
+   * prints the document.
+   */
+  extractTextReadingOrder(page: number): string;
+  formActionGraphJson(): string;
+  formJsFlattenValues(options_json?: string | null): WellfriendOutput;
+  formJsReportJson(): string;
+  formJsSanitize(options_json?: string | null): WellfriendOutput;
+  form_action_policyReportJson(): string;
+  incrementalAnnotationEdit(options_json: string, signature_policy_override: boolean): WellfriendOutput;
+  incrementalFormEdit(field_name: string, value: string, signature_policy_override: boolean): WellfriendOutput;
+  incrementalPagePropertyEdit(options_json: string, signature_policy_override: boolean): WellfriendOutput;
+  interactiveDataReportJson(): string;
+  nonaxisRedactionPlanJson(options_json: string): string;
+  static ocrProviderMatrixJson(): string;
+  pubsecReportJson(): string;
+  redactImageMask(options_json: string): WellfriendOutput;
+  redactImageNonaxis(options_json: string): WellfriendOutput;
+  redactInlineImage(options_json: string): WellfriendOutput;
+  richMediaFlattenPoster(): WellfriendOutput;
+  richMediaReportJson(): string;
+  richMediaSanitize(mode?: string | null, custom_json?: string | null): WellfriendOutput;
+  static runtimeCapabilitiesJson(config_json?: string | null): string;
+  static runtimeConfigJson(config_json?: string | null): string;
+  secure_mutationReportJson(): string;
+  secure_mutation_closeoutReportJson(): string;
+  /**
+   * Incremental Signing Standards append-only incremental signing (in-memory). Produces a
+   * signed PDF whose original bytes are preserved as a prefix, reopened
+   * and validated before it is returned. `key_pem`/`cert_pem` are the
+   * caller-supplied in-memory signer material (never logged/persisted).
+   */
+  signPdf(key_pem: string, cert_pem: string, placeholder_size: number, certify: number, field_name?: string | null, reason?: string | null): WellfriendOutput;
+  /**
+   * Incremental Signing Standards append-only incremental signing plan (in-memory). `certify`
+   * in 1..=3 plans a certification (DocMDP) signature; else approval.
+   */
+  signPlanJson(key_pem: string, cert_pem: string, placeholder_size: number, certify: number): string;
+  signaturePreservingFormEdit(field_name: string, value: string, options_json: string | null | undefined, explicit_invalidation_override: boolean): WellfriendOutput;
+  signaturePreservingFormPlanJson(field_name: string, value: string, options_json?: string | null): string;
+  signatureReportWithOptionsJson(options_json: string): string;
+  /**
+   * Offline Signature Validation validation with owned caller-supplied trust and
+   * evidence.  WASM never performs implicit AIA, OCSP, or CRL retrieval.
+   */
+  signatureValidation(options: SignatureValidationOptions): string;
+  /**
+   * Offline Signature Validation validation plus a portable, hash-checked evidence
+   * bundle that can be replayed by a later WASM or native invocation.
+   */
+  signatureValidationWithEvidence(options: SignatureValidationOptions): string;
+  signatureValidationWithEvidenceJson(options_json: string): string;
+  /**
+   * Exact WASM signing capability posture. In-memory local signing with
+   * caller-provided PEM key material is supported (pure compute); host
+   * filesystem key loading, network TSA acquisition, and JS external
+   * signer callbacks are reported unsupported rather than faked.
+   */
+  static signingCapabilities(): string;
+  source_editingEditEligibilityJson(request_json: string): string;
+  source_editingImageEligibilityJson(page: number, occurrence?: string | null): string;
+  source_editingOperatorTextEdit(request_json: string): WellfriendOutput;
+  source_editingPathEdit(page: number, stable_id: string, operation_json: string, options_json?: string | null): WellfriendOutput;
+  source_editingPathProvenanceJson(page: number): string;
+  source_editingProvenanceJson(page: number, source_text: string, replacement_text: string): string;
+  source_editingReportJson(): string;
+  text_reflowConfidenceReportJson(request_json: string): string;
+  text_reflowConstraintsReportJson(request_json: string): string;
+  text_reflowFlowGraphReportJson(): string;
+  text_reflowLayoutAnalyzeJson(request_json: string): string;
+  text_reflowOverflowReportJson(request_json: string): string;
+  text_reflowReadingOrderReportJson(): string;
+  text_reflowReflowDocument(request_json: string): WellfriendOutput;
+  text_reflowReflowOperationReportJson(request_json: string): string;
+  text_reflowReflowPreviewJson(request_json: string): string;
+  text_reflowReflowRegion(request_json: string): WellfriendOutput;
+  text_reflowReportJson(): string;
+  text_reflowSemanticLayoutJson(): string;
+  text_reflowUndoReflow(output_pdf: Uint8Array, request_json: string): WellfriendOutput;
+  text_reflowValidateReflowOutputJson(output_pdf: Uint8Array, request_json: string): string;
+  static timestampTokenValidationJson(token: Uint8Array, signature_value: Uint8Array, options_json?: string | null): string;
+  universalEditingInspectObjectV2Json(number: number, generation: number): string;
+  universalRenderQualificationV2Json(options_json?: string | null): string;
+  /**
+   * Incremental Signing Standards clause-mapped PDF/A validation. `target` e.g. "PDF/A-2B".
+   */
+  validatePdfaStandardsJson(target?: string | null): string;
+  /**
+   * Incremental Signing Standards clause-mapped PDF/UA validation. `target` e.g. "PDF/UA-1".
+   */
+  validatePdfuaStandardsJson(target?: string | null): string;
+  /**
+   * Incremental Signing Standards clause-mapped PDF/X validation. `target` e.g. "PDF/X-4".
+   */
+  validatePdfxStandardsJson(target?: string | null): string;
+  /**
+   * Incremental Signing Standards combined PDF/A + PDF/UA + PDF/X validation with
+   * cross-profile conflicts.
+   */
+  validateStandardsAllJson(target?: string | null): string;
+  wordPaginationAuditJson(layout: string): string;
+  writerCloseoutReportJson(): string;
+  writerDeterminismAuditJson(): string;
+  writerExternalDiffJson(): string;
+  writer_historyFontReconstructionReportJson(): string;
+  static writer_historyHistoryReportJson(): string;
+  writer_historyObjectStreamReportJson(): string;
+  writer_historyPackObjectStreams(): WellfriendOutput;
+  writer_historyRasterVectorReportJson(page: number, options_json?: string | null): string;
+  writer_historyReportJson(): string;
+}
+
+export class TextEditor {
+  free(): void;
+  /**
+   * The current document bytes.
+   */
+  bytes(): Uint8Array;
+  canRedo(): boolean;
+  canUndo(): boolean;
+  /**
+   * Caret JSON in pixels: `{offset, line, top: [x, y], bottom: [x, y]}`.
+   */
+  caretJson(page: number, offset: number, dpi: number): string;
+  delete(page: number, start: number, end: number): string;
+  /**
+   * Page-to-pixel transform `[a, b, c, d, e, f]` of a render at `dpi`.
+   */
+  deviceTransform(page: number, dpi: number): Float64Array;
+  /**
+   * Caret offset for a click at pixel (`x`, `y`), or -1 on a page
+   * without text.
+   */
+  hitTest(page: number, x: number, y: number, dpi: number): bigint;
+  insert(page: number, offset: number, text: string): string;
+  /**
+   * Page layout JSON (PDF user space): `text`, `glyphs` with quads,
+   * `lines`, `paragraphs`, `page_box`, `rotation`.
+   */
+  layoutJson(page: number): string;
+  /**
+   * Caret offset after a keyboard movement (`left`, `word_right`,
+   * `line_up`, `line_end`, ...).
+   */
+  moveCaret(page: number, offset: number, movement: string): number;
+  constructor(bytes: Uint8Array);
+  /**
+   * `[start, end]` of the word, line or paragraph (`unit`) around `offset`.
+   */
+  range(page: number, offset: number, unit: string): Uint32Array;
+  redo(): boolean;
+  /**
+   * Replace `[start, end)` with `text`; returns the outcome JSON
+   * (`caret`, `dirty_region` in user space, transaction `report`).
+   */
+  replace(page: number, start: number, end: number, text: string): string;
+  /**
+   * Selection highlight quads in pixels, one per line: `[[[x, y] x4], ...]`.
+   */
+  selectionJson(page: number, start: number, end: number, dpi: number): string;
+  /**
+   * The text of `[start, end)`.
+   */
+  textIn(page: number, start: number, end: number): string;
+  undo(): boolean;
+}
+
+/**
+ * Owned offline Signature Validation validation options for the WASM surface.
+ *
+ * WASM accepts caller-supplied trust anchors, intermediates, and
+ * revocation evidence, but has no native network transport.  Enabling a
+ * retrieval policy returns an exact unsupported error instead of allowing
+ * implicit browser networking or relying on ambient platform trust.
+ */
+export class SignatureValidationOptions {
+  free(): void;
+  addCrlDer(der: Uint8Array): void;
+  addDistrustedCertificateSha256(fingerprint: string): void;
+  addIntermediateDer(der: Uint8Array): void;
+  addOcspResponseDer(der: Uint8Array): void;
+  addTrustAnchorDer(der: Uint8Array): void;
+  applyEvidenceStore(store: SignatureEvidenceStore): void;
+  applyIntermediateStore(store: SignatureIntermediateStore): void;
+  applyRetrievalPolicy(policy: SignatureRetrievalPolicy): void;
+  applyTrustStore(store: SignatureTrustStore): void;
+  constructor();
+  static onlineRetrievalCapability(): string;
+  setAlgorithmPolicyJson(policy_json: string): void;
+  setCancellation(cancellation: SignatureValidationCancellation): void;
+  setEvidenceBundleJson(bundle_json: string): void;
+  setPathLimits(max_chain_depth: number, max_path_candidates: number): void;
+  setRetrievalPolicyJson(policy_json: string): void;
+  setRevocationMode(mode: string): void;
+  setValidationTimeUnix(unix: number): void;
+  useSystemValidationTime(): void;
+}
+
+export class SignatureValidationCancellation {
+  free(): void;
+  cancel(): void;
+  isCancelled(): boolean;
+  constructor();
+}
+
+export class SignatureTrustStore {
+  free(): void;
+  addAnchorDer(der: Uint8Array, origin?: string | null, purpose?: string | null): void;
+  addDistrustedCertificateSha256(fingerprint: string): void;
+  anchorCount(): number;
+  constructor();
+}
+
+export class SignatureRetrievalPolicy {
+  free(): void;
+  constructor();
+  setJson(policy_json: string): void;
+  toJson(): string;
+}
+
+export class SignatureIntermediateStore {
+  free(): void;
+  addDer(der: Uint8Array): void;
+  certificateCount(): number;
+  constructor();
+}
+
+export class SignatureEvidenceStore {
+  free(): void;
+  addCrlDer(der: Uint8Array): void;
+  addOcspResponseDer(der: Uint8Array): void;
+  bundleJson(): string | undefined;
+  crlCount(): number;
+  importBundleJson(bundle_json: string): void;
+  constructor();
+  ocspCount(): number;
 }

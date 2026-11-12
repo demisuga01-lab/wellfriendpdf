@@ -55,6 +55,11 @@ contains the exact original transport bytes. See the
   `wasm-pack build crates/wellfriendpdf-wasm --target nodejs --out-dir pkg-node` for
   Node use.
 - `wellfriendpdf.d.ts` documents the Binding Parity/03 public TypeScript surface.
+  It must declare every class, method and function wasm-bindgen generates:
+  after a web build, `npm run check:dts` (in this directory, after `npm ci`)
+  lists anything missing and `npm run sync:dts` copies the missing
+  declarations, with their doc comments, from `pkg/wellfriendpdf_wasm.d.ts`.
+  The packaging gate runs the check.
 
 The checked-in browser example under `examples/browser` must be regenerated
 after source changes; its prebuilt `pkg/` directory is an example artifact, not
