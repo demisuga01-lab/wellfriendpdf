@@ -4426,7 +4426,9 @@ struct CanonicalizeArgs {
 /// free, so every new buffer page-faults again; keeping them in the heap
 /// lets later buffers reuse already-faulted pages (about a third fewer page
 /// faults on scanned pages). The process exits soon after, so the retained
-/// memory is not a concern.
+/// memory is not a concern. Once the worker count is known,
+/// `tune_allocator_for_workers` replaces these with lean settings, because
+/// with several workers each arena keeps its own retained peak.
 ///
 /// A tunable the environment already sets (`MALLOC_MMAP_THRESHOLD_`,
 /// `MALLOC_TRIM_THRESHOLD_`, `MALLOC_TOP_PAD_`, or `GLIBC_TUNABLES`) is left
@@ -4457,21 +4459,16 @@ fn tune_allocator_for_workers(workers: usize) {
     const M_MMAP_THRESHOLD: i32 = -3;
     let arenas = i32::try_from(workers.saturating_add(1)).unwrap_or(i32::MAX);
     set_malloc_tunable(M_ARENA_MAX, "MALLOC_ARENA_MAX", arenas);
-    // A job given a share of a busy host (the tools service runs several at
-    // once) keeps its memory near its live data: large buffers are mapped
-    // and returned on free, and freed heap above 64 MiB is trimmed. That
-    // costs a few page faults; a job with the whole host keeps the faster
-    // retention above.
-    if workers <= LEAN_ALLOCATOR_WORKERS {
-        set_malloc_tunable(M_MMAP_THRESHOLD, "MALLOC_MMAP_THRESHOLD_", 1024 * 1024);
-        set_malloc_tunable(M_TRIM_THRESHOLD, "MALLOC_TRIM_THRESHOLD_", 64 * 1024 * 1024);
-        set_malloc_tunable(M_TOP_PAD, "MALLOC_TOP_PAD_", 0);
-    }
+    // Keep memory near the live data: large buffers are mapped and returned
+    // on free, and freed heap above 64 MiB is trimmed. The one-shot
+    // retention above would let every worker's arena keep its own high-water
+    // mark: on atlas_animals (303 scanned pages, 150 dpi, 8 workers) that
+    // was about 0.9 GB of freed memory still resident (1.83 GB peak RSS
+    // against 0.95 GB), for about 1 s less system time.
+    set_malloc_tunable(M_MMAP_THRESHOLD, "MALLOC_MMAP_THRESHOLD_", 1024 * 1024);
+    set_malloc_tunable(M_TRIM_THRESHOLD, "MALLOC_TRIM_THRESHOLD_", 64 * 1024 * 1024);
+    set_malloc_tunable(M_TOP_PAD, "MALLOC_TOP_PAD_", 0);
 }
-
-/// Worker counts at or below which the allocator keeps memory lean.
-#[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc")))]
-const LEAN_ALLOCATOR_WORKERS: usize = 2;
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc"))))]
 fn tune_allocator_for_workers(_workers: usize) {}
@@ -9987,8 +9984,13 @@ fn encode_font_substitution_log_json(
     serde_json::to_vec_pretty(log).map_err(|err| err.to_string())
 }
 
+/// Resource-cache bytes `render` keeps between pages, split evenly between
+/// the page workers (the engine's default cache budget for one renderer).
+const RENDER_RETAINED_CACHE_BYTES: usize = 256 * 1024 * 1024;
+/// Smallest per-worker share of [`RENDER_RETAINED_CACHE_BYTES`].
+const RENDER_MIN_WORKER_CACHE_BYTES: usize = 32 * 1024 * 1024;
+
 fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
-    use rayon::prelude::*;
     use std::io::Write;
     use wellfriendpdf_engine::{CancelToken, RenderDocumentCache, RenderMode};
     use zip::{write::FileOptions, CompressionMethod, ZipWriter};
@@ -10497,40 +10499,59 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         };
 
         if page_nums.len() >= PARALLEL_RENDER_PAGE_THRESHOLD {
-            // Workers pull pages in order (par_bridge), keep one document cache
-            // each for the whole run, and hand finished pages to this thread,
-            // which reorders the few that arrive early and writes them. Memory
-            // stays bounded by the pages in flight, not the page count.
-            use std::sync::atomic::{AtomicBool, Ordering};
-            let window = rayon::current_num_threads().max(1) * 2;
+            // One thread per worker pulls the next page in order, keeps one
+            // document cache for the whole run, and hands finished pages to
+            // this thread, which reorders the few that arrive early and
+            // writes them. Memory stays bounded by the pages in flight, not
+            // the page count. The page threads are not rayon workers: a rayon
+            // worker that waits inside a page (the renderer and its decoders
+            // run nested parallel work on the pool) steals and starts another
+            // page, so par_bridge kept more pages in flight than workers
+            // (ten for eight workers on atlas_animals, each holding a
+            // page-size raster). Nested work still runs on the rayon pool.
+            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+            let workers = rayon::current_num_threads().max(1).min(page_nums.len());
+            let window = workers * 2;
+            // The workers share one retained-cache budget: each keeps at
+            // most its share of fonts, glyphs, decoded images and programs
+            // between pages, so the retained total stays near one cache's
+            // size instead of growing with the worker count.
+            let retained_cache_bytes =
+                (RENDER_RETAINED_CACHE_BYTES / workers).max(RENDER_MIN_WORKER_CACHE_BYTES);
             let (tx, rx) = std::sync::mpsc::sync_channel::<(
                 usize,
                 usize,
                 Result<RenderedPageOutput, String>,
             )>(window);
             let stop = AtomicBool::new(false);
+            let next_page = AtomicUsize::new(0);
             let mut write_result: Result<(), Box<dyn Error>> = Ok(());
-            std::thread::scope(|scope| {
+            std::thread::scope(|scope| -> Result<(), Box<dyn Error>> {
                 let stop = &stop;
+                let next_page = &next_page;
                 let encode_page = &encode_page;
                 let page_nums = &page_nums;
-                scope.spawn(move || {
-                    page_nums
-                        .iter()
-                        .copied()
-                        .enumerate()
-                        .par_bridge()
-                        .for_each_init(
-                            || (RenderDocumentCache::single_pass(), tx.clone()),
-                            |(document_cache, tx), (index, page_num)| {
-                                if stop.load(Ordering::Relaxed) {
-                                    return;
+                for worker in 0..workers {
+                    let tx = tx.clone();
+                    std::thread::Builder::new()
+                        .name(format!("wellfriendpdf-render-{worker}"))
+                        .stack_size(WORKER_STACK_BYTES)
+                        .spawn_scoped(scope, move || {
+                            let mut document_cache = RenderDocumentCache::single_pass();
+                            document_cache.set_retained_byte_limit(retained_cache_bytes);
+                            while !stop.load(Ordering::Relaxed) {
+                                let index = next_page.fetch_add(1, Ordering::Relaxed);
+                                let Some(&page_num) = page_nums.get(index) else {
+                                    break;
+                                };
+                                let output = encode_page(page_num, &mut document_cache);
+                                if tx.send((index, page_num, output)).is_err() {
+                                    break;
                                 }
-                                let output = encode_page(page_num, document_cache);
-                                let _ = tx.send((index, page_num, output));
-                            },
-                        );
-                });
+                            }
+                        })?;
+                }
+                drop(tx);
                 let mut pending = std::collections::BTreeMap::new();
                 let mut next = 0usize;
                 for (index, page_num, output) in rx {
@@ -10545,7 +10566,8 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                         }
                     }
                 }
-            });
+                Ok(())
+            })?;
             write_result?;
         } else {
             let mut document_cache = RenderDocumentCache::single_pass();
