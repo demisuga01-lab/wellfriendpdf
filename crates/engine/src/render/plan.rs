@@ -6761,6 +6761,7 @@ mod tests {
                         miter_limit: 10.0,
                         dash: crate::render::DashState::solid(),
                         flatness: 1.0,
+                        fill_with_stroke: false,
                     },
                     rule: FillRule::NonZero,
                     bounds: None,

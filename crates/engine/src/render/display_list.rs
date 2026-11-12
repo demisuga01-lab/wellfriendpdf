@@ -363,6 +363,9 @@ pub struct DrawState {
     pub line_join: LineJoin,
     pub miter_limit: f64,
     pub dash: DashState,
+    /// The fill half of a fill-and-stroke operator. PDFium keeps degenerate
+    /// fills visible only for fill-only paths (see `zero_area`).
+    pub fill_with_stroke: bool,
     pub flatness: f64,
 }
 
@@ -1516,12 +1519,16 @@ impl RenderDevice for CpuRenderDevice {
         }
         let options =
             VectorRasterOptions::for_path_paint(self.buf.render_mode(), state.stroke_adjustment);
-        let zero_area = crate::render::zero_area::compat_zero_area_paint(
-            &self.buf,
-            path,
-            &state.ctm,
-            &self.viewport,
-        );
+        let zero_area = if state.fill_with_stroke {
+            None
+        } else {
+            crate::render::zero_area::compat_zero_area_paint(
+                &self.buf,
+                path,
+                &state.ctm,
+                &self.viewport,
+            )
+        };
         if let Some(crate::render::zero_area::ZeroAreaPaint::Cosmetic(segment)) = zero_area {
             crate::render::zero_area::stroke_device_hairlines(
                 &mut self.buf,
@@ -2920,7 +2927,10 @@ impl<'a> DisplayListBuilder<'a> {
             self.stats.fills += 1;
             self.ops.push(DisplayOp::FillPath {
                 path: path.clone(),
-                state: state.clone(),
+                state: DrawState {
+                    fill_with_stroke: true,
+                    ..state.clone()
+                },
                 rule,
                 bounds: self.path_bounds_for_fill(),
             });
@@ -3099,6 +3109,7 @@ impl<'a> DisplayListBuilder<'a> {
                 DashState::new(self.gs.dash.pattern.clone(), self.gs.dash.phase)
             },
             flatness: self.gs.path_flatness_tolerance(),
+            fill_with_stroke: false,
         }
     }
 

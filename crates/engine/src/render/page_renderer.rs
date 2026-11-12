@@ -11588,12 +11588,16 @@ impl<'a> RenderState<'a> {
                 self.buf.blend_mode = state.blend_mode;
                 let path_binary_alpha = self.path_smoothing_disabled();
                 let raster_options = self.raster_options_for(state.stroke_adjustment);
-                let zero_area = crate::render::zero_area::compat_zero_area_paint(
-                    &self.buf,
-                    path,
-                    &state.ctm,
-                    &self.viewport,
-                );
+                let zero_area = if state.fill_with_stroke {
+                    None
+                } else {
+                    crate::render::zero_area::compat_zero_area_paint(
+                        &self.buf,
+                        path,
+                        &state.ctm,
+                        &self.viewport,
+                    )
+                };
                 if let Some(crate::render::zero_area::ZeroAreaPaint::Cosmetic(segment)) = zero_area
                 {
                     crate::render::zero_area::stroke_device_hairlines(
@@ -24328,12 +24332,16 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
         }
         let path_binary_alpha = self.state.path_smoothing_disabled();
         let raster_options = self.state.raster_options_for(draw_state.stroke_adjustment);
-        let zero_area = crate::render::zero_area::compat_zero_area_paint(
-            &self.state.buf,
-            path,
-            &ctm,
-            self.viewport_ref,
-        );
+        let zero_area = if draw_state.fill_with_stroke {
+            None
+        } else {
+            crate::render::zero_area::compat_zero_area_paint(
+                &self.state.buf,
+                path,
+                &ctm,
+                self.viewport_ref,
+            )
+        };
         if let Some(crate::render::zero_area::ZeroAreaPaint::Cosmetic(segment)) = zero_area {
             crate::render::zero_area::stroke_device_hairlines(
                 &mut self.state.buf,
