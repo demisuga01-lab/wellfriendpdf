@@ -6715,6 +6715,9 @@ struct RenderState<'a> {
     /// Nesting depth of text-showing operators; while non-zero, forced
     /// colours use the text entries of the scheme.
     forced_color_text_depth: u32,
+    /// Set while text is stroked into the coverage mask a stroke pattern is
+    /// painted through.
+    pattern_text_stroke_pass: bool,
     /// Nesting depth of pattern paints, during which forced colours are
     /// suspended (pattern cells keep their real colours, as in PDFium).
     forced_color_suppression: u32,
@@ -8611,6 +8614,7 @@ impl<'a> RenderState<'a> {
             image_smoothing_policy: SmoothingPolicy::Antialiased,
             forced_color_scheme: None,
             forced_color_text_depth: 0,
+            pattern_text_stroke_pass: false,
             forced_color_suppression: 0,
             pattern_inherited_alpha: (1.0, 1.0),
             gs_restore_floor: 0,
@@ -14608,6 +14612,7 @@ impl<'a> RenderState<'a> {
             // SMask /G with a normal colour mode).
             forced_color_scheme: None,
             forced_color_text_depth: 0,
+            pattern_text_stroke_pass: false,
             forced_color_suppression: 0,
             pattern_inherited_alpha: (1.0, 1.0),
             gs_restore_floor: 0,
@@ -16486,6 +16491,7 @@ impl<'a> RenderState<'a> {
             image_smoothing_policy: self.image_smoothing_policy,
             forced_color_scheme: self.forced_color_scheme,
             forced_color_text_depth: self.forced_color_text_depth,
+            pattern_text_stroke_pass: false,
             forced_color_suppression: self.forced_color_suppression,
             pattern_inherited_alpha: self.pattern_inherited_alpha,
             gs_restore_floor: 0,
@@ -18233,11 +18239,78 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    fn active_text_font_is_type3(&mut self) -> bool {
+        let font_name = self.gs.text.font_name.clone();
+        let (font_dict, _) = self.current_text_font_resource(&font_name);
+        font_dict.is_some_and(|dict| detect_font_subtype(&dict) == FontSubtype::Type3)
+    }
+
+    /// Text whose stroke is a pattern: the glyph strokes are drawn into a
+    /// coverage mask and the stroke pattern is painted through it, after any
+    /// fill (render modes 2 and 6).
+    fn process_pattern_stroked_text_string(&mut self, bytes: &[u8]) {
+        let mode = self.gs.text.rendering_mode;
+        let start_tm = self.gs.text.tm;
+        if matches!(mode, 2 | 6) {
+            self.gs.text.rendering_mode = if mode == 6 { 4 } else { 0 };
+            self.process_text_string(bytes, true);
+            self.gs.text.tm = start_tm;
+        }
+        let (width, height) = (self.buf.width, self.buf.height);
+        let render_mode = self.buf.render_mode();
+        let surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
+        let page_buf = std::mem::replace(&mut self.buf, surface);
+        let saved_space = std::mem::replace(
+            &mut self.gs.stroke_color_space,
+            crate::content::state::ColorSpace::DeviceGray,
+        );
+        let saved_color = std::mem::replace(
+            &mut self.gs.stroke_color,
+            crate::content::state::Color::black(),
+        );
+        let saved_alpha = std::mem::replace(&mut self.gs.stroke_alpha, 1.0);
+        let saved_blend = std::mem::take(&mut self.gs.blend_mode);
+        let saved_overprint = std::mem::replace(&mut self.gs.stroke_overprint, false);
+        self.gs.text.rendering_mode = if mode == 5 { 5 } else { 1 };
+        self.pattern_text_stroke_pass = true;
+        self.process_text_string(bytes, true);
+        self.pattern_text_stroke_pass = false;
+        self.gs.text.rendering_mode = mode;
+        self.gs.stroke_color_space = saved_space;
+        self.gs.stroke_color = saved_color;
+        self.gs.stroke_alpha = saved_alpha;
+        self.gs.blend_mode = saved_blend;
+        self.gs.stroke_overprint = saved_overprint;
+        let surface = std::mem::replace(&mut self.buf, page_buf);
+        let alpha = surface
+            .to_rgba_bytes()
+            .chunks_exact(4)
+            .map(|pixel| pixel[3])
+            .collect::<Vec<_>>();
+        self.recycle_offscreen_buffer(surface);
+        self.paint_pattern_through_device_mask(
+            ClipMask::from_alpha_bytes(width, height, alpha),
+            true,
+        );
+    }
+
     /// Paint the current fill pattern through a device-space coverage mask
     /// (glyph outlines or a stencil image), intersected with the current
     /// clip.
-    fn paint_fill_pattern_through_device_mask(&mut self, mut mask: ClipMask) {
-        let Some(pattern_name) = self.gs.fill_pattern_name.clone() else {
+    fn paint_fill_pattern_through_device_mask(&mut self, mask: ClipMask) {
+        self.paint_pattern_through_device_mask(mask, false);
+    }
+
+    /// Paint the current fill (or stroke) pattern through a device-space
+    /// coverage mask, intersected with the current clip.
+    fn paint_pattern_through_device_mask(&mut self, mut mask: ClipMask, stroke: bool) {
+        let kind = if stroke { "stroke" } else { "fill" };
+        let pattern_name = if stroke {
+            self.gs.stroke_pattern_name.clone()
+        } else {
+            self.gs.fill_pattern_name.clone()
+        };
+        let Some(pattern_name) = pattern_name else {
             return;
         };
         if let Some(existing) = self.buf.clip_mask() {
@@ -18246,11 +18319,16 @@ impl<'a> RenderState<'a> {
         let Some((x0, y0, x1, y1)) = mask.visible_bounds() else {
             return;
         };
-        let pattern_obj = match self.current_fill_pattern_object(&pattern_name) {
+        let pattern_obj = if stroke {
+            self.current_stroke_pattern_object(&pattern_name)
+        } else {
+            self.current_fill_pattern_object(&pattern_name)
+        };
+        let pattern_obj = match pattern_obj {
             Some(obj) => obj,
             None => {
                 self.record_fatal_render_error(format!(
-                    "pattern fill resource /{pattern_name} is missing"
+                    "pattern {kind} resource /{pattern_name} is missing"
                 ));
                 return;
             }
@@ -18258,7 +18336,7 @@ impl<'a> RenderState<'a> {
         let reader = self.engine.document().reader();
         let Some(pattern_dict) = resolve_to_dict(&pattern_obj, reader) else {
             self.record_fatal_render_error(format!(
-                "pattern fill resource /{pattern_name} did not resolve to a dictionary"
+                "pattern {kind} resource /{pattern_name} did not resolve to a dictionary"
             ));
             return;
         };
@@ -18270,7 +18348,7 @@ impl<'a> RenderState<'a> {
                     return;
                 }
             };
-        let oc_label = format!("pattern fill resource /{pattern_name}");
+        let oc_label = format!("pattern {kind} resource /{pattern_name}");
         if !self.object_optional_content_visible_or_record(pattern_dict.get("OC"), &oc_label) {
             return;
         }
@@ -18281,20 +18359,21 @@ impl<'a> RenderState<'a> {
                     subpaths: vec![vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)]],
                     closed: vec![true],
                 };
-                self.paint_tiling_pattern_with_device_clip(&pattern_obj, mask, &bounds, false);
+                self.paint_tiling_pattern_with_device_clip(&pattern_obj, mask, &bounds, stroke);
             }
             Some(2) => {
-                self.paint_shading_pattern_with_device_clip(
-                    &pattern_dict,
-                    mask,
-                    self.gs.fill_alpha as f32,
-                );
+                let alpha = if stroke {
+                    self.gs.stroke_alpha
+                } else {
+                    self.gs.fill_alpha
+                };
+                self.paint_shading_pattern_with_device_clip(&pattern_dict, mask, alpha as f32);
             }
             Some(other) => self.record_fatal_render_error(format!(
-                "pattern fill resource /{pattern_name} has unsupported PatternType {other}"
+                "pattern {kind} resource /{pattern_name} has unsupported PatternType {other}"
             )),
             None => self.record_fatal_render_error(format!(
-                "pattern fill resource /{pattern_name} missing required /PatternType"
+                "pattern {kind} resource /{pattern_name} missing required /PatternType"
             )),
         }
     }
@@ -18339,8 +18418,23 @@ impl<'a> RenderState<'a> {
     }
 
     fn process_text_string_inner(&mut self, bytes: &[u8], paint: bool) {
-        if paint && matches!(self.gs.text.rendering_mode, 0 | 2 | 4 | 6) && self.is_pattern_fill() {
+        // Type 3 glyph procedures paint with the current colour themselves, so
+        // a pattern reaches their fills and image masks directly.
+        if paint
+            && matches!(self.gs.text.rendering_mode, 0 | 2 | 4 | 6)
+            && self.is_pattern_fill()
+            && !self.active_text_font_is_type3()
+        {
             self.process_pattern_filled_text_string(bytes);
+            return;
+        }
+        if paint
+            && !self.pattern_text_stroke_pass
+            && matches!(self.gs.text.rendering_mode, 1 | 2 | 5 | 6)
+            && self.is_pattern_stroke()
+            && !self.active_text_font_is_type3()
+        {
+            self.process_pattern_stroked_text_string(bytes);
             return;
         }
         let font_name = self.gs.text.font_name.clone();
