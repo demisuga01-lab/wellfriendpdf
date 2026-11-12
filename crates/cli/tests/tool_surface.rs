@@ -3006,6 +3006,51 @@ fn render_contract_raster_policy_options_reach_the_contract() {
         "1,2",
     ]);
     assert!(!out.status.success(), "a malformed colour must fail");
+
+    // A render profile sets its bundle; explicit options override it.
+    let out = run(&[
+        "render",
+        pdf.to_str().unwrap(),
+        "-o",
+        o.to_str().unwrap(),
+        "--dpi",
+        "36",
+        "--profile",
+        "pdfium-test",
+        "--rect-snapping",
+        "default",
+        "--form-focus-field",
+        "form.name",
+        "--write-contract-json",
+        "--json",
+    ]);
+    assert_json(&out, "render pdfium-test profile");
+    let entries = zip_entries(&o);
+    let contract = entries
+        .iter()
+        .find(|(name, _)| name == "page-001.contract.json")
+        .expect("contract sidecar");
+    let contract: serde_json::Value = serde_json::from_slice(&contract.1).unwrap();
+    assert_eq!(contract["profile"], "PdfiumTest");
+    assert!(
+        contract.get("rect_snapping").is_none(),
+        "--rect-snapping overrides the profile"
+    );
+    assert_eq!(contract["stroke_adjustment"], "Off");
+    assert_eq!(contract["text_gamma"], "Pdfium");
+    assert_eq!(contract["form_highlight"]["text"]["r"], 221);
+    assert_eq!(contract["form_highlight"]["text"]["a"], 100);
+    assert_eq!(contract["form_highlight"]["focus_field"], "form.name");
+
+    let out = run(&[
+        "render",
+        pdf.to_str().unwrap(),
+        "-o",
+        o.to_str().unwrap(),
+        "--profile",
+        "skia",
+    ]);
+    assert!(!out.status.success(), "an unknown profile must fail");
     remove_path(&pdf);
     remove_path(&o);
 }

@@ -5074,6 +5074,8 @@ impl PageRenderer {
         plan_contract.vector_antialias_gamma = contract.vector_antialias_gamma;
         plan_contract.text_gamma = contract.text_gamma;
         plan_contract.rect_snapping = contract.rect_snapping;
+        plan_contract.stroke_adjustment = contract.stroke_adjustment;
+        plan_contract.profile = contract.profile;
         plan_contract.forced_colors = contract.forced_colors;
         let mut plan_resource_budget = resource_budget;
         let full_plan_pixels =
@@ -5805,6 +5807,8 @@ impl PageRenderer {
         accepted_expected.vector_antialias_gamma = contract.vector_antialias_gamma;
         accepted_expected.text_gamma = contract.text_gamma;
         accepted_expected.rect_snapping = contract.rect_snapping;
+        accepted_expected.stroke_adjustment = contract.stroke_adjustment;
+        accepted_expected.profile = contract.profile;
         if contract.overprint != OverprintPolicy::PreserveSeparations {
             accepted_expected.overprint = contract.overprint;
         }
@@ -5949,8 +5953,12 @@ impl PageRenderer {
         );
         let _text_raster_guard =
             crate::render::vector_quality::TextRasterContractGuard::enter(contract.text_gamma);
-        let _rect_snap_guard =
-            crate::render::vector_quality::RectSnapContractGuard::enter(contract.rect_snapping);
+        let _rect_snap_guard = crate::render::vector_quality::PixelSnapContractGuard::enter(
+            contract.rect_snapping,
+            contract.stroke_adjustment,
+        );
+        let _profile_guard =
+            crate::render::vector_quality::ProfileContractGuard::enter(contract.profile);
         let mut state = RenderState::new_with_shared_document_cache(
             buf,
             viewport.clone(),
@@ -48759,6 +48767,66 @@ mod tests {
         // around focused buttons only).
         contract.form_highlight = crate::render::FormHighlightPolicy {
             focus_field: Some("name".to_string()),
+            ..Default::default()
+        };
+        let focused = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("focus render");
+        assert!(
+            matching_pixel_bounds(&focused, |p| p[0] < 160 && p[1] < 160 && p[2] < 160).is_none()
+        );
+    }
+
+    #[test]
+    fn pdfium_profile_draws_pdfium_text_annotation_symbol() {
+        let pdf = annotation_pdf(
+            vec![b"<< /Type /Annot /Subtype /Text /Rect [10 10 40 40] /Contents (x) >>".to_vec()],
+            "5 0 R",
+            "",
+            "",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open text annotation PDF");
+        let contract = highlight_contract(&engine);
+        let yellow = |p: PixelColor| p[0] > 240 && p[1] > 240 && p[2] < 40;
+        // Page (20, 20): inside PDFium's bubble (bottom-left anchored 20x20),
+        // below Wellfriend's own top-left anchored note icon.
+        let pdfium = engine
+            .render_page_with_contract(
+                &contract.with_profile(crate::render::RenderProfile::Pdfium),
+                &CancelToken::none(),
+            )
+            .expect("profile render");
+        assert!(
+            yellow(pdfium.get_pixel(20, 80)),
+            "{:?}",
+            pdfium.get_pixel(20, 80)
+        );
+        let default = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("default render");
+        assert!(
+            !yellow(default.get_pixel(20, 80)),
+            "{:?}",
+            default.get_pixel(20, 80)
+        );
+    }
+
+    #[test]
+    fn focused_button_gets_the_dotted_focus_rectangle() {
+        let pdf = annotation_pdf(
+            vec![
+                b"<< /Type /Annot /Subtype /Widget /Rect [10 20 90 40] /FT /Btn /T (check) \
+                   /AS /Off >>"
+                    .to_vec(),
+            ],
+            "5 0 R",
+            "",
+            "/AcroForm << /Fields [5 0 R] >>",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open focus PDF");
+        let mut contract = highlight_contract(&engine);
+        contract.form_highlight = crate::render::FormHighlightPolicy {
+            focus_field: Some("check".to_string()),
             ..Default::default()
         };
         let focused = engine

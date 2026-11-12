@@ -198,6 +198,85 @@ impl RectSnapping {
     }
 }
 
+/// Stroke adjustment: snapping axis-aligned stroke edges (and, with
+/// [`RectSnapping::Default`], rectangle fills) to whole device pixels.
+///
+/// * `Default`: always on in Compatibility mode (Poppler/Splash and Acrobat
+///   behaviour; `/SA` is ignored), and only for content that asks for it
+///   with `/SA true` in HighQuality mode.
+/// * `Off`: never, whatever `/SA` says. PDFium's AGG rasterizer has no
+///   stroke adjustment (`CFX_FillRenderOptions::adjust_stroke` is set from
+///   `/SA` but never read), so thin lines keep their anti-aliased position.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StrokeAdjustment {
+    #[default]
+    Default,
+    Off,
+}
+
+impl StrokeAdjustment {
+    pub fn is_default(&self) -> bool {
+        *self == StrokeAdjustment::Default
+    }
+}
+
+/// A named bundle of render-contract options, applied with
+/// [`RenderContract::apply_profile`].
+///
+/// * `Default`: Wellfriend's own choices (every field below at its default).
+/// * `Pdfium`: render like PDFium's `FPDF_RenderPageBitmap` +
+///   `FPDF_FFLDraw` with no form highlight: PDFium rectangle snapping
+///   ([`RectSnapping::Pdfium`]), no stroke adjustment
+///   ([`StrokeAdjustment::Off`]) and PDFium's text gamma
+///   ([`TextGamma::Pdfium`]).
+/// * `PdfiumTest`: `Pdfium` plus the form highlight PDFium's own test
+///   harness (`pdfium_test`, which produces PDFium's pixel-test
+///   expectations) installs: every field type in RGB (221, 228, 255) at
+///   alpha 100 (`FPDF_SetFormFieldHighlightColor(form, 0, 0xFFE4DD)` with a
+///   `COLORREF`, `FPDF_SetFormFieldHighlightAlpha(form, 100)`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RenderProfile {
+    #[default]
+    Default,
+    Pdfium,
+    PdfiumTest,
+}
+
+impl RenderProfile {
+    pub fn is_default(&self) -> bool {
+        *self == RenderProfile::Default
+    }
+
+    /// Parses `default`, `pdfium` or `pdfium-test` (case-insensitive; `_`
+    /// and the serialized `PdfiumTest` spelling are accepted too).
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+            "default" => Some(Self::Default),
+            "pdfium" => Some(Self::Pdfium),
+            "pdfium-test" | "pdfiumtest" => Some(Self::PdfiumTest),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Pdfium => "pdfium",
+            Self::PdfiumTest => "pdfium-test",
+        }
+    }
+
+    /// The form highlight pdfium_test installs.
+    pub fn pdfium_test_form_highlight() -> FormHighlightPolicy {
+        FormHighlightPolicy::all(ContractColor {
+            r: 221,
+            g: 228,
+            b: 255,
+            a: 100,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AnnotationRenderPolicy {
     #[default]
@@ -243,13 +322,23 @@ impl XfaRenderPolicy {
 /// a field type after its appearance, plus an optional dashed focus
 /// rectangle around the widgets of one field. Off by default; the default
 /// value does not change rendering or the contract's cache identity.
+///
+/// As in PDFium (`CPDFSDK_Widget::DrawShadow`), the colour covers the
+/// widget rectangle truncated to whole device pixels without anti-aliasing,
+/// only widgets of fields in the AcroForm `/Fields` tree are highlighted,
+/// the focused field gets the focus rectangle instead of the colour, the
+/// document must allow form filling, and push buttons and signature fields
+/// are never highlighted (their colours are accepted for API symmetry with
+/// PDFium's per-type setter but have no effect). Note that PDFium's
+/// highlight colour argument is a Windows `COLORREF` (`0x00BBGGRR`):
+/// pdfium_test's `0xFFE4DD` is RGB (221, 228, 255).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FormHighlightPolicy {
     /// Text fields (`/FT /Tx`). The colour's `a` is the highlight opacity;
     /// `None` or `a == 0` leaves the field type unhighlighted.
     pub text: Option<ContractColor>,
-    /// Push buttons.
+    /// Push buttons (never painted, like PDFium).
     pub push_button: Option<ContractColor>,
     /// Check boxes.
     pub check_box: Option<ContractColor>,
@@ -259,11 +348,11 @@ pub struct FormHighlightPolicy {
     pub combo_box: Option<ContractColor>,
     /// List boxes.
     pub list_box: Option<ContractColor>,
-    /// Signature fields.
+    /// Signature fields (never painted, like PDFium).
     pub signature: Option<ContractColor>,
     /// Fully qualified name (`parent.child`) of the focused field: its
     /// widgets get PDFium's black dotted focus rectangle, 1pt outside the
-    /// widget rectangle.
+    /// widget rectangle, and no highlight colour.
     pub focus_field: Option<String>,
 }
 
@@ -788,6 +877,22 @@ pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
         effect: "pdfium-whole-pixel-rectangle-fill-snapping",
     },
     RenderContractFieldEffect {
+        field: "stroke_adjustment",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "stroke-adjustment-pixel-snapping-policy",
+    },
+    RenderContractFieldEffect {
+        field: "profile",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "named-option-bundle-and-pdfium-image-transformer",
+    },
+    RenderContractFieldEffect {
         field: "grayscale",
         cache_identity: true,
         validation: false,
@@ -943,6 +1048,18 @@ pub struct RenderContract {
     /// default so existing cache identities stay stable.
     #[serde(default, skip_serializing_if = "RectSnapping::is_default")]
     pub rect_snapping: RectSnapping,
+    /// Stroke-adjustment policy. Default unless set; omitted from the
+    /// serialized contract while default so existing cache identities stay
+    /// stable.
+    #[serde(default, skip_serializing_if = "StrokeAdjustment::is_default")]
+    pub stroke_adjustment: StrokeAdjustment,
+    /// The render profile last applied with [`Self::apply_profile`]. Besides
+    /// the fields the profile sets, a PDFium profile also selects PDFium
+    /// behaviour that has no field of its own: skewed and rotated images are
+    /// resampled with PDFium's image transformer. Omitted from the
+    /// serialized contract while default.
+    #[serde(default, skip_serializing_if = "RenderProfile::is_default")]
+    pub profile: RenderProfile,
     pub grayscale: bool,
     pub color_scheme: ColorScheme,
     /// Optional forced (high-contrast) paint colours for paths and text.
@@ -1009,6 +1126,8 @@ impl RenderContract {
             vector_antialias_gamma: VectorAntialiasGamma::Linear,
             text_gamma: TextGamma::Linear,
             rect_snapping: RectSnapping::Default,
+            stroke_adjustment: StrokeAdjustment::Default,
+            profile: RenderProfile::Default,
             grayscale: false,
             color_scheme: ColorScheme::Light,
             forced_colors: None,
@@ -1030,6 +1149,43 @@ impl RenderContract {
 
     pub fn render_mode(&self) -> RenderMode {
         self.compositing.into()
+    }
+
+    /// Sets the fields a [`RenderProfile`] bundles: rectangle snapping,
+    /// stroke adjustment, text gamma and the form highlight (the focus field
+    /// is kept). `RenderProfile::Default` resets them to their defaults.
+    pub fn apply_profile(&mut self, profile: RenderProfile) {
+        self.profile = profile;
+        let pdfium = profile != RenderProfile::Default;
+        self.rect_snapping = if pdfium {
+            RectSnapping::Pdfium
+        } else {
+            RectSnapping::Default
+        };
+        self.stroke_adjustment = if pdfium {
+            StrokeAdjustment::Off
+        } else {
+            StrokeAdjustment::Default
+        };
+        self.text_gamma = if pdfium {
+            TextGamma::Pdfium
+        } else {
+            TextGamma::Linear
+        };
+        let focus_field = self.form_highlight.focus_field.take();
+        self.form_highlight = if profile == RenderProfile::PdfiumTest {
+            RenderProfile::pdfium_test_form_highlight()
+        } else {
+            FormHighlightPolicy::default()
+        };
+        self.form_highlight.focus_field = focus_field;
+    }
+
+    /// A copy of this contract with `profile` applied.
+    pub fn with_profile(&self, profile: RenderProfile) -> Self {
+        let mut contract = self.clone();
+        contract.apply_profile(profile);
+        contract
     }
 
     pub fn with_render_tile(&self, tile: RenderTile) -> Self {
@@ -1384,6 +1540,70 @@ mod tests {
     }
 
     #[test]
+    fn stroke_adjustment_changes_identity_only_when_set() {
+        let base = contract(1);
+        let json = serde_json::to_value(&base).expect("serialize contract");
+        assert!(json.get("stroke_adjustment").is_none());
+        let mut off = base.clone();
+        off.stroke_adjustment = StrokeAdjustment::Off;
+        assert_ne!(base.cache_fingerprint(), off.cache_fingerprint());
+        let value = serde_json::to_value(&off).unwrap();
+        assert_eq!(value["stroke_adjustment"], "Off");
+        let parsed: RenderContract = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, off);
+        let legacy: RenderContract = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.stroke_adjustment, StrokeAdjustment::Default);
+    }
+
+    #[test]
+    fn render_profiles_bundle_the_pdfium_options() {
+        let mut base = contract(1);
+        base.form_highlight.focus_field = Some("field".to_string());
+        let pdfium = base.with_profile(RenderProfile::Pdfium);
+        assert_eq!(pdfium.profile, RenderProfile::Pdfium);
+        assert_eq!(serde_json::to_value(&pdfium).unwrap()["profile"], "Pdfium");
+        assert!(serde_json::to_value(&base)
+            .unwrap()
+            .get("profile")
+            .is_none());
+        assert_eq!(pdfium.rect_snapping, RectSnapping::Pdfium);
+        assert_eq!(pdfium.stroke_adjustment, StrokeAdjustment::Off);
+        assert_eq!(pdfium.text_gamma, TextGamma::Pdfium);
+        assert!(pdfium.form_highlight.text.is_none());
+        assert_eq!(pdfium.form_highlight.focus_field.as_deref(), Some("field"));
+
+        let harness = base.with_profile(RenderProfile::PdfiumTest);
+        assert_eq!(harness.rect_snapping, RectSnapping::Pdfium);
+        assert_eq!(
+            harness.form_highlight.text,
+            Some(ContractColor {
+                r: 221,
+                g: 228,
+                b: 255,
+                a: 100
+            })
+        );
+        assert_eq!(harness.form_highlight.focus_field.as_deref(), Some("field"));
+
+        let reset = harness.with_profile(RenderProfile::Default);
+        assert_eq!(reset, base);
+        for (name, profile) in [
+            ("default", RenderProfile::Default),
+            ("PDFium", RenderProfile::Pdfium),
+            ("pdfium-test", RenderProfile::PdfiumTest),
+            ("pdfium_test", RenderProfile::PdfiumTest),
+            ("PdfiumTest", RenderProfile::PdfiumTest),
+        ] {
+            assert_eq!(RenderProfile::from_name(name), Some(profile), "{name}");
+        }
+        assert_eq!(RenderProfile::from_name("skia"), None);
+        assert_eq!(
+            RenderProfile::from_name(RenderProfile::PdfiumTest.as_str()),
+            Some(RenderProfile::PdfiumTest)
+        );
+    }
+
+    #[test]
     fn forced_colors_change_identity_only_when_set() {
         let base = contract(1);
         let json = serde_json::to_value(&base).expect("serialize contract");
@@ -1419,6 +1639,8 @@ mod tests {
         contract.xfa = XfaRenderPolicy::Foreground;
         contract.text_gamma = TextGamma::Pdfium;
         contract.rect_snapping = RectSnapping::Pdfium;
+        contract.stroke_adjustment = StrokeAdjustment::Off;
+        contract.profile = RenderProfile::Pdfium;
         let serialized = serde_json::to_value(&contract).expect("serialize render contract");
         let serialized_fields = serialized
             .as_object()
