@@ -199,7 +199,8 @@ mod retained_function_rendering {
             state.dispatch_all(&crate::content::ContentParser::parse(b"/S sh").unwrap());
             state.check_fatal_render_error().unwrap();
             let pixel = state.buf.get_pixel(5, 5);
-            assert!((pixel[0] as i32 - 140).abs() <= 1);
+            // Compat pages sample shadings at pixel corners, as PDFium does.
+            assert!((pixel[0] as i32 - 127).abs() <= 1, "{pixel:?}");
             let mut mask = PdfDictionary::empty();
             mask.insert("TR", reference(4));
             let lut = state.build_transfer_lut(&mask).unwrap().unwrap();

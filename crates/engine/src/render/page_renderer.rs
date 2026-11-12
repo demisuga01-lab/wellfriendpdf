@@ -17146,6 +17146,7 @@ impl<'a> RenderState<'a> {
         let shading_functions = Arc::clone(&self.function_cache);
         let shading_plate = self.plate.clone();
         let shading_options = ShadingRenderOptions::new(self.gs.shading_smoothness_tolerance())
+            .with_pdfium_rasterization(!self.buf.render_mode().is_high_quality())
             .with_plate(shading_plate.as_deref())
             .with_color_context(Some(&source_color_space), self.color_transform_options())
             .with_memory_budget(&shading_memory)
@@ -18036,6 +18037,7 @@ impl<'a> RenderState<'a> {
         let shading_functions = Arc::clone(&self.function_cache);
         let shading_plate = self.plate.clone();
         let shading_options = ShadingRenderOptions::new(self.gs.shading_smoothness_tolerance())
+            .with_pdfium_rasterization(!self.buf.render_mode().is_high_quality())
             .with_plate(shading_plate.as_deref())
             .with_color_context(Some(&source_color_space), self.color_transform_options())
             .with_memory_budget(&shading_memory)

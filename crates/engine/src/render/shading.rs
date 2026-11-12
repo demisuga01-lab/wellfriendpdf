@@ -40,6 +40,9 @@ mod function_resource_tests;
 mod mesh;
 use mesh::{MeshPaint, MeshSample, MeshVertex};
 
+#[path = "shading_pdfium.rs"]
+mod pdfium;
+
 #[path = "shading_region.rs"]
 mod region;
 use region::{CommonEntries, PaintRegion};
@@ -458,6 +461,9 @@ pub(crate) struct ShadingRenderOptions<'a> {
     /// Native CMYK/DeviceN plate pass: shading colours resolve to inverted
     /// plate ink instead of RGB.
     pub(crate) plate: Option<&'a crate::render::plate::PlateTarget>,
+    /// Rasterize the way PDFium does (see `shading_pdfium.rs`) instead of with
+    /// continuous, pixel-centre sampled gradients.
+    pdfium_rasterization: bool,
 }
 
 impl<'a> ShadingRenderOptions<'a> {
@@ -494,6 +500,7 @@ impl<'a> ShadingRenderOptions<'a> {
             sample_clip: self.sample_clip,
             sample_clip_origin: self.sample_clip_origin,
             plate: self.plate,
+            pdfium_rasterization: self.pdfium_rasterization,
         }
     }
     pub(crate) fn with_plate(
@@ -501,6 +508,10 @@ impl<'a> ShadingRenderOptions<'a> {
         plate: Option<&'a crate::render::plate::PlateTarget>,
     ) -> Self {
         self.plate = plate;
+        self
+    }
+    pub(crate) fn with_pdfium_rasterization(mut self, enabled: bool) -> Self {
+        self.pdfium_rasterization = enabled;
         self
     }
     pub(crate) fn with_opacity(mut self, opacity: f32) -> Self {
@@ -653,6 +664,7 @@ impl Default for ShadingRenderOptions<'_> {
             sample_clip: None,
             sample_clip_origin: (0, 0),
             plate: None,
+            pdfium_rasterization: false,
         }
     }
 }
@@ -1053,7 +1065,48 @@ impl ShadingRenderer {
                     }
                 }
             }
+            // Page rendering in the compat mode reproduces PDFium's shading
+            // rasterization; otherwise gradients stay continuous.
+            let compat = options.pdfium_rasterization;
             match shading_dict.get_integer("ShadingType") {
+                Some(1) if compat => {
+                    charge_shading_work(buf, work_budget)?;
+                    pdfium::paint_function_based(
+                        shading_dict,
+                        ctm,
+                        viewport,
+                        buf,
+                        reader,
+                        cancel,
+                        options,
+                    )
+                }
+                Some(2) if compat => {
+                    charge_shading_work(buf, work_budget)?;
+                    pdfium::paint_axial(shading_dict, ctm, viewport, buf, reader, cancel, options)
+                }
+                Some(3) if compat => {
+                    charge_shading_work(buf, work_budget)?;
+                    pdfium::paint_radial(shading_dict, ctm, viewport, buf, reader, cancel, options)
+                }
+                Some(4 | 5) if compat => pdfium::paint_gouraud_mesh(
+                    shading_dict,
+                    ctm,
+                    viewport,
+                    buf,
+                    reader,
+                    mesh_data,
+                    options,
+                ),
+                Some(6 | 7) if compat => pdfium::paint_patch_mesh(
+                    shading_dict,
+                    ctm,
+                    viewport,
+                    buf,
+                    reader,
+                    mesh_data,
+                    options,
+                ),
                 Some(1) => {
                     charge_shading_work(buf, work_budget)?;
                     Self::paint_function_based_cancellable(
