@@ -843,6 +843,37 @@ public sealed class WellfriendPdfSmokeTests
         Assert.Equal("form.name", reparsed.FormHighlight?.FocusField);
         Assert.StartsWith("\u0089PNG", Encoding.Latin1.GetString(doc.RenderPagePng(built)));
 
+        var tuned = contract
+            .WithStrokeAdjustment(RenderContractStrokeAdjustment.Off)
+            .WithTextGamma(RenderContractTextGamma.Pdfium);
+        using (var tunedJson = JsonDocument.Parse(tuned.ToJson()))
+        {
+            Assert.Equal("Off", tunedJson.RootElement.GetProperty("stroke_adjustment").GetString());
+            Assert.Equal("Pdfium", tunedJson.RootElement.GetProperty("text_gamma").GetString());
+            Assert.False(tunedJson.RootElement.TryGetProperty("profile", out _));
+        }
+        Assert.StartsWith("\u0089PNG", Encoding.Latin1.GetString(doc.RenderPagePng(tuned)));
+        var pdfiumProfile = contract.WithProfile(RenderContractProfile.Pdfium);
+        var reparsedProfile = RenderContract.FromJson(pdfiumProfile.ToJson());
+        Assert.Equal(RenderContractProfile.Pdfium, reparsedProfile.Profile);
+        Assert.Equal(RenderContractRectSnapping.Pdfium, reparsedProfile.RectSnapping);
+        Assert.Equal(RenderContractStrokeAdjustment.Off, reparsedProfile.StrokeAdjustment);
+        Assert.Equal(RenderContractTextGamma.Pdfium, reparsedProfile.TextGamma);
+        Assert.Null(reparsedProfile.FormHighlight);
+        Assert.StartsWith("\u0089PNG", Encoding.Latin1.GetString(doc.RenderPagePng(pdfiumProfile)));
+        Assert.StartsWith(
+            "\u0089PNG",
+            Encoding.Latin1.GetString(doc.RenderPagePng(contract.WithProfile(RenderContractProfile.PdfiumTest))));
+        var reset = pdfiumProfile.WithProfile(RenderContractProfile.Default);
+        Assert.Equal(RenderContractRectSnapping.Default, reset.RectSnapping);
+        Assert.Equal(RenderContractStrokeAdjustment.Default, reset.StrokeAdjustment);
+        Assert.Equal(RenderContractTextGamma.Linear, reset.TextGamma);
+        using (var resetJson = JsonDocument.Parse(reset.ToJson()))
+        {
+            Assert.False(resetJson.RootElement.TryGetProperty("profile", out _));
+        }
+        Assert.Throws<ArgumentOutOfRangeException>(() => contract.WithProfile((RenderContractProfile)9));
+
         var cleared = built.WithoutForcedColors().WithoutFormHighlight();
         Assert.DoesNotContain("forced_colors", cleared.ToJson());
         Assert.DoesNotContain("form_highlight", cleared.ToJson());

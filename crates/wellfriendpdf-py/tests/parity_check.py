@@ -2,6 +2,13 @@
 
 This is intentionally a standalone script, not a pytest default test: it runs the
 deterministic first-N corpus loop and shells out to the release CLI for each file.
+
+Text is compared per extraction profile against `extract-text --raw --profile P`,
+the CLI path that runs the same engine call as `Document.extract_text(profile=P)`.
+The CLI's default output is Poppler-style reading order (since "Make layout-aware
+reading order the default for extract-text") and `--raw` with the fast-text profile
+is true content-stream order (pdftotext -raw); neither is what the bindings'
+`extract_text()` returns, so the plain default is not a parity pair.
 """
 
 from __future__ import annotations
@@ -47,13 +54,20 @@ def cli_tables(raw: str) -> list[dict]:
     return out
 
 
+# Profiles whose `--raw` CLI output is the engine call behind Document.extract_text(profile=...).
+TEXT_PROFILES = ("layout-faithful", "tables-focused", "rag-chunks")
+
+
 def check_file(wellfriendpdf_bin: Path, pdf: Path) -> tuple[bool, str]:
     doc = wellfriendpdf.open(pdf)
 
-    py_text = norm_text(doc.extract_text())
-    cli_text = norm_text(run_cli(wellfriendpdf_bin, ["extract-text", str(pdf)]))
-    if py_text != cli_text:
-        return False, f"text mismatch for {pdf.name}"
+    for profile in TEXT_PROFILES:
+        py_text = norm_text(doc.extract_text(profile=profile))
+        cli_text = norm_text(
+            run_cli(wellfriendpdf_bin, ["extract-text", str(pdf), "--raw", "--profile", profile])
+        )
+        if py_text != cli_text:
+            return False, f"text mismatch for {pdf.name} (profile {profile})"
 
     py_tables = doc.extract_tables()
     cli_table_payload = cli_tables(run_cli(wellfriendpdf_bin, ["extract-tables", str(pdf), "--format", "json"]))
