@@ -41,7 +41,7 @@ const FLOAT_EPSILON: f64 = 0.0001;
 
 /// Device coordinates beyond this stay with the general rasterizer, keeping
 /// the pixel arithmetic far inside `i32` (`FX_RECT::Valid`).
-const COORDINATE_LIMIT: f64 = (1u32 << 30) as f64;
+const COORDINATE_LIMIT: f32 = (1u32 << 30) as f32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PointType {
@@ -52,14 +52,15 @@ enum PointType {
 
 #[derive(Clone, Copy, Debug)]
 struct Point {
-    x: f64,
-    y: f64,
+    x: f32,
+    y: f32,
     kind: PointType,
     close: bool,
 }
 
-fn float_equal(a: f64, b: f64) -> bool {
-    let difference = a - b;
+/// `FXSYS_IsFloatEqual`: the float difference against a double epsilon.
+fn float_equal(a: f32, b: f32) -> bool {
+    let difference = f64::from(a - b);
     difference < FLOAT_EPSILON && difference > -FLOAT_EPSILON
 }
 
@@ -67,7 +68,7 @@ fn points_float_equal(a: &Point, b: &Point) -> bool {
     float_equal(a.x, b.x) && float_equal(a.y, b.y)
 }
 
-fn xy_both_not_equal(a: (f64, f64), b: (f64, f64)) -> bool {
+fn xy_both_not_equal(a: (f32, f32), b: (f32, f32)) -> bool {
     !float_equal(a.0, b.0) && !float_equal(a.1, b.1)
 }
 
@@ -82,12 +83,12 @@ fn pdfium_points(path: &Path) -> Option<Vec<Point>> {
         return None;
     }
     let mut points: Vec<Point> = Vec::with_capacity(path.segments.len() + 1);
-    let mut current = (0.0f64, 0.0f64);
-    let mut start = (0.0f64, 0.0f64);
+    let mut current = (0.0f32, 0.0f32);
+    let mut start = (0.0f32, 0.0f32);
     let add = |points: &mut Vec<Point>,
-               current: &mut (f64, f64),
-               start: &mut (f64, f64),
-               (x, y): (f64, f64),
+               current: &mut (f32, f32),
+               start: &mut (f32, f32),
+               (x, y): (f32, f32),
                kind: PointType| {
         if kind == PointType::Move {
             if let Some(last) = points.last() {
@@ -122,14 +123,14 @@ fn pdfium_points(path: &Path) -> Option<Vec<Point>> {
                 &mut points,
                 &mut current,
                 &mut start,
-                (x, y),
+                (x as f32, y as f32),
                 PointType::Move,
             ),
             PathSegment::LineTo(x, y) => add(
                 &mut points,
                 &mut current,
                 &mut start,
-                (x, y),
+                (x as f32, y as f32),
                 PointType::Line,
             ),
             PathSegment::CubicTo {
@@ -140,7 +141,8 @@ fn pdfium_points(path: &Path) -> Option<Vec<Point>> {
                 x,
                 y,
             } => {
-                for point in [(cp1x, cp1y), (cp2x, cp2y), (x, y)] {
+                for point in [(cp1x, cp1y), (cp2x, cp2y), (x, y)].map(|(x, y)| (x as f32, y as f32))
+                {
                     add(
                         &mut points,
                         &mut current,
@@ -268,7 +270,7 @@ fn is_rect_pre_transform(points: &[Point]) -> bool {
 
 /// `CFX_Path::GetRect(matrix)`: the device-space float bounds
 /// `(left, bottom, right, top)` (with `bottom <= top`) of a rectangle path.
-fn pdfium_device_rect(path: &Path, device_t: &Transform2D) -> Option<(f64, f64, f64, f64)> {
+fn pdfium_device_rect(path: &Path, device_t: &Transform2D) -> Option<(f32, f32, f32, f32)> {
     let points = pdfium_points(path)?;
     let points = if needs_normalization(&points) {
         normalized_points(&points)
@@ -278,9 +280,16 @@ fn pdfium_device_rect(path: &Path, device_t: &Transform2D) -> Option<(f64, f64, 
     if !is_rect_pre_transform(&points) {
         return None;
     }
-    let mut device = [(0.0f64, 0.0f64); 5];
+    // Single precision throughout, like PDFium's CFX_PointF / CFX_Matrix, so
+    // an edge a rounding error away from a pixel boundary snaps the same way.
+    let [a, b, c, d, e, f] = [
+        device_t.a, device_t.b, device_t.c, device_t.d, device_t.e, device_t.f,
+    ]
+    .map(|value| value as f32);
+    let mut device = [(0.0f32, 0.0f32); 5];
     for (index, point) in points.iter().enumerate() {
-        let transformed = device_t.transform_point(point.x, point.y);
+        // CFX_Matrix::Transform.
+        let transformed = (a * point.x + c * point.y + e, b * point.x + d * point.y + f);
         if !transformed.0.is_finite()
             || !transformed.1.is_finite()
             || transformed.0.abs() > COORDINATE_LIMIT
@@ -335,14 +344,14 @@ pub(crate) fn pdfium_fill_rect(
         }
     }
     if outer_right - outer_left > width {
-        if left - outer_left as f64 > outer_right as f64 - right {
+        if left - outer_left as f32 > outer_right as f32 - right {
             outer_left += 1;
         } else {
             outer_right -= 1;
         }
     }
     if outer_bottom - outer_top > height {
-        if top - outer_top as f64 > outer_bottom as f64 - bottom {
+        if top - outer_top as f32 > outer_bottom as f32 - bottom {
             outer_top += 1;
         } else {
             outer_bottom -= 1;
