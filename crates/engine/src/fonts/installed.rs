@@ -744,6 +744,7 @@ mod index_cache {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Lowercase alphanumerics of a font name without its subset tag and the
 /// style-neutral words producers append (`Regular`, `Roman`, `MT`, `PS`).
 pub(crate) fn normalize_font_key(name: &str) -> String {
@@ -760,6 +761,7 @@ pub(crate) fn normalize_font_key(name: &str) -> String {
         .replace("ps", "")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The family part of a PDF font name: before the `-`/`,` style suffix, with
 /// style words removed, normalized like [`normalize_font_key`].
 fn family_key(name: &str) -> String {
@@ -786,6 +788,7 @@ fn family_key(name: &str) -> String {
     key
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn name_is_bold(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     ["bold", "black", "heavy", "semibold", "demi"]
@@ -793,11 +796,13 @@ fn name_is_bold(name: &str) -> bool {
         .any(|word| lower.contains(word))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn name_is_italic(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.contains("italic") || lower.contains("oblique") || lower.ends_with("-it")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn name_looks_monospace(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     ["mono", "courier", "consol", "typewriter", "code", "fixed"]
@@ -805,6 +810,7 @@ fn name_looks_monospace(name: &str) -> bool {
         .any(|word| lower.contains(word))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn name_looks_serif(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     if lower.contains("sans") || lower.contains("gothic") || lower.contains("arial") {
@@ -843,6 +849,7 @@ fn name_looks_serif(name: &str) -> bool {
     .any(|word| lower.contains(word))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Widely available, broad-coverage families first, so equally good matches
 /// resolve to the same design on every host that has them.
 fn preferred_family_rank(family: &str) -> u32 {
@@ -890,12 +897,14 @@ fn face_record(face: &fontdb::FaceInfo) -> InstalledFontFace {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// The face draws with outlines (TrueType, CFF or CFF2), not only bitmaps.
 pub(crate) fn has_outlines(face: &ttf_parser::Face<'_>) -> bool {
     let tables = face.tables();
     tables.glyf.is_some() || tables.cff.is_some() || tables.cff2.is_some()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// OS/2 `fsType` permits subset embedding in an edited PDF (installable,
 /// preview/print or editable; not restricted, no-subsetting or bitmap-only).
 pub(crate) fn embeddable(face: &ttf_parser::Face<'_>) -> bool {
