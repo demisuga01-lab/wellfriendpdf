@@ -133,7 +133,9 @@ pub(crate) fn extract_glyph_path_for_simple_lookup(
     // When no table maps the code, draw nothing rather than guessing a glyph
     // id: a guessed id draws an unrelated glyph, while "no outline" lets the
     // caller's per-glyph fallback font draw the right character.
-    let Some(glyph_id) = glyph_index_for_simple_with(&face, code, ch, glyph_name, lookup) else {
+    let glyph_id = glyph_index_for_simple_with(&face, code, ch, glyph_name, lookup)
+        .or_else(|| (lookup.embedded && face.tables().cmap.is_some()).then_some(GlyphId(0)));
+    let Some(glyph_id) = glyph_id else {
         let advance = face
             .glyph_hor_advance(ttf_parser::GlyphId(0))
             .map(|width| f64::from(width) / upem * 1000.0)
@@ -574,6 +576,10 @@ pub(crate) struct SimpleGlyphLookup {
     /// The PDF font is a TrueType font: a code whose /Differences name is
     /// `.notdef` draws the space glyph.
     pub truetype: bool,
+    /// The program is the TrueType font embedded in the PDF: a code that no
+    /// cmap, name or Unicode lookup reaches draws glyph 0 (`.notdef`), as
+    /// PDFium and Poppler do, rather than a fallback face's character.
+    pub embedded: bool,
 }
 
 fn glyph_index_for_simple(
@@ -1270,6 +1276,7 @@ mod tests {
         let symbolic = SimpleGlyphLookup {
             symbolic: true,
             truetype: true,
+            ..Default::default()
         };
         // The (3,0) cmap beats the glyph name for a symbolic font...
         assert_eq!(
@@ -1295,6 +1302,7 @@ mod tests {
         let truetype = SimpleGlyphLookup {
             symbolic: false,
             truetype: true,
+            ..Default::default()
         };
         assert_eq!(
             glyph_index_for_simple_with(&face, 0x41, 'A', Some(".notdef"), truetype),

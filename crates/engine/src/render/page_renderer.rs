@@ -19428,7 +19428,11 @@ impl<'a> RenderState<'a> {
             synthetic,
             all_cap: substitute_style.is_some_and(|style| style.all_cap),
             glyph_lookup: font_dict
-                .map(|font_dict| simple_glyph_lookup(font_dict, reader))
+                .map(|font_dict| {
+                    let mut lookup = simple_glyph_lookup(font_dict, reader);
+                    lookup.embedded &= !is_substitute;
+                    lookup
+                })
                 .unwrap_or_default(),
             tricky: crate::render::tricky_hinting::is_tricky_font(bytes),
         };
@@ -21877,9 +21881,17 @@ impl<'a> RenderState<'a> {
             }
         }
         // Non-embedded Symbol and ZapfDingbats are drawn with PDFium's own
-        // faces, ahead of installed or bundled stand-ins, as PDFium does.
-        let truetype = font_dict
-            .is_some_and(|font_dict| detect_font_subtype(font_dict) == FontSubtype::TrueType);
+        // faces, ahead of installed or bundled stand-ins, as PDFium does. A
+        // TrueType Symbol reaches the Symbol face only through the symbolic
+        // charset (PDFium's FindSubstFace without an installed Symbol font).
+        let truetype = font_dict.is_some_and(|font_dict| {
+            detect_font_subtype(font_dict) == FontSubtype::TrueType
+                && !resolve_descriptor(font_dict, self.engine.document().reader())
+                    .and_then(|descriptor| descriptor.get("Flags").and_then(PdfObject::as_number))
+                    .is_some_and(|flags| {
+                        (flags as i64) & crate::fonts::substitute_style::FLAG_SYMBOLIC != 0
+                    })
+        });
         if let Some(font_match) =
             crate::fonts::provider::pdfium_standard_symbol_match(fallback_name, truetype)
         {
@@ -22065,7 +22077,9 @@ fn simple_glyph_lookup(
     if subtype == FontSubtype::Type0 || subtype == FontSubtype::Type3 {
         return crate::render::glyph_outline::SimpleGlyphLookup::default();
     }
-    let flags = resolve_descriptor(font_dict, reader)
+    let descriptor = resolve_descriptor(font_dict, reader);
+    let flags = descriptor
+        .as_ref()
         .and_then(|descriptor| descriptor.get("Flags").and_then(PdfObject::as_number))
         .map_or(0, |flags| flags as i64);
     let symbolic_flags = flags & crate::fonts::substitute_style::FLAG_SYMBOLIC != 0
@@ -22074,9 +22088,22 @@ fn simple_glyph_lookup(
         font_dict.get_name("Encoding"),
         Some("WinAnsiEncoding" | "MacRomanEncoding")
     );
+    // A non-embedded Symbol font draws from the standard Symbol face through
+    // the Symbol encoding (PDFium selects kAdobeSymbol for the substitute and
+    // looks glyphs up by Unicode), never by raw code in a substitute's cmap.
+    let embedded = descriptor.as_ref().is_some_and(|descriptor| {
+        ["FontFile", "FontFile2", "FontFile3"]
+            .iter()
+            .any(|key| descriptor.contains_key(key))
+    });
+    let standard_symbol = font_dict.get_name("BaseFont").is_some_and(|name| {
+        let name = name.rsplit('+').next().unwrap_or(name);
+        matches!(name, "Symbol" | "SymbolMT")
+    });
     crate::render::glyph_outline::SimpleGlyphLookup {
-        symbolic: symbolic_flags && !plain_latin_encoding,
+        symbolic: symbolic_flags && !plain_latin_encoding && (embedded || !standard_symbol),
         truetype: subtype == FontSubtype::TrueType,
+        embedded: embedded && subtype == FontSubtype::TrueType,
     }
 }
 
