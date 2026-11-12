@@ -142,6 +142,96 @@ fn shading_steps(
     Some(steps)
 }
 
+/// Shading parameters (0 at the start of the axis, 1 at its end) where the
+/// colour function jumps: the `/Bounds` of a stitching function (or of one
+/// in a per-component function array) whose neighbouring sub-functions do
+/// not meet there.
+///
+/// PDFium's 256-entry table and pixel-corner sampling approximate a smooth
+/// gradient to within a pixel; at a jump that error shows as an edge drawn
+/// up to a pixel (or 1/255 of the axis) away from where the geometry puts
+/// it. [`edge_index`] places such an edge like a path edge instead.
+fn colour_jumps(
+    dict: &PdfDictionary,
+    reader: &PdfReader,
+    (t_min, t_max): (f32, f32),
+    function: &crate::render::function::PreparedFunction,
+    color: &CompatColor<'_>,
+) -> Vec<f64> {
+    let (t_min, t_max) = (f64::from(t_min), f64::from(t_max));
+    let span = t_max - t_min;
+    if !span.is_finite() || span == 0.0 {
+        return Vec::new();
+    }
+    let resolve = |object: &PdfObject| reader.resolve(object.clone()).ok();
+    let mut functions = Vec::new();
+    match dict.get("Function").and_then(resolve) {
+        Some(PdfObject::Array(items)) => functions.extend(items.iter().filter_map(resolve)),
+        Some(object) => functions.push(object),
+        None => {}
+    }
+    let mut bounds = Vec::new();
+    for function in &functions {
+        let function = match function {
+            PdfObject::Dictionary(dict) | PdfObject::Stream { dict, .. } => dict,
+            _ => continue,
+        };
+        if function.get_integer("FunctionType") != Some(3) {
+            continue;
+        }
+        if let Some(PdfObject::Array(values)) = function.get("Bounds").and_then(resolve) {
+            bounds.extend(values.iter().filter_map(PdfObject::as_number));
+        }
+    }
+    bounds.sort_by(f64::total_cmp);
+    bounds.dedup();
+    let colour_at = |t: f64| {
+        let components = color.options.evaluate_function(function, &[t]);
+        (!components.is_empty()).then(|| rounded_pixel(color.rgb(&components)))
+    };
+    let mut jumps = Vec::new();
+    for bound in bounds {
+        let s = (bound - t_min) / span;
+        if !(s > 0.0 && s < 1.0) {
+            continue;
+        }
+        let epsilon = 1e-6 * span.abs().max(bound.abs()).max(1e-6);
+        let (Some(left), Some(right)) = (colour_at(bound - epsilon), colour_at(bound)) else {
+            continue;
+        };
+        if left
+            .iter()
+            .zip(right.iter())
+            .any(|(l, r)| l.abs_diff(*r) > 1)
+        {
+            jumps.push(s);
+        }
+    }
+    jumps
+}
+
+/// The table entry for a pixel whose corner selects `index` and whose
+/// centre lies at shading parameter `centre`: when a colour jump separates
+/// the entry from the pixel centre, the pixel takes the closest entry on the
+/// centre's side of the jump, so the jump is drawn where a path edge at the
+/// same place would be (each pixel shows the colour covering its centre).
+fn edge_index(index: usize, centre: f64, jumps: &[f64]) -> usize {
+    let entry = index as f64 / STEPS as f64;
+    for &jump in jumps {
+        let entry_after = entry >= jump;
+        let centre_after = centre >= jump;
+        if entry_after != centre_after {
+            let first_after = ((jump * STEPS as f64).ceil() as usize).min(STEPS - 1);
+            return if centre_after {
+                first_after
+            } else {
+                first_after.saturating_sub(1)
+            };
+        }
+    }
+    index
+}
+
 fn domain_pair(dict: &PdfDictionary) -> (f32, f32) {
     match get_float_array(dict, "Domain") {
         Some(values) if values.len() >= 2 => (values[0] as f32, values[1] as f32),
@@ -259,8 +349,12 @@ pub(super) fn paint_axial(
     let Some(steps) = shading_steps(t_min, t_max, &function, &color) else {
         return;
     };
+    let jumps = colour_jumps(dict, reader, (t_min, t_max), &function, &color);
     let matrix = PixelMatrix::new(&pixel_to_user);
     let delta_scale = (matrix.a * x_span + matrix.b * y_span) / axis_len_square;
+    // Parameter step from a pixel's corner to its centre.
+    let centre_delta =
+        0.5 * delta_scale + 0.5 * (matrix.c * x_span + matrix.d * y_span) / axis_len_square;
     let Some((x0, y0, x1, y1)) = ShadingRenderer::paint_bounds(buf) else {
         return;
     };
@@ -287,7 +381,11 @@ pub(super) fn paint_axial(
                 }
                 index = STEPS as i32 - 1;
             }
-            buf.set_pixel(column, row, steps[index as usize]);
+            let mut index = index as usize;
+            if !jumps.is_empty() {
+                index = edge_index(index, scale + centre_delta, &jumps);
+            }
+            buf.set_pixel(column, row, steps[index]);
         }
     }
 }
@@ -317,6 +415,7 @@ pub(super) fn paint_radial(
     let Some(steps) = shading_steps(t_min, t_max, &function, &color) else {
         return;
     };
+    let jumps = colour_jumps(dict, reader, (t_min, t_max), &function, &color);
     let dx = end_x - start_x;
     let dy = end_y - start_y;
     let dr = end_r - start_r;
@@ -325,6 +424,43 @@ pub(super) fn paint_radial(
     let a_is_zero = float_zero(a);
     let decreasing = dr < 0.0 && (trunc_index(dx.hypot(dy)) as f64) < -dr;
     let matrix = PixelMatrix::new(&pixel_to_user);
+    // The shading parameter at a device point, or `None` where PDFium
+    // leaves the pixel unpainted.
+    let parameter = |x: f64, y: f64| -> Option<f64> {
+        let (px, py) = matrix.apply(x, y);
+        let pos_dx = px - start_x;
+        let pos_dy = py - start_y;
+        let b = -2.0 * (pos_dx * dx + pos_dy * dy + start_r * dr);
+        let c = pos_dx * pos_dx + pos_dy * pos_dy - start_r * start_r;
+        if float_zero(b) {
+            return Some((-c / a).sqrt());
+        }
+        if a_is_zero {
+            return Some(-c / b);
+        }
+        let discriminant = b * b - 4.0 * (a * c);
+        if discriminant < 0.0 {
+            return None;
+        }
+        let root = discriminant.sqrt();
+        let mut s1 = (-b - root) / (2.0 * a);
+        let mut s2 = (-b + root) / (2.0 * a);
+        if a <= 0.0 {
+            std::mem::swap(&mut s1, &mut s2);
+        }
+        let s = if decreasing {
+            if s1 >= 0.0 || start_extend {
+                s1
+            } else {
+                s2
+            }
+        } else if s2 <= 1.0 || end_extend {
+            s2
+        } else {
+            s1
+        };
+        (start_r + s * dr >= 0.0).then_some(s)
+    };
     let Some((x0, y0, x1, y1)) = ShadingRenderer::paint_bounds(buf) else {
         return;
     };
@@ -336,41 +472,9 @@ pub(super) fn paint_radial(
             if !options.sample_visible(column, row) {
                 continue;
             }
-            let (px, py) = matrix.apply(column as f64 + ox, row as f64 + oy);
-            let pos_dx = px - start_x;
-            let pos_dy = py - start_y;
-            let b = -2.0 * (pos_dx * dx + pos_dy * dy + start_r * dr);
-            let c = pos_dx * pos_dx + pos_dy * pos_dy - start_r * start_r;
-            let s = if float_zero(b) {
-                (-c / a).sqrt()
-            } else if a_is_zero {
-                -c / b
-            } else {
-                let discriminant = b * b - 4.0 * (a * c);
-                if discriminant < 0.0 {
-                    continue;
-                }
-                let root = discriminant.sqrt();
-                let mut s1 = (-b - root) / (2.0 * a);
-                let mut s2 = (-b + root) / (2.0 * a);
-                if a <= 0.0 {
-                    std::mem::swap(&mut s1, &mut s2);
-                }
-                let s = if decreasing {
-                    if s1 >= 0.0 || start_extend {
-                        s1
-                    } else {
-                        s2
-                    }
-                } else if s2 <= 1.0 || end_extend {
-                    s2
-                } else {
-                    s1
-                };
-                if start_r + s * dr < 0.0 {
-                    continue;
-                }
-                s
+            let (x, y) = (column as f64 + ox, row as f64 + oy);
+            let Some(s) = parameter(x, y) else {
+                continue;
             };
             let mut index = trunc_index(s * (STEPS - 1) as f64);
             if index < 0 {
@@ -384,7 +488,13 @@ pub(super) fn paint_radial(
                 }
                 index = STEPS as i32 - 1;
             }
-            buf.set_pixel(column, row, steps[index as usize]);
+            let mut index = index as usize;
+            if !jumps.is_empty() {
+                if let Some(centre) = parameter(x + 0.5, y + 0.5) {
+                    index = edge_index(index, centre, &jumps);
+                }
+            }
+            buf.set_pixel(column, row, steps[index]);
         }
     }
 }
@@ -1469,6 +1579,21 @@ mod tests {
         assert_eq!(distance(&[0, 10, 3], &[4, 2, 3]), 8);
         let overflowing = [[0; 3], [0; 3], [0; 3], [i32::MAX; 3]];
         assert_eq!(bi_interpol(&overflowing, 2, 1, 1, 1), None);
+    }
+
+    #[test]
+    fn edge_index_moves_a_pixel_to_its_centres_side_of_a_jump() {
+        // Corner entry 127 (t = 0.496) before the jump at 0.5, centre after:
+        // the first entry at or past the jump (128 = 0.5 * 256).
+        assert_eq!(edge_index(127, 0.5025, &[0.5]), 128);
+        // Corner and centre on the same side: PDFium's entry is kept.
+        assert_eq!(edge_index(126, 0.4975, &[0.5]), 126);
+        assert_eq!(edge_index(129, 0.51, &[0.5]), 129);
+        // Reversed axis: the corner is past the jump, the centre is not.
+        assert_eq!(edge_index(128, 0.499, &[0.5]), 127);
+        // The table lag band: corner t in [0.5, 0.502) still maps to 127.
+        assert_eq!(edge_index(127, 0.501, &[0.5]), 128);
+        assert_eq!(edge_index(40, 0.16, &[]), 40);
     }
 
     #[test]

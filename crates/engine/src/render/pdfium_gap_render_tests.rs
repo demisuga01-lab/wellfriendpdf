@@ -227,6 +227,62 @@ mod pdfium_gap_rendering {
         assert!((120..=135).contains(&pixel[0]), "{pixel:?}");
     }
 
+    /// An axial shading down a 100pt page: red for t < 0.5, blue after
+    /// (a stitching function whose two halves do not meet).
+    fn split_axial_shading(extend: &str) -> Vec<u8> {
+        format!(
+            "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 100 0 0] /Extend [{extend}] /Function << /FunctionType 3 /Domain [0 1] /Bounds [0.5] /Encode [0 1 0 1] /Functions [<< /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [1 0 0] /N 1 >> << /FunctionType 2 /Domain [0 1] /C0 [0 0 1] /C1 [0 0 1] /N 1 >>] >> >>"
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn axial_colour_jump_is_drawn_where_its_edge_lies() {
+        // pdfium bug_42271010: PDFium's table (index trunc(255 t), entries
+        // at i / 256) and pixel-corner sampling draw the jump at t = 0.5 one
+        // row late; the row whose centre is past the jump is blue.
+        let buf = render(
+            "/Shading << /Sh 5 0 R >>",
+            b"/Sh sh",
+            vec![split_axial_shading("true true")],
+        );
+        for x in [0, 50, 99] {
+            assert_eq!(buf.get_pixel(x, 49), [255, 0, 0, 255], "row 49 x {x}");
+            assert_eq!(buf.get_pixel(x, 50), [0, 0, 255, 255], "row 50 x {x}");
+            assert_eq!(buf.get_pixel(x, 0), [255, 0, 0, 255], "row 0 x {x}");
+            assert_eq!(buf.get_pixel(x, 99), [0, 0, 255, 255], "row 99 x {x}");
+        }
+    }
+
+    #[test]
+    fn radial_colour_jump_is_drawn_where_its_edge_lies() {
+        // Circles about the page centre, radius 0 to 50: the jump at
+        // t = 0.5 is the circle of radius 25. Along the centre row, the
+        // pixel whose centre is 25.5 from the middle is blue, 24.5 red.
+        let buf = render(
+            "/Shading << /Sh 5 0 R >>",
+            b"/Sh sh",
+            vec![b"<< /ShadingType 3 /ColorSpace /DeviceRGB /Coords [50 50 0 50 50 50] /Function << /FunctionType 3 /Domain [0 1] /Bounds [0.5] /Encode [0 1 0 1] /Functions [<< /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [1 0 0] /N 1 >> << /FunctionType 2 /Domain [0 1] /C0 [0 0 1] /C1 [0 0 1] /N 1 >>] >> >>".to_vec()],
+        );
+        assert_eq!(buf.get_pixel(74, 49), [255, 0, 0, 255]);
+        assert_eq!(buf.get_pixel(75, 49), [0, 0, 255, 255]);
+        assert_eq!(buf.get_pixel(50, 49), [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn smooth_axial_shading_keeps_pdfium_corner_sampling() {
+        // A continuous red-to-blue ramp is untouched by the jump rule: row
+        // y samples t = y / 100 at its corner, table entry trunc(255 t).
+        let buf = render(
+            "/Shading << /Sh 5 0 R >>",
+            b"/Sh sh",
+            vec![b"<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 100 0 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >>".to_vec()],
+        );
+        let index = (0.5f64 * 255.0) as u32; // row 50
+        let blue = (f64::from(index) / 256.0 * 255.0).round() as u8;
+        assert_eq!(buf.get_pixel(10, 50), [255 - blue, 0, blue, 255]);
+    }
+
     #[test]
     fn type3_image_masks_take_the_text_alpha_twice() {
         // pdfium bug_1746: image masks in a Type 3 glyph shown with ca 0.5.
