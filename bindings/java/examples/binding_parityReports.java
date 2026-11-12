@@ -2,9 +2,9 @@ package io.wellfriendpdf.examples;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import io.wellfriendpdf.Wellfriend;
+import io.wellfriendpdf.WellfriendPdf;
 
-public final class BindingParityReports {
+final class BindingParityReports {
     private BindingParityReports() {
     }
 

@@ -1,6 +1,6 @@
-import io.wellfriendpdf.Wellfriend;
+import io.wellfriendpdf.WellfriendPdf;
 
-public final class ReleasePackagingCodecIsolation {
+final class ReleasePackagingCodecIsolation {
     public static void main(String[] args) {
         byte[] encoded = new byte[] {
             (byte) 0x78, (byte) 0x9c, (byte) 0xcb, (byte) 0x48,
