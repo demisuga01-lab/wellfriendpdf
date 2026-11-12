@@ -32569,6 +32569,7 @@ mod tests {
     include!("pdfium_render_parity_tests.rs");
     include!("shading_parameter_render_tests.rs");
     include!("function_cache_render_tests.rs");
+    include!("pdfium_gap_render_tests.rs");
 
     fn fixture(path: &str) -> String {
         format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), path)
