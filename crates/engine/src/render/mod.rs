@@ -24,6 +24,7 @@ pub mod line;
 pub mod page_renderer;
 pub(crate) mod parameter_dictionary;
 pub mod path;
+pub(crate) mod pdfium_image_transform;
 pub mod plan;
 pub mod plate;
 pub mod postscript;
@@ -61,9 +62,10 @@ pub use contract::{
     DeviceClip, DeviceMatrix, DisplayItemId, ExactnessPolicy, ExecutionMode, ForcedColorScheme,
     FormHighlightPolicy, FormRenderPolicy, HalftonePolicy, ObjectIdentityId,
     OptionalContentStateId, OverprintPolicy, PageBox, PixelFormat, PrintProfile, RectSnapping,
-    RenderContract, RenderContractFieldEffect, RenderResourceBudget, RenderingIntent, ResourceId,
-    RevisionId, SmoothingPolicy, SourceLinkId, TextGamma, ThinLineMode, VectorAntialiasGamma,
-    XfaRenderPolicy, RENDER_CONTRACT_FIELD_EFFECTS, RENDER_CONTRACT_SCHEMA_VERSION,
+    RenderContract, RenderContractFieldEffect, RenderProfile, RenderResourceBudget,
+    RenderingIntent, ResourceId, RevisionId, SmoothingPolicy, SourceLinkId, StrokeAdjustment,
+    TextGamma, ThinLineMode, VectorAntialiasGamma, XfaRenderPolicy, RENDER_CONTRACT_FIELD_EFFECTS,
+    RENDER_CONTRACT_SCHEMA_VERSION,
 };
 pub use display_list::{
     build_display_list, build_display_list_cancellable, render_display_list, replay_display_list,

@@ -863,6 +863,9 @@ fn text_icon(
     rect: [f64; 4],
 ) -> Option<SynthesizedAppearance> {
     let _ = reader;
+    if !crate::render::vector_quality::contract_profile().is_default() {
+        return pdfium_text_symbol(annot, rect);
+    }
     let name = annot.get_name("Name").unwrap_or("Note");
     // PDFium/Acrobat default note colour is yellow.
     let (fill, outline, detail) = icon_colors(annot, AnnotColor::Rgb(1.0, 1.0, 0.0));
@@ -894,6 +897,54 @@ fn text_icon(
         out,
         [0.0, 0.0, ICON_SIZE, ICON_SIZE],
         target,
+        Resources::default(),
+        opacity(annot),
+    )
+}
+
+/// PDFium's text-annotation icon (`GenerateTextAP` /
+/// `GenerateTextSymbolAP`, used under the PDFium render profile): whatever
+/// the `/Name`, a yellow speech bubble with a 1pt black outline, a tip at
+/// its lower left and three lines, in a 20x20 square anchored at the
+/// bottom-left of `/Rect`; `/CA` sets its opacity.
+fn pdfium_text_symbol(annot: &PdfDictionary, rect: [f64; 4]) -> Option<SynthesizedAppearance> {
+    const NOTE: f64 = 20.0;
+    let (left, bottom) = (rect[0].min(rect[2]), rect[1].min(rect[3]));
+    // Outer box deflated by half the border, raised by the tip.
+    let (l1, b1, r1, t1) = (0.5, 0.5 + 4.0, NOTE - 0.5, NOTE - 0.5);
+    let (l2, r2, t2) = (l1 + 4.0, l1 + 8.0, b1 - 4.0);
+    let middle = (l2 + r2) / 2.0;
+    let mut out = String::from("1 1 0 rg 0 0 0 RG 1 w\n");
+    for (x, y, op) in [
+        (l1, b1, "m"),
+        (l1, t1, "l"),
+        (r1, t1, "l"),
+        (r1, b1, "l"),
+        (r2, b1, "l"),
+        (middle, t2, "l"),
+        (l2, b1, "l"),
+        (l1, b1, "l"),
+    ] {
+        let _ = writeln!(out, "{} {} {op}", n(x), n(y));
+    }
+    let delta_y = (t1 - b1) / 4.0;
+    let mut line_top = t1;
+    for _ in 0..3 {
+        line_top -= delta_y;
+        let _ = writeln!(
+            out,
+            "{} {} m {} {} l",
+            n(l1 + 2.0),
+            n(line_top),
+            n(r1 - 2.0),
+            n(line_top)
+        );
+    }
+    out.push_str("B*\n");
+    finish(
+        out,
+        [0.0, 0.0, NOTE, NOTE],
+        [left, bottom, left + NOTE, bottom + NOTE],
         Resources::default(),
         opacity(annot),
     )
@@ -3240,6 +3291,24 @@ mod tests {
             AnnotColor::Cmyk(0.0, 1.0, 0.0, 0.0).fill_op(),
             "0 1 0 0 k".to_string()
         );
+    }
+
+    #[test]
+    fn pdfium_text_symbol_matches_generate_text_symbol_ap() {
+        let mut annot = PdfDictionary::empty();
+        annot.insert("Subtype", PdfObject::Name("Text".into()));
+        annot.insert("Name", PdfObject::Name("Key".into()));
+        let ap = pdfium_text_symbol(&annot, [10.0, 240.0, 40.0, 270.0]).expect("symbol");
+        // 20x20 at the bottom-left of /Rect, whatever /Name says.
+        assert_eq!(ap.rect, [10.0, 240.0, 30.0, 260.0]);
+        let content = String::from_utf8(ap.raw).unwrap();
+        assert!(
+            content.starts_with("1 1 0 rg 0 0 0 RG 1 w\n0.5 4.5 m\n"),
+            "{content}"
+        );
+        assert!(content.contains("6.5 0.5 l"), "tip: {content}");
+        assert_eq!(content.matches(" m ").count(), 3, "three lines: {content}");
+        assert!(content.trim_end().ends_with("B*"), "{content}");
     }
 
     #[test]

@@ -3207,9 +3207,26 @@ struct RenderArgs {
     /// Filled-rectangle pixel snapping: default (Wellfriend/Splash), or
     /// pdfium (PDFium's rectangle fast path: axis-aligned rectangle fills
     /// cover whole pixels without anti-aliasing, so abutting chart bars and
-    /// table cells show no seams).
-    #[arg(long = "rect-snapping", default_value = "default", value_parser = ["default", "pdfium"])]
-    rect_snapping: String,
+    /// table cells show no seams). Overrides --profile.
+    #[arg(long = "rect-snapping", value_parser = ["default", "pdfium"])]
+    rect_snapping: Option<String>,
+    /// Stroke adjustment (snapping thin axis-aligned strokes to whole
+    /// pixels): default (always in compat mode, /SA in high-quality mode) or
+    /// off (never, like PDFium). Overrides --profile.
+    #[arg(long = "stroke-adjustment", value_parser = ["default", "off"])]
+    stroke_adjustment: Option<String>,
+    /// Glyph coverage gamma: linear, or pdfium (PDFium's text gamma table).
+    /// Overrides --profile.
+    #[arg(long = "text-gamma", value_parser = ["linear", "pdfium"])]
+    text_gamma: Option<String>,
+    /// Render profile: default; pdfium (render like PDFium's
+    /// FPDF_RenderPageBitmap + FPDF_FFLDraw: PDFium rectangle snapping, no
+    /// stroke adjustment, PDFium text gamma); or pdfium-test (pdfium plus the
+    /// form-field highlight PDFium's pdfium_test harness installs). Explicit
+    /// --rect-snapping, --stroke-adjustment, --text-gamma and
+    /// --form-highlight options override the profile.
+    #[arg(long, value_parser = ["default", "pdfium", "pdfium-test"])]
+    profile: Option<String>,
     /// Forced (high-contrast) colours for path and text paint: one r,g,b[,a]
     /// colour for everything, or four separated by '/' in the order
     /// path-fill/path-stroke/text-fill/text-stroke. Images and shadings keep
@@ -8932,9 +8949,13 @@ struct CliRenderContractOptions {
     forms: wellfriendpdf_engine::render::FormRenderPolicy,
     thin_line_mode: wellfriendpdf_engine::render::ThinLineMode,
     vector_antialias_gamma: wellfriendpdf_engine::render::VectorAntialiasGamma,
-    rect_snapping: wellfriendpdf_engine::render::RectSnapping,
+    profile: wellfriendpdf_engine::render::RenderProfile,
+    rect_snapping: Option<wellfriendpdf_engine::render::RectSnapping>,
+    stroke_adjustment: Option<wellfriendpdf_engine::render::StrokeAdjustment>,
+    text_gamma: Option<wellfriendpdf_engine::render::TextGamma>,
     forced_colors: Option<wellfriendpdf_engine::render::ForcedColorScheme>,
-    form_highlight: wellfriendpdf_engine::render::FormHighlightPolicy,
+    form_highlight: Option<wellfriendpdf_engine::render::FormHighlightPolicy>,
+    form_focus_field: Option<String>,
     max_render_pixels: Option<u64>,
     max_decoded_bytes: Option<u64>,
     max_temporary_bytes: Option<u64>,
@@ -8988,7 +9009,10 @@ fn render_args_have_contract_options(args: &RenderArgs) -> bool {
 fn render_args_have_raster_policy_options(args: &RenderArgs) -> bool {
     !args.thin_line_mode.eq_ignore_ascii_case("none")
         || !args.aa_gamma.eq_ignore_ascii_case("linear")
-        || !args.rect_snapping.eq_ignore_ascii_case("default")
+        || args.rect_snapping.is_some()
+        || args.stroke_adjustment.is_some()
+        || args.text_gamma.is_some()
+        || args.profile.is_some()
         || args.forced_colors.is_some()
         || args.form_highlight.is_some()
         || args.form_focus_field.is_some()
@@ -9065,16 +9089,43 @@ fn parse_cli_render_contract_options(
         forms: parse_render_forms_cli(&args.forms)?,
         thin_line_mode: parse_render_thin_line_mode_cli(&args.thin_line_mode)?,
         vector_antialias_gamma: parse_render_aa_gamma_cli(&args.aa_gamma)?,
-        rect_snapping: parse_render_rect_snapping_cli(&args.rect_snapping)?,
+        profile: args
+            .profile
+            .as_deref()
+            .map(parse_render_profile_cli)
+            .transpose()?
+            .unwrap_or_default(),
+        rect_snapping: args
+            .rect_snapping
+            .as_deref()
+            .map(parse_render_rect_snapping_cli)
+            .transpose()?,
+        stroke_adjustment: args
+            .stroke_adjustment
+            .as_deref()
+            .map(parse_render_stroke_adjustment_cli)
+            .transpose()?,
+        text_gamma: args
+            .text_gamma
+            .as_deref()
+            .map(parse_render_text_gamma_cli)
+            .transpose()?,
         forced_colors: args
             .forced_colors
             .as_deref()
             .map(|spec| parse_forced_colors_cli(spec, args.convert_fill_to_stroke))
             .transpose()?,
-        form_highlight: parse_form_highlight_cli(
-            args.form_highlight.as_deref(),
-            args.form_focus_field.as_deref(),
-        )?,
+        form_highlight: args
+            .form_highlight
+            .as_deref()
+            .map(parse_form_highlight_cli)
+            .transpose()?,
+        form_focus_field: args
+            .form_focus_field
+            .as_deref()
+            .map(str::trim)
+            .filter(|field| !field.is_empty())
+            .map(str::to_string),
         max_render_pixels: args.max_render_pixels,
         max_decoded_bytes: args.max_decoded_bytes,
         max_temporary_bytes: args.max_temporary_bytes,
@@ -9335,6 +9386,40 @@ fn parse_render_rect_snapping_cli(
     }
 }
 
+fn parse_render_stroke_adjustment_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::StrokeAdjustment, Box<dyn Error>> {
+    match name.to_ascii_lowercase().as_str() {
+        "default" => Ok(wellfriendpdf_engine::render::StrokeAdjustment::Default),
+        "off" => Ok(wellfriendpdf_engine::render::StrokeAdjustment::Off),
+        other => Err(usage_error(format!(
+            "unknown --stroke-adjustment '{other}'; use default or off"
+        ))),
+    }
+}
+
+fn parse_render_text_gamma_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::TextGamma, Box<dyn Error>> {
+    match name.to_ascii_lowercase().as_str() {
+        "linear" => Ok(wellfriendpdf_engine::render::TextGamma::Linear),
+        "pdfium" => Ok(wellfriendpdf_engine::render::TextGamma::Pdfium),
+        other => Err(usage_error(format!(
+            "unknown --text-gamma '{other}'; use linear or pdfium"
+        ))),
+    }
+}
+
+fn parse_render_profile_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::RenderProfile, Box<dyn Error>> {
+    wellfriendpdf_engine::render::RenderProfile::from_name(name).ok_or_else(|| {
+        usage_error(format!(
+            "unknown --profile '{name}'; use default, pdfium or pdfium-test"
+        ))
+    })
+}
+
 /// `r,g,b[,a]` for every path/text paint, or four such colours separated by
 /// `/` (path fill, path stroke, text fill, text stroke).
 fn parse_forced_colors_cli(
@@ -9367,21 +9452,11 @@ fn parse_forced_colors_cli(
 }
 
 fn parse_form_highlight_cli(
-    color: Option<&str>,
-    focus_field: Option<&str>,
+    color: &str,
 ) -> Result<wellfriendpdf_engine::render::FormHighlightPolicy, Box<dyn Error>> {
-    let mut policy = match color {
-        Some(spec) => wellfriendpdf_engine::render::FormHighlightPolicy::all(parse_cli_rgba(
-            spec,
-            "--form-highlight",
-        )?),
-        None => wellfriendpdf_engine::render::FormHighlightPolicy::default(),
-    };
-    policy.focus_field = focus_field
-        .map(str::trim)
-        .filter(|field| !field.is_empty())
-        .map(str::to_string);
-    Ok(policy)
+    Ok(wellfriendpdf_engine::render::FormHighlightPolicy::all(
+        parse_cli_rgba(color, "--form-highlight")?,
+    ))
 }
 
 fn parse_cli_rgba(
@@ -9468,9 +9543,21 @@ fn build_cli_render_contract(
     contract.forms = options.forms;
     contract.thin_line_mode = options.thin_line_mode;
     contract.vector_antialias_gamma = options.vector_antialias_gamma;
-    contract.rect_snapping = options.rect_snapping;
+    contract.apply_profile(options.profile);
+    if let Some(rect_snapping) = options.rect_snapping {
+        contract.rect_snapping = rect_snapping;
+    }
+    if let Some(stroke_adjustment) = options.stroke_adjustment {
+        contract.stroke_adjustment = stroke_adjustment;
+    }
+    if let Some(text_gamma) = options.text_gamma {
+        contract.text_gamma = text_gamma;
+    }
     contract.forced_colors = options.forced_colors;
-    contract.form_highlight = options.form_highlight;
+    if let Some(form_highlight) = options.form_highlight {
+        contract.form_highlight = form_highlight;
+    }
+    contract.form_highlight.focus_field = options.form_focus_field;
     if let Some(cap) = options.max_render_pixels {
         contract.resource_budget.max_pixels = cap;
     }

@@ -932,6 +932,33 @@ mod wasm_api {
             validate_render_contract(contract)
         }
 
+        /// Stroke adjustment: default or off (never snap strokes to whole
+        /// pixels, like PDFium).
+        #[wasm_bindgen(js_name = withStrokeAdjustment)]
+        pub fn with_stroke_adjustment(
+            &self,
+            stroke_adjustment: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.stroke_adjustment =
+                parse_contract_enum("stroke_adjustment", stroke_adjustment)?;
+            validate_render_contract(contract)
+        }
+
+        /// Render profile: default, pdfium (render like PDFium) or
+        /// pdfium-test (pdfium plus pdfium_test's form highlight). Sets
+        /// every field the profile bundles.
+        #[wasm_bindgen(js_name = withProfile)]
+        pub fn with_profile(&self, profile: &str) -> Result<WellfriendRenderContract, JsValue> {
+            let profile = wellfriendpdf_engine::render::RenderProfile::from_name(profile)
+                .ok_or_else(|| {
+                    JsValue::from_str(&format!(
+                        "unsupported render profile '{profile}'; use default, pdfium or pdfium-test"
+                    ))
+                })?;
+            validate_render_contract(self.contract.with_profile(profile))
+        }
+
         /// Forced (high-contrast) paint colours as packed straight-alpha
         /// `0xRRGGBBAA` numbers for path fill, path stroke, text fill and
         /// text stroke.

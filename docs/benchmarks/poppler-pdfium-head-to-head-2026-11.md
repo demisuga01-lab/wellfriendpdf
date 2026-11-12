@@ -596,3 +596,71 @@ pinned core, best of two runs each:
 
 Tests on the VPS for 7264092: workspace check clean; engine 5,712 passed, 0 failed;
 CLI + C API 162 passed, 0 failed.
+
+## PDFium pixel tests after round 12: PDFium render profile (2026-11-12)
+
+PDFium's pixel expectations are produced by its `pdfium_test` harness, which
+installs a form-field highlight (`FPDF_SetFormFieldHighlightColor(form, 0,
+0xFFE4DD)`, a Windows COLORREF, so RGB 221,228,255, with alpha 100) and
+replays the test's `.evt` mouse and keyboard events before drawing. Round 12
+adds an opt-in render profile that renders the way PDFium does
+(`render --profile pdfium|pdfium-test`, contract field `profile`, C API
+`wellfriendpdf_render_contract_with_profile`, Python/WASM `with_profile`,
+.NET/Java `WithProfile`, server field `profile`):
+
+- `pdfium`: PDFium rectangle snapping, no stroke adjustment (new contract
+  field `stroke_adjustment: Off`; PDFium's AGG rasterizer never snaps
+  strokes), PDFium text gamma, PDFium's `CFX_ImageTransformer` for skewed
+  and rotated images and PDFium's note icon for Text annotations;
+- `pdfium-test`: `pdfium` plus pdfium_test's form highlight.
+
+The harness (`/srv/wf-bench/pdfium-pixel-r12.py`) scores both the default
+rendering and `MODE=pdfium-test`, which also passes the field the `.evt`
+events leave focused (last click or Tab; Enter in a single-line text field
+closes its edit window). Typed text, open drop-downs, pop-ups and text
+selections are interaction state and are not emulated.
+
+| | Mean SSIM | Median | Pages < 0.90 | Render failures | Pages where Poppler is closer |
+|---|---:|---:|---:|---:|---:|
+| Wellfriend 7264092 | 0.989 | 0.998 | 3 | 0 | 4 |
+| Wellfriend round 12, default | 0.989 | 0.999 | 3 | 0 | 2 |
+| Wellfriend round 12, `--profile pdfium-test` | **0.993** | **1.000** | **2** | **0** | **1** |
+| Poppler 26.07 | 0.931 | 0.989 | 28 | 4 | - |
+
+With the profile Wellfriend is closer to PDFium's expectation than Poppler on
+109 pages; image_transformer_other goes from 0.879 to 0.984 and bug_1963 from
+0.930 to 0.994, and 114 pages score 1.000 (94 before).
+
+Default rendering also changed where the old output was wrong:
+- form highlight (when requested) is PDFium's whole-pixel `DrawShadow`, on
+  AcroForm fields only, never on push buttons or signatures, and not on the
+  focused field; the focus rectangle is drawn around buttons only;
+- text fields show only `/MaxLen` characters (bug_1072440) and indirect
+  field values are resolved (bug_40643646's field was not drawn at all);
+- a zero-area fill whose subpath has curves but lies on one line is drawn
+  whole (bug_42270524, 0.990 -> 1.000; a PDFium bug that PDFium itself
+  suppresses).
+Every page of `tests/corpus/pdfs` (598 pages, 50 dpi) still renders
+byte-identically to 7264092 with default options.
+
+Remaining pages, all with evidence that they are not rendering gaps:
+- bug_40643646 (0.872 with the profile): most of the page is a pop-up that
+  pdfium_test opens by hovering over the note (`mousemove` event); PDFium
+  never draws closed pop-ups. The test is suppressed in PDFium itself.
+- bug_42270979_3 (0.886, Poppler 0.886): the curve
+  `0 0 m 2 10000 20 9000 40 -10000 c` at 5x crosses the page at
+  x = 136.0..136.2 (exact evaluation), where Wellfriend and Poppler draw it;
+  the expected PNG (Skia) draws it at x ~ 105 and current PDFium (AGG) at
+  ~139. Suppressed for AGG in PDFium.
+- bug_42271010 (0.943, Poppler 0.953): suppressed in PDFium (pypdfium2
+  renders the page solid red). Wellfriend's ramp seam is one row later than
+  the expectation because its axial shading samples pixel corners as PDFium's
+  shading code does, and the expected gradient colours are not a linear
+  interpolation of the function's stops (mid-ramp 467c1f instead of 008000).
+- bug_42270980 (default 0.925, Poppler 0.937; profile 0.966): suppressed in
+  PDFium; the expectation places the image on `GetClosestRect`, the default
+  renderer samples pixel centres like Splash.
+
+Tests on the VPS: workspace check clean; engine 5,727 passed, 0 failed;
+CLI + C API 162 passed, 0 failed; .NET binding and tests build; Java binding
+compiles.

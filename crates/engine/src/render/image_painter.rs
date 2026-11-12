@@ -794,7 +794,16 @@ impl ImagePainter {
 
         if Self::is_top_down_axis_aligned(&combined) {
             Self::paint_axis_aligned(buf, image, &combined, smooth_mode, paint_alpha);
-        } else {
+        } else if crate::render::vector_quality::contract_profile().is_default()
+            || !crate::render::pdfium_image_transform::paint(
+                buf,
+                image,
+                &combined,
+                smooth_mode == SmoothMode::Interpolate,
+                smooth_mode == SmoothMode::NoSmooth,
+                paint_alpha,
+            )
+        {
             Self::paint_affine(buf, image, &combined, smooth_mode, paint_alpha);
         }
     }

@@ -525,6 +525,8 @@ fn prepare_progressive_render_contract(
     accepted_expected.vector_antialias_gamma = base_contract.vector_antialias_gamma;
     accepted_expected.text_gamma = base_contract.text_gamma;
     accepted_expected.rect_snapping = base_contract.rect_snapping;
+    accepted_expected.stroke_adjustment = base_contract.stroke_adjustment;
+    accepted_expected.profile = base_contract.profile;
     if base_contract.overprint != crate::render::OverprintPolicy::PreserveSeparations {
         accepted_expected.overprint = base_contract.overprint;
     }

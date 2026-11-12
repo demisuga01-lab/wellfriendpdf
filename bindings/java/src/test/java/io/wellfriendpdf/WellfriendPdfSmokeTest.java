@@ -937,6 +937,12 @@ public final class WellfriendPdfSmokeTest {
             assertTrue(json.contains("\"thin_line_mode\":\"Shape\""), "thin line mode builder");
             assertTrue(json.contains("\"vector_antialias_gamma\":\"Gamma15\""), "AA gamma builder");
             assertTrue(json.contains("\"rect_snapping\":\"Pdfium\""), "rect snapping builder");
+            String profiled = contract.withProfile(WellfriendPdf.RenderContract.Profile.PdfiumTest).toJson();
+            assertTrue(profiled.contains("\"profile\":\"PdfiumTest\""), "profile builder");
+            assertTrue(profiled.contains("\"stroke_adjustment\":\"Off\""), "profile stroke adjustment");
+            assertTrue(profiled.contains("\"text\":{\"r\":221,\"g\":228,\"b\":255,\"a\":100}"),
+                "profile form highlight");
+            assertTrue(profiled.contains("\"focus_field\":\"form.name\""), "profile keeps the focus field");
             assertTrue(json.contains("\"path_stroke\":{\"r\":10,\"g\":20,\"b\":30,\"a\":255}"),
                 "forced colour builder");
             assertTrue(json.contains("\"focus_field\":\"form.name\""), "form highlight builder");

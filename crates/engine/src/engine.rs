@@ -588,6 +588,8 @@ pub(crate) fn unsupported_active_cpu_contract_fields(
     push_if_changed!(vector_antialias_gamma);
     push_if_changed!(text_gamma);
     push_if_changed!(rect_snapping);
+    push_if_changed!(stroke_adjustment);
+    push_if_changed!(profile);
     push_if_changed!(grayscale);
     push_if_changed!(forced_colors);
     push_if_changed!(color_scheme);
@@ -2796,6 +2798,8 @@ impl ContentEngine {
         accepted_expected.vector_antialias_gamma = contract.vector_antialias_gamma;
         accepted_expected.text_gamma = contract.text_gamma;
         accepted_expected.rect_snapping = contract.rect_snapping;
+        accepted_expected.stroke_adjustment = contract.stroke_adjustment;
+        accepted_expected.profile = contract.profile;
         if contract.overprint != OverprintPolicy::PreserveSeparations {
             accepted_expected.overprint = contract.overprint;
         }
@@ -2821,8 +2825,12 @@ impl ContentEngine {
         );
         let _text_raster_guard =
             crate::render::vector_quality::TextRasterContractGuard::enter(contract.text_gamma);
-        let _rect_snap_guard =
-            crate::render::vector_quality::RectSnapContractGuard::enter(contract.rect_snapping);
+        let _rect_snap_guard = crate::render::vector_quality::PixelSnapContractGuard::enter(
+            contract.rect_snapping,
+            contract.stroke_adjustment,
+        );
+        let _profile_guard =
+            crate::render::vector_quality::ProfileContractGuard::enter(contract.profile);
         // Only the requested window is rasterized; objects outside it are
         // culled against their retained device bounds.
         let mut buffer = PageRenderer::render_contract_window_with_cache(
@@ -6546,6 +6554,122 @@ mod tests {
         assert_eq!(linear.rgba_bytes(), gamma.rgba_bytes());
     }
 
+    fn single_page_engine(content: &str, resources: &str, extra: &[Vec<u8>]) -> ContentEngine {
+        let mut objects = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 80 40] /Contents 4 0 R \
+                 /Resources << {resources} >> >>"
+            )
+            .into_bytes(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            )
+            .into_bytes(),
+        ];
+        objects.extend_from_slice(extra);
+        ContentEngine::open_bytes(minimal_pdf_from_objects(&objects)).expect("open fixture")
+    }
+
+    #[test]
+    fn contract_stroke_adjustment_off_keeps_thin_strokes_anti_aliased() {
+        // A 1pt horizontal line centred on a pixel boundary: stroke
+        // adjustment snaps it to one solid row, PDFium paints two half rows.
+        let engine = single_page_engine("0 0 0 RG 1 w 10 20 m 70 20 l S\n", "", &[]);
+        let contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        let mut off = contract.clone();
+        off.stroke_adjustment = crate::render::StrokeAdjustment::Off;
+        let adjusted = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("adjusted render");
+        let plain = engine
+            .render_page_with_contract(&off, &CancelToken::none())
+            .expect("unadjusted render");
+        let column = |buf: &crate::render::PixelBuffer| -> Vec<u8> {
+            (17..23).map(|y| buf.get_pixel(40, y)[0]).collect()
+        };
+        assert_eq!(
+            column(&adjusted)
+                .iter()
+                .filter(|value| **value == 0)
+                .count(),
+            1,
+            "{:?}",
+            column(&adjusted)
+        );
+        let unadjusted = column(&plain);
+        assert_eq!(
+            unadjusted.iter().filter(|value| **value == 0).count(),
+            0,
+            "{unadjusted:?}"
+        );
+        assert_eq!(
+            unadjusted
+                .iter()
+                .filter(|value| (100..160).contains(*value))
+                .count(),
+            2,
+            "two half-covered rows: {unadjusted:?}"
+        );
+    }
+
+    #[test]
+    fn contract_pdfium_profile_draws_skewed_images_with_pdfium_transformer() {
+        // A 2x1 gray image (black, white) skewed: PDFium's transformer gives
+        // hard edges, the default sampler anti-aliases nothing either but
+        // places the boundary differently; the profile must match the
+        // module-level port pixel for pixel.
+        let image = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 1 \
+                      /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 2 >>\nstream\n\x00\xff\nendstream"
+            .to_vec();
+        let engine = single_page_engine(
+            "q 40 0 10 20 10 10 cm /Im Do Q\n",
+            "/XObject << /Im 5 0 R >>",
+            &[image],
+        );
+        let contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        let profiled = contract.with_profile(crate::render::RenderProfile::Pdfium);
+        let page = engine
+            .render_page_with_contract(&profiled, &CancelToken::none())
+            .expect("profile render");
+        let mut expected = crate::render::PixelBuffer::new_filled(80, 40, [255, 255, 255, 255]);
+        let raw = crate::images::decoder::RawImage {
+            width: 2,
+            height: 1,
+            channels: 1,
+            bits_per_sample: 8,
+            pixels: vec![0, 255],
+        };
+        let device = crate::render::transform::Transform2D {
+            a: 40.0,
+            b: 0.0,
+            c: 10.0,
+            d: -20.0,
+            e: 10.0,
+            f: 30.0,
+        };
+        assert!(crate::render::pdfium_image_transform::paint(
+            &mut expected,
+            &raw,
+            &device,
+            false,
+            false,
+            1.0
+        ));
+        assert_eq!(page.rgba_bytes(), expected.rgba_bytes());
+        let default = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("default render");
+        assert_ne!(default.rgba_bytes(), page.rgba_bytes());
+    }
+
     fn shrunk_checker_image_engine(content: &str) -> ContentEngine {
         // An 8x2 black/white checkerboard, painted below its source size.
         let mut image_bytes = Vec::new();
@@ -6947,6 +7071,8 @@ mod tests {
         ));
         every_field.text_gamma = crate::render::TextGamma::Pdfium;
         every_field.rect_snapping = crate::render::RectSnapping::Pdfium;
+        every_field.stroke_adjustment = crate::render::StrokeAdjustment::Off;
+        every_field.profile = crate::render::RenderProfile::Pdfium;
         every_field.xfa = crate::render::XfaRenderPolicy::Foreground;
         let contract_fields = serde_json::to_value(&every_field)
             .expect("serialize contract")

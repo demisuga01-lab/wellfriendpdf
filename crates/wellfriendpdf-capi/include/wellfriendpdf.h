@@ -353,6 +353,24 @@ WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_rect_snapping(
     WellfriendRenderContract **out_contract,
     char **error_out);
 
+/* stroke_adjustment: Default|Off (Off: never snap strokes, like PDFium).
+ * NULL keeps the current value. */
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_stroke_adjustment(
+    const WellfriendRenderContract *contract,
+    const char *stroke_adjustment,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
+/* Render profile: default, pdfium (render like PDFium: PDFium rectangle
+ * snapping, no stroke adjustment, PDFium text gamma and image transformer)
+ * or pdfium-test (pdfium plus pdfium_test's form highlight). Sets every
+ * field the profile bundles; NULL keeps the contract unchanged. */
+WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_profile(
+    const WellfriendRenderContract *contract,
+    const char *profile,
+    WellfriendRenderContract **out_contract,
+    char **error_out);
+
 /* Forced (high-contrast) colours as packed straight-alpha 0xRRGGBBAA values. */
 WELLFRIENDPDF_API int wellfriendpdf_render_contract_with_forced_colors(
     const WellfriendRenderContract *contract,

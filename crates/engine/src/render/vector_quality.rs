@@ -22,7 +22,9 @@ use std::sync::OnceLock;
 
 use crate::content::state::LineCap;
 use crate::render::buffer::RenderMode;
-use crate::render::contract::{RectSnapping, TextGamma, ThinLineMode, VectorAntialiasGamma};
+use crate::render::contract::{
+    RectSnapping, RenderProfile, StrokeAdjustment, TextGamma, ThinLineMode, VectorAntialiasGamma,
+};
 use crate::render::path::{FlatPath, Path, PathSegment};
 use crate::render::transform::Transform2D;
 
@@ -87,27 +89,58 @@ pub(crate) fn contract_text_gamma() -> TextGamma {
 }
 
 thread_local! {
-    static CONTRACT_RECT_SNAPPING: Cell<RectSnapping> = const { Cell::new(RectSnapping::Default) };
+    static CONTRACT_PIXEL_SNAPPING: Cell<(RectSnapping, StrokeAdjustment)> =
+        const { Cell::new((RectSnapping::Default, StrokeAdjustment::Default)) };
 }
 
 /// Scoped render-contract guard installing the filled-rectangle snapping
-/// policy for path paints on the current thread (see
+/// and stroke-adjustment policies for path paints on the current thread (see
 /// [`VectorRasterContractGuard`] for the scoping rules).
-pub(crate) struct RectSnapContractGuard {
-    previous: RectSnapping,
+pub(crate) struct PixelSnapContractGuard {
+    previous: (RectSnapping, StrokeAdjustment),
 }
 
-impl RectSnapContractGuard {
-    pub(crate) fn enter(rect_snapping: RectSnapping) -> Self {
-        let previous = CONTRACT_RECT_SNAPPING.with(|cell| cell.replace(rect_snapping));
+impl PixelSnapContractGuard {
+    pub(crate) fn enter(rect_snapping: RectSnapping, stroke_adjustment: StrokeAdjustment) -> Self {
+        let previous =
+            CONTRACT_PIXEL_SNAPPING.with(|cell| cell.replace((rect_snapping, stroke_adjustment)));
         Self { previous }
     }
 }
 
-impl Drop for RectSnapContractGuard {
+impl Drop for PixelSnapContractGuard {
     fn drop(&mut self) {
-        CONTRACT_RECT_SNAPPING.with(|cell| cell.set(self.previous));
+        CONTRACT_PIXEL_SNAPPING.with(|cell| cell.set(self.previous));
     }
+}
+
+thread_local! {
+    static CONTRACT_PROFILE: Cell<RenderProfile> = const { Cell::new(RenderProfile::Default) };
+}
+
+/// Scoped render-contract guard installing the contract's render profile on
+/// the current thread, for PDFium behaviour that has no contract field of
+/// its own (see [`VectorRasterContractGuard`] for the scoping rules).
+pub(crate) struct ProfileContractGuard {
+    previous: RenderProfile,
+}
+
+impl ProfileContractGuard {
+    pub(crate) fn enter(profile: RenderProfile) -> Self {
+        let previous = CONTRACT_PROFILE.with(|cell| cell.replace(profile));
+        Self { previous }
+    }
+}
+
+impl Drop for ProfileContractGuard {
+    fn drop(&mut self) {
+        CONTRACT_PROFILE.with(|cell| cell.set(self.previous));
+    }
+}
+
+/// The render profile installed by the active render contract.
+pub(crate) fn contract_profile() -> RenderProfile {
+    CONTRACT_PROFILE.with(Cell::get)
 }
 
 /// PDFium's text gamma table (`kTextGammaAdjust` in `cfx_renderdevice.cpp`),
@@ -154,16 +187,19 @@ impl VectorRasterOptions {
     /// Stroke adjustment is always on in Compatibility mode (Poppler/Acrobat
     /// behaviour: `/SA` is ignored); HighQuality mode is the geometry-exact
     /// mode and only snaps when the content asks for it with `/SA true`.
+    /// [`StrokeAdjustment::Off`] in the active contract switches it off.
     pub(crate) fn for_path_paint(
         render_mode: RenderMode,
         stroke_adjustment_requested: bool,
     ) -> Self {
         let (thin_line_mode, coverage_gamma) = contract_vector_options();
+        let (rect_snapping, stroke_adjustment) = CONTRACT_PIXEL_SNAPPING.with(Cell::get);
         Self {
-            stroke_adjust: !render_mode.is_high_quality() || stroke_adjustment_requested,
+            stroke_adjust: stroke_adjustment != StrokeAdjustment::Off
+                && (!render_mode.is_high_quality() || stroke_adjustment_requested),
             thin_line_mode,
             coverage_gamma,
-            rect_snapping: CONTRACT_RECT_SNAPPING.with(Cell::get),
+            rect_snapping,
         }
     }
 

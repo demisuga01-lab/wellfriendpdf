@@ -1165,6 +1165,81 @@ pub unsafe extern "C" fn wellfriendpdf_render_contract_with_rect_snapping(
     })
 }
 
+/// Return a copy of `contract` with the stroke-adjustment policy replaced.
+///
+/// `stroke_adjustment` accepts `Default` (Wellfriend: always in compat mode,
+/// `/SA` in high-quality mode) or `Off` (never, like PDFium's rasterizer).
+/// It is case-insensitive. NULL keeps the current value.
+///
+/// # Safety
+/// Same contract as `wellfriendpdf_render_contract_with_rect_snapping`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_with_stroke_adjustment(
+    contract: *const WellfriendRenderContract,
+    stroke_adjustment: *const c_char,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        let mut next = contract.contract.clone();
+        if let Some(value) = unsafe { optional_c_string(stroke_adjustment) }? {
+            next.stroke_adjustment = parse_contract_enum("stroke_adjustment", &value)?;
+        }
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
+/// Return a copy of `contract` with a render profile applied
+/// (`RenderContract::apply_profile`).
+///
+/// `profile` is `default`, `pdfium` (render like PDFium's
+/// `FPDF_RenderPageBitmap` + `FPDF_FFLDraw`: PDFium rectangle snapping, no
+/// stroke adjustment, PDFium text gamma and PDFium's image transformer for
+/// skewed images) or `pdfium-test` (`pdfium` plus the form highlight
+/// PDFium's `pdfium_test` harness installs), case-insensitive. The profile
+/// sets every field it bundles; a focus field is kept. NULL keeps the
+/// contract unchanged.
+///
+/// # Safety
+/// Same contract as `wellfriendpdf_render_contract_with_rect_snapping`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_with_profile(
+    contract: *const WellfriendRenderContract,
+    profile: *const c_char,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        let mut next = contract.contract.clone();
+        if let Some(value) = unsafe { optional_c_string(profile) }? {
+            let profile = wellfriendpdf_engine::render::RenderProfile::from_name(&value)
+                .ok_or_else(|| {
+                    format!(
+                        "unsupported render profile '{value}'; use default, pdfium or pdfium-test"
+                    )
+                })?;
+            next.apply_profile(profile);
+        }
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
 /// Return a copy of `contract` with a forced (high-contrast) colour scheme.
 ///
 /// Colours are packed straight-alpha `0xRRGGBBAA` values for path fill, path
@@ -15648,6 +15723,50 @@ BT /F1 12 Tf 10 150 Td (The cat sat; concatenate.) Tj ET";
         assert!(take_error(error).contains("rect_snapping"));
         error = ptr::null_mut();
 
+        let off = CString::new("off").unwrap();
+        let mut unadjusted = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_stroke_adjustment(
+                base,
+                off.as_ptr(),
+                &mut unadjusted,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert_eq!(contract_json(unadjusted)["stroke_adjustment"], "Off");
+
+        let pdfium_test = CString::new("pdfium-test").unwrap();
+        let mut profiled = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_profile(
+                base,
+                pdfium_test.as_ptr(),
+                &mut profiled,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let value = contract_json(profiled);
+        assert_eq!(value["profile"], "PdfiumTest");
+        assert_eq!(value["rect_snapping"], "Pdfium");
+        assert_eq!(value["stroke_adjustment"], "Off");
+        assert_eq!(value["text_gamma"], "Pdfium");
+        assert_eq!(value["form_highlight"]["text"]["b"], 255);
+        assert_eq!(value["form_highlight"]["text"]["a"], 100);
+        let mut rejected_profile = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_profile(
+                base,
+                bad.as_ptr(),
+                &mut rejected_profile,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_ERROR);
+        assert!(take_error(error).contains("render profile"));
+        error = ptr::null_mut();
+
         let mut png = WellfriendBuffer::empty();
         let status = unsafe {
             wellfriendpdf_document_render_page_png_with_contract_handle(
@@ -15679,6 +15798,8 @@ BT /F1 12 Tf 10 150 Td (The cat sat; concatenate.) Tj ET";
                 cleared,
                 all,
                 snapped,
+                unadjusted,
+                profiled,
             ] {
                 wellfriendpdf_render_contract_free(handle);
             }

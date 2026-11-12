@@ -1268,6 +1268,46 @@ public final class WellfriendPdf {
             return withEnum("rect_snapping", rectSnapping, "rectSnapping");
         }
 
+        public RenderContract withStrokeAdjustment(StrokeAdjustment strokeAdjustment) {
+            return withEnum("stroke_adjustment", strokeAdjustment, "strokeAdjustment");
+        }
+
+        public RenderContract withTextGamma(TextGamma textGamma) {
+            return withEnum("text_gamma", textGamma, "textGamma");
+        }
+
+        /**
+         * Applies a render profile: Pdfium renders like PDFium (PDFium rectangle snapping, no stroke
+         * adjustment, PDFium text gamma and image transformer); PdfiumTest adds the form highlight
+         * of PDFium's pdfium_test harness (RGB 221,228,255 at alpha 100); Default resets those
+         * fields. A focus field is kept.
+         */
+        public RenderContract withProfile(Profile profile) {
+            if (profile == null) {
+                throw new IllegalArgumentException("profile must not be null");
+            }
+            boolean pdfium = profile != Profile.Default;
+            RenderContract next = withEnum("profile", profile, "profile")
+                .withRectSnapping(pdfium ? RectSnapping.Pdfium : RectSnapping.Default)
+                .withStrokeAdjustment(pdfium ? StrokeAdjustment.Off : StrokeAdjustment.Default)
+                .withTextGamma(pdfium ? TextGamma.Pdfium : TextGamma.Linear);
+            Object current = values.get("form_highlight");
+            String focusField = current instanceof Map<?, ?> map && map.get("focus_field") instanceof String field
+                ? field
+                : null;
+            if (profile == Profile.PdfiumTest) {
+                return next.withFormHighlight(0xdde4ff64, focusField);
+            }
+            if (focusField == null) {
+                return next.withoutFormHighlight();
+            }
+            LinkedHashMap<String, Object> policy = new LinkedHashMap<>();
+            policy.put("focus_field", focusField);
+            LinkedHashMap<String, Object> updated = next.copyValues();
+            updated.put("form_highlight", policy);
+            return new RenderContract(updated);
+        }
+
         /** One forced colour, packed straight-alpha {@code 0xRRGGBBAA}, for every path and text paint. */
         public RenderContract withForcedColors(int foregroundRgba) {
             return withForcedColors(foregroundRgba, foregroundRgba, foregroundRgba, foregroundRgba, false);
@@ -1424,6 +1464,9 @@ public final class WellfriendPdf {
             optionalEnum("thin_line_mode", ThinLineMode.class);
             optionalEnum("vector_antialias_gamma", VectorAntialiasGamma.class);
             optionalEnum("rect_snapping", RectSnapping.class);
+            optionalEnum("stroke_adjustment", StrokeAdjustment.class);
+            optionalEnum("text_gamma", TextGamma.class);
+            optionalEnum("profile", Profile.class);
             Object forcedColors = values.get("forced_colors");
             if (forcedColors != null) {
                 if (!(forcedColors instanceof Map<?, ?>)) {
@@ -1747,6 +1790,25 @@ public final class WellfriendPdf {
         public enum RectSnapping {
             Default,
             Pdfium
+        }
+
+        /** Stroke adjustment: Default (Wellfriend) or Off (never snap strokes, like PDFium). */
+        public enum StrokeAdjustment {
+            Default,
+            Off
+        }
+
+        /** Glyph coverage gamma: Linear or Pdfium (PDFium's text gamma table). */
+        public enum TextGamma {
+            Linear,
+            Pdfium
+        }
+
+        /** Render profile: Default, Pdfium (render like PDFium) or PdfiumTest (plus pdfium_test's form highlight). */
+        public enum Profile {
+            Default,
+            Pdfium,
+            PdfiumTest
         }
     }
 
