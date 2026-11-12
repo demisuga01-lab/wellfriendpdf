@@ -185,6 +185,18 @@ def test_render_contract_raster_policy_forced_color_and_form_highlight_builders(
     assert profiled["rect_snapping"] == "Pdfium"
     assert profiled["stroke_adjustment"] == "Off"
     assert profiled["form_highlight"]["text"] == {"r": 221, "g": 228, "b": 255, "a": 100}
+    pdfium = json.loads(contract.with_profile("pdfium").to_json())
+    assert pdfium["profile"] == "Pdfium"
+    assert pdfium["text_gamma"] == "Pdfium"
+    assert "form_highlight" not in pdfium
+    default = json.loads(contract.with_profile("pdfium").with_profile("default").to_json())
+    assert "profile" not in default and default.get("stroke_adjustment", "Default") == "Default"
+    with pytest.raises(ValueError, match="render profile"):
+        contract.with_profile("bogus")
+    with pytest.raises(ValueError):
+        contract.with_stroke_adjustment("bogus")
+    assert doc.render_contract_png(contract.with_profile("pdfium-test")).startswith(b"\x89PNG")
+    assert doc.render_contract_png(contract.with_stroke_adjustment("off")).startswith(b"\x89PNG")
     assert value["forced_colors"]["path_fill"] == {"r": 0, "g": 0, "b": 0, "a": 255}
     assert value["forced_colors"]["path_stroke"]["g"] == 20
     assert value["forced_colors"]["text_fill"] == value["forced_colors"]["path_fill"]

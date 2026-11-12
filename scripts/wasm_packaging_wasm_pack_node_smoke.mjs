@@ -193,6 +193,26 @@ try {
     result.apis_tested.push("invalid input error");
   }
 
+  // Round 12 render profile and stroke adjustment builders.
+  const baseContract = pdf.defaultRenderContract(1, 72);
+  const profiled = JSON.parse(baseContract.withProfile("pdfium-test").toJson());
+  result.profile_fields = [profiled.profile, profiled.rect_snapping, profiled.stroke_adjustment, profiled.text_gamma];
+  result.profile_highlight_alpha = profiled.form_highlight?.text?.a;
+  result.stroke_adjustment_off = JSON.parse(baseContract.withStrokeAdjustment("off").toJson()).stroke_adjustment;
+  const profiledPng = pdf.renderContractObjectPng(baseContract.withProfile("pdfium"));
+  result.profile_png_signature = profiledPng.length > 8 && profiledPng[0] === 0x89 && profiledPng[1] === 0x50;
+  try {
+    baseContract.withProfile("bogus");
+    result.profile_rejects_unknown = false;
+  } catch (error) {
+    result.profile_rejects_unknown = String(error).includes("render profile");
+  }
+  result.apis_tested.push(
+    "WellfriendRenderContract.withProfile",
+    "WellfriendRenderContract.withStrokeAdjustment",
+    "renderContractObjectPng(profile)",
+  );
+
   pdf.close();
   result.apis_tested.push("close");
 
@@ -224,6 +244,11 @@ try {
     result.text_reflow_validation_kind === "text_reflow_validate_reflow_output",
     result.text_reflow_undo_kind === "text_reflow_undo_reflow",
     typeof result.invalid_input_error === "string" && result.invalid_input_error.length > 0,
+    JSON.stringify(result.profile_fields) === JSON.stringify(["PdfiumTest", "Pdfium", "Off", "Pdfium"]),
+    result.profile_highlight_alpha === 100,
+    result.stroke_adjustment_off === "Off",
+    result.profile_png_signature === true,
+    result.profile_rejects_unknown === true,
   ];
   result.status = checks.every(Boolean) ? "passed" : "failed";
 } catch (error) {

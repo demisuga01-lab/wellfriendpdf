@@ -943,6 +943,26 @@ public final class WellfriendPdfSmokeTest {
             assertTrue(profiled.contains("\"text\":{\"r\":221,\"g\":228,\"b\":255,\"a\":100}"),
                 "profile form highlight");
             assertTrue(profiled.contains("\"focus_field\":\"form.name\""), "profile keeps the focus field");
+            assertTrue(profiled.contains("\"text_gamma\":\"Pdfium\""), "profile text gamma");
+            WellfriendPdf.RenderContract tuned = contract
+                .withStrokeAdjustment(WellfriendPdf.RenderContract.StrokeAdjustment.Off)
+                .withTextGamma(WellfriendPdf.RenderContract.TextGamma.Pdfium);
+            String tunedJson = tuned.toJson();
+            assertTrue(tunedJson.contains("\"stroke_adjustment\":\"Off\""), "stroke adjustment builder");
+            assertTrue(tunedJson.contains("\"text_gamma\":\"Pdfium\""), "text gamma builder");
+            byte[] tunedPng = doc.renderPagePng(tuned);
+            assertTrue(tunedPng.length > 8 && tunedPng[0] == (byte) 0x89, "stroke/gamma contract renders");
+            WellfriendPdf.RenderContract pdfiumProfile =
+                contract.withProfile(WellfriendPdf.RenderContract.Profile.Pdfium);
+            assertTrue(pdfiumProfile.toJson().contains("\"profile\":\"Pdfium\""), "pdfium profile builder");
+            byte[] profiledPng = doc.renderPagePng(pdfiumProfile);
+            assertTrue(profiledPng.length > 8 && profiledPng[0] == (byte) 0x89, "profiled contract renders");
+            byte[] testProfilePng =
+                doc.renderPagePng(contract.withProfile(WellfriendPdf.RenderContract.Profile.PdfiumTest));
+            assertTrue(testProfilePng.length > 8 && testProfilePng[0] == (byte) 0x89, "pdfium-test profile renders");
+            String reset = pdfiumProfile.withProfile(WellfriendPdf.RenderContract.Profile.Default).toJson();
+            assertTrue(!reset.contains("\"stroke_adjustment\":\"Off\"") && !reset.contains("\"text_gamma\":\"Pdfium\""),
+                "default profile resets the PDFium fields");
             assertTrue(json.contains("\"path_stroke\":{\"r\":10,\"g\":20,\"b\":30,\"a\":255}"),
                 "forced colour builder");
             assertTrue(json.contains("\"focus_field\":\"form.name\""), "form highlight builder");
