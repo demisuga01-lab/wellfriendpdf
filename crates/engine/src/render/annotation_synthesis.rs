@@ -767,8 +767,52 @@ pub(crate) fn synthesize_markup(
         "Ink" => ink(annot, reader, rect),
         "Caret" => caret(annot, reader, rect),
         "FreeText" => free_text(annot, ctx, rect),
+        "Link" => link_border(annot, reader, rect),
         _ => None,
     }
+}
+
+/// A Link annotation's border: with an explicit `/Border` or `/BS` of
+/// positive width and a `/C` colour, the rectangle is stroked inside its
+/// `/Rect` (Poppler's `AnnotLink::draw`). PDFium draws the same box, but
+/// nothing for the underline style.
+fn link_border(
+    annot: &PdfDictionary,
+    reader: &PdfReader,
+    rect: [f64; 4],
+) -> Option<SynthesizedAppearance> {
+    if annot.get("Border").is_none() && annot.get("BS").is_none() {
+        return None;
+    }
+    let border = border_style(annot, reader, 1.0);
+    // PDFium draws no box for an underline-style link border.
+    if border.kind == BorderKind::Underline {
+        return None;
+    }
+    let color = stroke_color(annot, None)?;
+    let width = rect[2] - rect[0];
+    let height = rect[3] - rect[1];
+    let inset = border.width * 0.5;
+    if border.width <= 0.0 || width <= border.width || height <= border.width {
+        return None;
+    }
+    let mut out = String::from("q\n");
+    stroke_setup(&mut out, color, &border);
+    let _ = writeln!(
+        out,
+        "{} {} {} {} re S\nQ",
+        n(inset),
+        n(inset),
+        n(width - border.width),
+        n(height - border.width)
+    );
+    finish(
+        out,
+        [0.0, 0.0, width, height],
+        rect,
+        Resources::default(),
+        opacity(annot),
+    )
 }
 
 fn stroke_color(annot: &PdfDictionary, default: Option<AnnotColor>) -> Option<AnnotColor> {
