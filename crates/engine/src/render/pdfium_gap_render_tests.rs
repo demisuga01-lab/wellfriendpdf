@@ -190,4 +190,60 @@ mod pdfium_gap_rendering {
         );
         assert_eq!(count(&buf, |p| p[0] < 128), 0);
     }
+
+    #[test]
+    fn translucent_fill_and_stroke_is_a_knockout_pair() {
+        // pdfium same_color_knockout_fill: where the stroke covers the fill it
+        // is composited over the backdrop, so a same-colour pair is uniform.
+        let buf = render(
+            "/ExtGState << /G << /CA 0.5 /ca 0.5 >> >>",
+            b"/G gs 6 w 0 0 1 RG 0 0 1 rg 20 20 60 60 re b",
+            Vec::new(),
+        );
+        let inside = buf.get_pixel(50, 50);
+        assert_eq!(buf.get_pixel(50, 80), inside, "stroke over the fill");
+        assert_eq!(buf.get_pixel(50, 82), inside, "stroke outside the fill");
+    }
+
+    #[test]
+    fn forms_in_tiling_cells_take_the_filled_objects_alpha() {
+        // pdfium bug_2106: the cell resets ca to 1, yet the form it draws is
+        // composited with the filled object's ca.
+        let buf = render(
+            "/ExtGState << /Half << /ca 0.5 >> >> /Pattern << /P 5 0 R >>",
+            b"/Half gs /Pattern cs /P scn 0 0 100 100 re f",
+            vec![
+                stream(
+                    "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 100 100] /XStep 100 /YStep 100 /Resources << /ExtGState << /One << /ca 1 >> >> /XObject << /Fm 6 0 R >> >>",
+                    b"/One gs /Fm Do",
+                ),
+                stream(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 100 100]",
+                    b"0 g 0 0 100 100 re f",
+                ),
+            ],
+        );
+        let pixel = buf.get_pixel(50, 50);
+        assert!((120..=135).contains(&pixel[0]), "{pixel:?}");
+    }
+
+    #[test]
+    fn type3_image_masks_take_the_text_alpha_twice() {
+        // pdfium bug_1746: image masks in a Type 3 glyph shown with ca 0.5.
+        let glyph =
+            b"50 0 0 0 40 40 d1 q 40 0 0 40 0 0 cm BI /IM true /W 1 /H 1 /BPC 1 ID \x00 EI Q";
+        let buf = render(
+            "/ExtGState << /Half << /ca 0.5 >> >> /Font << /F1 5 0 R >>",
+            b"/Half gs 0 0 1 rg BT /F1 2 Tf 10 10 Td (a) Tj ET",
+            vec![
+                b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [1 0 0 1 0 0] /CharProcs << /a 6 0 R >> /Encoding << /Differences [97 /a] >> /FirstChar 97 /LastChar 97 /Widths [50] >>".to_vec(),
+                stream("", glyph),
+            ],
+        );
+        let pixel = buf.get_pixel(50, 50);
+        assert!(
+            (185..=198).contains(&pixel[0]) && pixel[2] == 255,
+            "{pixel:?}"
+        );
+    }
 }
