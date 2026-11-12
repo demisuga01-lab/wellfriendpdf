@@ -17187,8 +17187,10 @@ impl<'a> RenderState<'a> {
     }
 
     /// Paints the render contract's form highlight over a widget after its
-    /// appearance: the field type's translucent colour on non-read-only
-    /// fields and the focus rectangle on the focused field's widgets.
+    /// appearance, like PDFium's `CFFL_InteractiveFormFiller::OnDraw`: the
+    /// field type's translucent colour on the non-read-only widgets of form
+    /// fields (`CPDFSDK_Widget::DrawShadow`), and the focus rectangle instead
+    /// of the colour on the focused field's widgets.
     fn render_widget_highlight(
         &mut self,
         annot: &PdfDictionary,
@@ -17203,15 +17205,25 @@ impl<'a> RenderState<'a> {
             plate.note_issue("form field highlight");
         }
         let reader = self.engine.document().reader();
+        // PDFium only treats widgets of fields reachable from the AcroForm
+        // /Fields tree as form widgets (`CPDF_InteractiveForm::
+        // GetControlByDict`); other widget annotations get no highlight.
+        if !widget_is_acroform_control(self.engine, reader, annot_obj) {
+            return;
+        }
         let chain = collect_field_chain(annot, reader);
         if inherited_field_object(&chain, "FT").is_none() {
             return;
         }
-        let color = widget_highlight_color(&policy, &chain);
         let focused = policy
             .focus_field
             .as_deref()
             .is_some_and(|focus| !focus.is_empty() && widget_field_full_name(&chain) == focus);
+        // The focused field is drawn live by PDFium (no shadow); otherwise
+        // the colour needs fill-form permission and an editable field.
+        let color = (!focused && form_filling_allowed(reader))
+            .then(|| widget_highlight_color(&policy, &chain))
+            .flatten();
         let [x0, y0, x1, y1] = [
             rect[0].min(rect[2]),
             rect[1].min(rect[3]),
@@ -17222,19 +17234,26 @@ impl<'a> RenderState<'a> {
         if width <= 0.0 || height <= 0.0 {
             return;
         }
-        let Some((content, alpha)) = widget_highlight_content(color, focused, width, height) else {
+        if let Some(color) = color {
+            self.fill_widget_highlight_rect([x0, y0, x1, y1], color);
+        }
+        // PDFium's pixel expectations show the dotted focus rectangle around
+        // focused buttons only; a focused text or choice field is drawn live
+        // by its edit/list window without one.
+        let is_button = inherited_field_object(&chain, "FT")
+            .as_ref()
+            .and_then(PdfObject::as_name)
+            == Some("Btn");
+        if !focused || !is_button {
             return;
-        };
+        }
         // One point of margin on every side for the focus rectangle.
-        let (mut dict, raw) = annotation_synthesis::widget_form_with(
-            content,
+        let (dict, raw) = annotation_synthesis::widget_form_with(
+            widget_focus_rect_content(width, height),
             [-2.0, -2.0, width + 2.0, height + 2.0],
             None,
             annotation_synthesis::Resources::default(),
         );
-        if let Some(alpha) = alpha {
-            add_synthesized_ext_g_state(&mut dict, alpha, None);
-        }
         let placement = [x0 - 2.0, y0 - 2.0, x1 + 2.0, y1 + 2.0];
         let name = format!("Annot{}Highlight", index + 1);
         let Some(program) = self
@@ -17243,6 +17262,41 @@ impl<'a> RenderState<'a> {
             return;
         };
         self.render_annotation_appearance_program(&name, &program, placement, false);
+    }
+
+    /// PDFium's highlight shadow (`CPDFSDK_Widget::DrawShadow`): the
+    /// annotation rectangle's two corners mapped to device space in single
+    /// precision, truncated to whole pixels (`CFX_FloatRect::ToFxRect`) and
+    /// filled without anti-aliasing (`CFX_RenderDevice::FillRect`).
+    fn fill_widget_highlight_rect(
+        &mut self,
+        [x0, y0, x1, y1]: [f64; 4],
+        color: crate::render::contract::ContractColor,
+    ) {
+        let device = self.viewport.to_transform();
+        let (ax, ay) = device.transform_point(x0, y0);
+        let (bx, by) = device.transform_point(x1, y1);
+        let [left, top, right, bottom] = [
+            ax.min(bx) as f32,
+            ay.min(by) as f32,
+            ax.max(bx) as f32,
+            ay.max(by) as f32,
+        ];
+        if ![left, top, right, bottom]
+            .iter()
+            .all(|value| value.is_finite())
+        {
+            return;
+        }
+        // `static_cast<int>` truncates toward zero.
+        let [left, top, right, bottom] = [left, top, right, bottom].map(|value| value as i32);
+        self.buf.fill_rect(
+            left,
+            top,
+            right.saturating_sub(left),
+            bottom.saturating_sub(top),
+            [color.r, color.g, color.b, color.a],
+        );
     }
 
     fn render_annotation_appearance_program(
@@ -30385,7 +30439,9 @@ fn widget_field_full_name(chain: &[PdfDictionary]) -> String {
 }
 
 /// Highlight colour for a widget's field type, or `None` for read-only
-/// fields and field types that are not highlighted.
+/// fields and field types that are not highlighted. Like PDFium, push
+/// buttons (`CFFL_InteractiveFormFiller::IsFillingAllowed`) and signature
+/// fields (`CPDFSDK_Widget::OnDraw`) never get the highlight shadow.
 fn widget_highlight_color(
     policy: &FormHighlightPolicy,
     chain: &[PdfDictionary],
@@ -30399,51 +30455,85 @@ fn widget_highlight_color(
         .and_then(PdfObject::as_name)?
     {
         "Tx" => policy.text,
-        "Btn" if flags & FIELD_FLAG_PUSHBUTTON != 0 => policy.push_button,
+        "Btn" if flags & FIELD_FLAG_PUSHBUTTON != 0 => None,
         "Btn" if flags & FIELD_FLAG_RADIO != 0 => policy.radio_button,
         "Btn" => policy.check_box,
         "Ch" if flags & FIELD_FLAG_COMBO != 0 => policy.combo_box,
         "Ch" => policy.list_box,
-        "Sig" => policy.signature,
         _ => None,
     };
     color.filter(|color| color.a > 0)
 }
 
-/// Content of a widget's highlight overlay over a `width` x `height`
-/// widget: the translucent field-type colour (PDFium `DrawShadow`) and,
-/// for the focused field, a black dotted hairline 1pt outside the widget
-/// (PDFium `CFX_DrawUtils::DrawFocusRect`). Returns the content and the
-/// highlight opacity.
-fn widget_highlight_content(
-    color: Option<crate::render::contract::ContractColor>,
-    focused: bool,
-    width: f64,
-    height: f64,
-) -> Option<(String, Option<f64>)> {
-    let mut content = String::new();
-    let mut alpha = None;
-    if let Some(color) = color {
-        let _ = writeln!(
-            content,
-            "q /GS1 gs {} {} {} rg 0 0 {} {} re f Q",
-            pdf_num(f64::from(color.r) / 255.0),
-            pdf_num(f64::from(color.g) / 255.0),
-            pdf_num(f64::from(color.b) / 255.0),
-            pdf_num(width),
-            pdf_num(height)
-        );
-        alpha = Some(f64::from(color.a) / 255.0);
-    }
-    if focused {
-        let _ = writeln!(
-            content,
-            "q 0 G 0 w [1] 0 d -1 -1 {} {} re S Q",
-            pdf_num(width + 2.0),
-            pdf_num(height + 2.0)
-        );
-    }
-    (!content.is_empty()).then_some((content, alpha))
+/// Whether a widget annotation is a form control: its dictionary is reached
+/// from the AcroForm `/Fields` tree through `/Kids` (PDFium
+/// `CPDF_InteractiveForm` loads fields this way, at most 32 levels deep).
+/// Direct (non-reference) annotations are never controls.
+fn widget_is_acroform_control(
+    engine: &ContentEngine,
+    reader: &crate::reader::PdfReader,
+    annot_obj: &PdfObject,
+) -> bool {
+    let &PdfObject::Reference { number, generation } = annot_obj else {
+        return false;
+    };
+    let controls = crate::render::annotation_pass_cache::shared(
+        crate::render::annotation_pass_cache::PassCacheKey::FormControls,
+        || {
+            let mut controls = HashSet::new();
+            let Some(acroform) = resolve_acroform_dict(engine, reader) else {
+                return controls;
+            };
+            let mut stack: Vec<(PdfObject, usize)> = match acroform
+                .get("Fields")
+                .map(|fields| reader.resolve(fields.clone()))
+            {
+                Some(Ok(PdfObject::Array(fields))) => {
+                    fields.into_iter().map(|field| (field, 0)).collect()
+                }
+                _ => Vec::new(),
+            };
+            while let Some((node, depth)) = stack.pop() {
+                let PdfObject::Reference { number, generation } = node else {
+                    continue;
+                };
+                if depth > 32 || !controls.insert((number, generation)) {
+                    continue;
+                }
+                let Ok(PdfObject::Dictionary(dict)) = reader.get_and_resolve(number, generation)
+                else {
+                    continue;
+                };
+                if let Some(Ok(PdfObject::Array(kids))) =
+                    dict.get("Kids").map(|kids| reader.resolve(kids.clone()))
+                {
+                    stack.extend(kids.into_iter().map(|kid| (kid, depth + 1)));
+                }
+            }
+            controls
+        },
+    );
+    controls.contains(&(number, generation))
+}
+
+/// PDFium's `CFFL_InteractiveFormFiller::IsFillingAllowed` permission test:
+/// any of fill-form, modify-annotations or modify-content, with the owner
+/// password granting everything.
+fn form_filling_allowed(reader: &crate::reader::PdfReader) -> bool {
+    reader.encryption().is_none_or(|encryption| {
+        encryption.authenticated_as_owner
+            || encryption.permissions & ((1 << 8) | (1 << 5) | (1 << 3)) != 0
+    })
+}
+
+/// A black dotted hairline 1pt outside a `width` x `height` widget, PDFium's
+/// focus rectangle (`CFX_DrawUtils::DrawFocusRect`).
+fn widget_focus_rect_content(width: f64, height: f64) -> String {
+    format!(
+        "q 0 G 0 w [1] 0 d -1 -1 {} {} re S Q\n",
+        pdf_num(width + 2.0),
+        pdf_num(height + 2.0)
+    )
 }
 
 fn select_annotation_appearance(
@@ -30644,6 +30734,20 @@ fn synthesize_annotation_appearance_placed(
                 .and_then(display_text_from_object)
                 .map(|(text, _)| text)
                 .unwrap_or_default();
+            // PDFium lays the value out with `CPVT_VariableText::SetLimitChar
+            // (MaxLen)`: only the first MaxLen UTF-16 code units are shown.
+            if let Some(max_len) = inherited_field_integer(&field_chain, "MaxLen")
+                .and_then(|len| usize::try_from(len).ok())
+                .filter(|len| *len > 0)
+            {
+                let mut units = 0;
+                if let Some((cut, _)) = text.char_indices().find(|(_, ch)| {
+                    units += ch.len_utf16();
+                    units > max_len
+                }) {
+                    text.truncate(cut);
+                }
+            }
             if field_flags & FIELD_FLAG_PASSWORD != 0 {
                 // Password fields never show their value: one asterisk per
                 // character, as viewers do (PDF 12.7.5.3, Ff bit 14).
@@ -31639,7 +31743,7 @@ fn collect_field_chain(
     annot: &PdfDictionary,
     reader: &crate::reader::PdfReader,
 ) -> Vec<PdfDictionary> {
-    let mut chain = vec![annot.clone()];
+    let mut chain = vec![with_direct_field_values(annot.clone(), reader)];
     let mut parent = annot.get("Parent").cloned();
     for _ in 0..16 {
         let Some(parent_obj) = parent else {
@@ -31649,9 +31753,28 @@ fn collect_field_chain(
             break;
         };
         parent = parent_dict.get("Parent").cloned();
-        chain.push(parent_dict);
+        chain.push(with_direct_field_values(parent_dict, reader));
     }
     chain
+}
+
+/// Replaces indirect references among a field dictionary's inheritable
+/// values (`/FT /Ff /V /DV /DA /Q /Opt /MaxLen /TI /I`) by the objects they
+/// point to, as PDFium's `CPDF_FormField::GetFieldAttrForDict` callers read
+/// them through `GetDirect`: a text field whose `/V` is `7 0 R` shows the
+/// referenced string.
+fn with_direct_field_values(
+    mut dict: PdfDictionary,
+    reader: &crate::reader::PdfReader,
+) -> PdfDictionary {
+    for key in ["FT", "Ff", "V", "DV", "DA", "Q", "Opt", "MaxLen", "TI", "I"] {
+        if let Some(reference @ PdfObject::Reference { .. }) = dict.get(key).cloned() {
+            if let Ok(value) = reader.resolve(reference) {
+                dict.insert(key, value);
+            }
+        }
+    }
+    dict
 }
 
 fn inherited_field_object(chain: &[PdfDictionary], key: &str) -> Option<PdfObject> {
@@ -48632,7 +48755,8 @@ mod tests {
             .expect("check-box-only render");
         assert_eq!(count_pixels_matching(&none, bluish), 0);
 
-        // Focus rectangle around the named field.
+        // A focused text field gets no focus rectangle (PDFium draws it
+        // around focused buttons only).
         contract.form_highlight = crate::render::FormHighlightPolicy {
             focus_field: Some("name".to_string()),
             ..Default::default()
@@ -48647,9 +48771,99 @@ mod tests {
             "1pt outside the widget: {dark:?}"
         );
         assert!(
-            (18..=19).contains(&dark[1]) && (40..=41).contains(&dark[3]),
+            (58..=59).contains(&dark[1]) && (80..=81).contains(&dark[3]),
             "{dark:?}"
         );
+    }
+
+    /// pdfium_test's highlight (`FPDF_SetFormFieldHighlightColor(form, 0,
+    /// 0xFFE4DD)` is a COLORREF, so RGB (221, 228, 255), alpha 100).
+    fn pdfium_test_highlight() -> crate::render::FormHighlightPolicy {
+        crate::render::FormHighlightPolicy::all(crate::render::ContractColor {
+            r: 221,
+            g: 228,
+            b: 255,
+            a: 100,
+        })
+    }
+
+    #[test]
+    fn form_highlight_follows_pdfium_draw_shadow() {
+        let pdf = annotation_pdf(
+            vec![
+                // Fractional text field: device x 10.6..50.4, y 20.3..30.7.
+                b"<< /Type /Annot /Subtype /Widget /Rect [10.6 69.3 50.4 79.7] /FT /Tx \
+                   /T (text) /V () >>"
+                    .to_vec(),
+                // Push button: never highlighted.
+                b"<< /Type /Annot /Subtype /Widget /Rect [60 70 90 80] /FT /Btn /Ff 65536 \
+                   /T (button) >>"
+                    .to_vec(),
+                // Text widget outside the AcroForm /Fields tree.
+                b"<< /Type /Annot /Subtype /Widget /Rect [10 40 50 50] /FT /Tx /T (orphan) \
+                   /V () >>"
+                    .to_vec(),
+                // Signature field: never highlighted.
+                b"<< /Type /Annot /Subtype /Widget /Rect [60 40 90 50] /FT /Sig /T (sig) >>"
+                    .to_vec(),
+                // Kid widget of a parent field: highlighted.
+                b"<< /T (parent) /FT /Tx /Kids [10 0 R] >>".to_vec(),
+                b"<< /Type /Annot /Subtype /Widget /Parent 9 0 R /Rect [10 10 50 20] >>".to_vec(),
+            ],
+            "5 0 R 6 0 R 7 0 R 8 0 R 10 0 R",
+            "",
+            "/AcroForm << /Fields [5 0 R 6 0 R 8 0 R 9 0 R] >>",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open highlight PDF");
+        let mut contract = highlight_contract(&engine);
+        contract.form_highlight = pdfium_test_highlight();
+        let page = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("highlight render");
+        let tinted = |p: PixelColor| p[0] < 250 && p[2] > 250;
+        // Whole pixels: ToFxRect truncates the device rectangle.
+        let text_bounds = {
+            let mut bounds = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+            for y in 0..60 {
+                for x in 0..55 {
+                    if tinted(page.get_pixel(x, y)) {
+                        bounds = [
+                            bounds[0].min(x),
+                            bounds[1].min(y),
+                            bounds[2].max(x),
+                            bounds[3].max(y),
+                        ];
+                    }
+                }
+            }
+            bounds
+        };
+        assert_eq!(text_bounds, [10, 20, 49, 29], "x 10..50, y 20..30");
+        let inside = page.get_pixel(30, 25);
+        assert!(
+            (240..=243).contains(&inside[0])
+                && (243..=246).contains(&inside[1])
+                && inside[2] == 255,
+            "blend of (221, 228, 255) at alpha 100 over white: {inside:?}"
+        );
+        assert_eq!(
+            page.get_pixel(10, 25),
+            inside,
+            "no anti-aliased edge column"
+        );
+        assert_eq!(page.get_pixel(30, 20), inside, "no anti-aliased edge row");
+        assert_pixel(&page, 75, 25, [255, 255, 255], "push button");
+        assert_pixel(&page, 30, 55, [255, 255, 255], "widget outside /Fields");
+        assert_pixel(&page, 75, 55, [255, 255, 255], "signature");
+        assert_eq!(page.get_pixel(30, 85), inside, "kid widget of a field");
+
+        // The focused field shows the focus rectangle instead of the colour.
+        contract.form_highlight.focus_field = Some("text".to_string());
+        let focused = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("focused render");
+        assert_pixel(&focused, 30, 25, [255, 255, 255], "focused field");
+        assert_eq!(focused.get_pixel(30, 85), inside);
     }
 
     fn type0_dr_pdf(widget: &str, font: &str, extra_objects: Vec<Vec<u8>>) -> Vec<u8> {
@@ -48808,6 +49022,41 @@ mod tests {
         );
         assert_eq!(content.matches(" Tj").count(), 5, "{content}");
         assert_eq!(content.matches(" Td").count(), 5, "{content}");
+    }
+
+    #[test]
+    fn text_field_shows_max_len_characters_and_indirect_values() {
+        // bug_1072440: PDFium lays out /V with SetLimitChar(MaxLen).
+        let (_, content) = synthesize_widget_for_test(
+            "<< /Type /Annot /Subtype /Widget /Rect [70 90 130 110] /FT /Tx /T (zip) \
+             /MaxLen 2 /V (11111) /DA (/F1 10 Tf 0 g) >>",
+            "",
+        );
+        assert!(
+            content.contains("(11)") || content.contains("<3131>"),
+            "{content}"
+        );
+        assert!(
+            !content.contains("(111") && !content.contains("<313131"),
+            "{content}"
+        );
+        // bug_40643646: /V is an indirect reference to the value string.
+        let pdf = annotation_pdf(
+            vec![
+                b"<< /Type /Annot /Subtype /Widget /Rect [10 10 90 30] /FT /Tx /T (f) \
+                   /V 6 0 R /DA (/Helv 10 Tf 0 g) >>"
+                    .to_vec(),
+                b"(Hello)".to_vec(),
+            ],
+            "5 0 R",
+            "",
+            "/AcroForm << /Fields [5 0 R] >>",
+        );
+        let (_, content) = synthesize_object_for_test(pdf, 5);
+        assert!(
+            content.contains(" Tj"),
+            "the referenced value is drawn: {content}"
+        );
     }
 
     #[test]

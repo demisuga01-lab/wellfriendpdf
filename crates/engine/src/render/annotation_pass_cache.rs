@@ -28,6 +28,8 @@ pub(crate) enum PassCacheKey {
     SimpleFont(u32, u16),
     /// Layout metrics of a standard-14 font by base name.
     StandardFont(String),
+    /// Object references of every node of the AcroForm `/Fields` tree.
+    FormControls,
 }
 
 #[derive(Default)]
