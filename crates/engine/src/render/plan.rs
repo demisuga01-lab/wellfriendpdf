@@ -291,11 +291,10 @@ fn validate_dash_operands(op: &ContentOperation) -> Option<String> {
     let Some(array) = op.operands[0].as_array() else {
         return graphics_state_operand_error(op, "dash pattern operand must be an array");
     };
-    let Some(phase) = finite_number(&op.operands[1]) else {
+    // A negative phase is taken modulo the pattern length and a negative
+    // interval as zero (DashState), matching Poppler and PDFium.
+    if finite_number(&op.operands[1]).is_none() {
         return graphics_state_operand_error(op, "dash phase must be a finite number");
-    };
-    if phase < 0.0 {
-        return graphics_state_operand_error(op, "dash phase must be nonnegative");
     }
     let mut all_zero = !array.is_empty();
     for (idx, operand) in array.iter().enumerate() {
@@ -305,10 +304,7 @@ fn validate_dash_operands(op: &ContentOperation) -> Option<String> {
                 format!("dash interval {idx} must be a finite number"),
             );
         };
-        if value < 0.0 {
-            return graphics_state_operand_error(op, "dash intervals must be nonnegative");
-        }
-        all_zero &= value == 0.0;
+        all_zero &= value <= 0.0;
     }
     if all_zero {
         graphics_state_operand_error(op, "dash array cannot contain only zero intervals")

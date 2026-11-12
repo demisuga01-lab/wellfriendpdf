@@ -346,11 +346,13 @@ fn conditional_branches_are_syntax_and_only_selected_math_executes() {
 }
 
 #[test]
-fn exact_numeric_output_arity_is_checked_after_selected_branch() {
+fn numeric_output_arity_is_checked_after_selected_branch() {
     let reader = reader_with_objects(&[]);
+    // Outputs are the top of the stack; values left below them are ignored
+    // (PDFium, Poppler), too few values or a boolean output is an error.
     for (program, expected) in [
         (b"{ pop .25 }".as_slice(), vec![0.25]),
-        (b"{ .25 }", vec![]),
+        (b"{ .25 }", vec![0.25]),
         (b"{ pop }", vec![]),
         (b"{ pop false }", vec![]),
     ] {
@@ -361,7 +363,8 @@ fn exact_numeric_output_arity_is_checked_after_selected_branch() {
     }
     let branch = stream(b"{ .5 lt { 1 } { 1 2 } ifelse }", &[0.0, 1.0]);
     assert_eq!(eval_function_n(&branch, &[0.25], &reader), vec![1.0]);
-    assert!(eval_function_n(&branch, &[0.75], &reader).is_empty());
+    // The top value 2 is then clipped to the /Range [0 1].
+    assert_eq!(eval_function_n(&branch, &[0.75], &reader), vec![1.0]);
 }
 
 #[test]
@@ -452,4 +455,17 @@ fn separation_tint_uses_typed_logic_and_exact_three_component_output() {
     assert!((color.r - 0.75).abs() < 1e-6);
     assert_eq!(color.g, 0.0);
     assert!((color.b - 0.25).abs() < 1e-6);
+}
+
+#[test]
+fn outputs_are_the_top_of_the_stack_like_pdfium() {
+    // `{ 1.1 truncate }` on two inputs leaves three values; one output reads
+    // the top (bug_1314). A stack shorter than the outputs is an error.
+    let (code, _) = compile(b"{ 1.1 truncate }").unwrap();
+    let mut stack = initial_stack(&[0.25, 0.5]).unwrap();
+    execute(&code, &mut stack, 0, &mut 100).unwrap();
+    assert_eq!(numeric_outputs(&stack, 1), Some(vec![1.0]));
+    assert_eq!(numeric_outputs(&stack, 3), Some(vec![0.25, 0.5, 1.0]));
+    assert_eq!(numeric_outputs(&stack, 4), None);
+    assert_eq!(numeric_outputs(&stack, 0), None);
 }

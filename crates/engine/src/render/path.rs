@@ -4783,6 +4783,26 @@ pub(crate) fn stroke_flat_path(
     for (idx, subpath) in flat.subpaths.iter().enumerate() {
         let closed = flat.closed.get(idx).copied().unwrap_or(false);
         let Some(points) = normalize_stroke_points(subpath, closed) else {
+            if let Some(fold) = closed_fold_points(subpath, closed) {
+                // A closed subpath that only retraces one segment (`m l l h`
+                // back to its start) still strokes that segment; its ends are
+                // 180-degree joins, which look like caps of the join style.
+                let fold_style = StrokeStyle {
+                    cap: if matches!(style.join, LineJoin::Round) {
+                        LineCap::Round
+                    } else {
+                        LineCap::Butt
+                    },
+                    ..style.clone()
+                };
+                for_each_dash_piece(&fold, dash, |dash_piece| {
+                    if let Some(poly) = stroked_polyline_outline(dash_piece, false, &fold_style) {
+                        push_outline_subpath(&mut outline, poly);
+                    }
+                });
+            } else if let Some(dot) = degenerate_subpath_cap(subpath, closed, &style) {
+                push_outline_subpath(&mut outline, dot);
+            }
             continue;
         };
 
@@ -4828,6 +4848,70 @@ fn push_outline_subpath(outline: &mut FlatPath, mut poly: Vec<(f64, f64)>) {
     outline.subpaths.push(poly);
     // `fill_flat_aa` implicitly closes subpaths whose closed flag is false.
     outline.closed.push(false);
+}
+
+/// For a closed subpath with exactly two distinct points (`A B A h`), the
+/// polyline `A B A` that its stroke retraces.
+fn closed_fold_points(points: &[(f64, f64)], closed: bool) -> Option<Vec<(f64, f64)>> {
+    if !closed {
+        return None;
+    }
+    let mut cleaned: Vec<(f64, f64)> = Vec::with_capacity(3);
+    for &p in points {
+        if !p.0.is_finite() || !p.1.is_finite() {
+            continue;
+        }
+        if cleaned.last().is_none_or(|&last| distance(last, p) > 1e-8) {
+            cleaned.push(p);
+            if cleaned.len() > 3 {
+                return None;
+            }
+        }
+    }
+    if cleaned.len() == 3 && distance(cleaned[0], cleaned[2]) <= 1e-8 {
+        cleaned.pop();
+    }
+    (cleaned.len() == 2).then(|| vec![cleaned[0], cleaned[1], cleaned[0]])
+}
+
+/// The cap a degenerate subpath paints: a closed single point (`m h`) or
+/// several points at one position (`m l` to the same place). PDF 32000-1
+/// 8.5.3.2 paints it only with round caps (a dot); PDFium and Poppler also
+/// draw a square for projecting caps. A lone `m` paints nothing.
+fn degenerate_subpath_cap(
+    points: &[(f64, f64)],
+    closed: bool,
+    style: &StrokeStyle,
+) -> Option<Vec<(f64, f64)>> {
+    let first = *points.first()?;
+    if !first.0.is_finite()
+        || !first.1.is_finite()
+        || !(closed || points.len() >= 2)
+        || points.iter().any(|&p| distance(first, p) > 1e-8)
+    {
+        return None;
+    }
+    let r = style.half_width;
+    match style.cap {
+        LineCap::Butt => None,
+        LineCap::ProjectingSquare => Some(vec![
+            (first.0 - r, first.1 - r),
+            (first.0 + r, first.1 - r),
+            (first.0 + r, first.1 + r),
+            (first.0 - r, first.1 + r),
+        ]),
+        LineCap::Round => {
+            let steps = ((std::f64::consts::TAU * r / 0.5).ceil() as usize).clamp(8, 256);
+            Some(
+                (0..steps)
+                    .map(|i| {
+                        let angle = std::f64::consts::TAU * i as f64 / steps as f64;
+                        (first.0 + r * angle.cos(), first.1 + r * angle.sin())
+                    })
+                    .collect(),
+            )
+        }
+    }
 }
 
 fn normalize_stroke_points(points: &[(f64, f64)], closed: bool) -> Option<Vec<(f64, f64)>> {
@@ -5923,6 +6007,37 @@ mod tests {
         fill_flat_aa(&mut reference, &outline, BLACK, FillRule::NonZero);
 
         assert_pixel_buffers_eq(&fast, &reference);
+    }
+
+    #[test]
+    fn degenerate_and_retracing_subpaths_still_stroke() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let stroke = |path: &Path, cap: LineCap, join: LineJoin| {
+            let flat = flatten_path(path, &ctm, &vp, 0.2);
+            let outline = stroke_flat_path(&flat, 20.0, &DashState::solid(), cap, join, 10.0);
+            let mut buf = PixelBuffer::new_filled(100, 100, WHITE);
+            fill_flat_aa(&mut buf, &outline, BLACK, FillRule::NonZero);
+            buf
+        };
+        // `m h` with round caps paints a dot (bug_1983); butt caps paint none.
+        let mut dot = Path::new();
+        dot.move_to(50.0, 50.0);
+        dot.close();
+        let round = stroke(&dot, LineCap::Round, LineJoin::Miter);
+        assert_eq!(round.get_pixel(50, 50)[0], 0);
+        let butt = stroke(&dot, LineCap::Butt, LineJoin::Miter);
+        assert_eq!(butt.get_pixel(50, 50)[0], 255);
+        // `A B A h` strokes the segment it retraces (bug_479849565).
+        let mut fold = Path::new();
+        fold.move_to(20.0, 50.0);
+        fold.line_to(80.0, 50.0);
+        fold.line_to(20.0, 50.0);
+        fold.close();
+        let buf = stroke(&fold, LineCap::Butt, LineJoin::Round);
+        assert_eq!(buf.get_pixel(50, 50)[0], 0);
+        let past_end = buf.get_pixel(15, 50)[0];
+        assert_eq!(past_end, 0, "round join reaches past the end");
     }
 
     #[test]

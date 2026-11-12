@@ -4638,6 +4638,96 @@ impl PageRenderer {
         Ok(state.into_buffer_and_document_cache(cache))
     }
 
+    /// Compatibility fallback for a page whose retained display list refuses
+    /// packed replay (a malformed operator, a missing or non-stream resource,
+    /// an unterminated inline image, ...). The page content is interpreted
+    /// directly through `RenderState`, which in Compatibility mode skips the
+    /// object that cannot be drawn and keeps rendering the rest of the page,
+    /// as Poppler and PDFium do. HighQuality and exact contracts never reach
+    /// this path: they refuse the unsupported list.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_immediate_compat_with_cache(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        list: &DisplayList,
+        resources: Arc<PageResources>,
+        cancel: &CancelToken,
+        render_mode: RenderMode,
+        cache: &mut RenderDocumentCache,
+        annotation_policy: AnnotationReplayPolicy,
+    ) -> Result<PixelBuffer> {
+        debug_assert!(!render_mode.is_high_quality());
+        log::debug!(
+            "page {page_number}: retained replay refused ({}); rendering immediately",
+            unsupported_display_list_reasons(list)
+        );
+        let ops = engine.get_page_content_shared_with_decode_limits(
+            page_number,
+            &DecodeLimits::default(),
+            cancel,
+        )?;
+        let viewport = engine.page_viewport(page_number, dpi)?;
+        let transparent_page_group = list.stats.requires_transparent_page_group;
+        let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
+        let mut state = RenderState::new_with_shared_document_cache(
+            buf,
+            viewport,
+            resources,
+            engine,
+            page_number,
+            cache,
+        );
+        state.cancel = cancel.clone();
+        state.exactness_policy = ExactnessPolicy::Compatibility;
+        state.dispatch_all(&ops);
+        if let Err(error) = state.check_fatal_render_error() {
+            state.return_document_cache(cache);
+            return Err(error);
+        }
+        if let Err(error) = cancel.check("immediate compatibility replay") {
+            state.return_document_cache(cache);
+            return Err(error);
+        }
+        if transparent_page_group {
+            state.buf.flatten_onto_background(WHITE);
+        }
+        if let Err(error) =
+            Self::render_annotations_with_state(engine, page_number, &mut state, annotation_policy)
+        {
+            state.return_document_cache(cache);
+            return Err(error);
+        }
+        Ok(state.into_buffer_and_document_cache(cache))
+    }
+
+    /// One-shot form of [`Self::execute_immediate_compat_with_cache`] for the
+    /// uncached page entry points.
+    fn render_page_immediate_compat(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        list: &DisplayList,
+        cancel: &CancelToken,
+        render_mode: RenderMode,
+    ) -> Result<PixelBuffer> {
+        let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
+        let annotation_policy = AnnotationReplayPolicy::from_contract(contract);
+        let resources = engine.get_page_resources_shared(page_number)?;
+        let mut cache = RenderDocumentCache::new();
+        Self::execute_immediate_compat_with_cache(
+            engine,
+            page_number,
+            dpi,
+            list,
+            resources,
+            cancel,
+            render_mode,
+            &mut cache,
+            annotation_policy,
+        )
+    }
+
     /// Return a retained page display list from the caller's document cache, or
     /// build and retain it exactly once for subsequent warm replay.
     pub fn get_or_build_display_list_with_cache(
@@ -4755,10 +4845,7 @@ impl PageRenderer {
         if render_mode.is_high_quality() {
             return Err(exact_contract_unsupported_display_list_error(&list));
         }
-        Err(unsupported_retained_display_list_error(
-            &list,
-            "page render",
-        ))
+        Self::render_page_immediate_compat(engine, page_number, dpi, &list, cancel, render_mode)
     }
 
     /// Render a render-contract window into a caller-owned document cache.
@@ -4787,7 +4874,6 @@ impl PageRenderer {
         plate: Option<Arc<crate::render::plate::PlateTarget>>,
     ) -> Result<PixelBuffer> {
         let page_number = contract.page_number;
-        let dpi = contract.dpi;
         let render_mode = contract.render_mode();
         let resource_budget = contract.resource_budget;
         let exactness_policy = contract.exactness;
@@ -4813,158 +4899,193 @@ impl PageRenderer {
         // retained device bounds (and therefore culling and plan identity)
         // are identical for full and windowed renders.
         let list = build_display_list_cancellable(&ops, surface.clone(), &resources, cancel)?;
-        if list.is_fully_supported() {
-            let full_window = RenderTile::full(surface.width_px, surface.height_px);
-            const CONTRACT_WINDOW_OVERDRAW_PX: u32 = 2;
-            let expanded_window = if window == full_window {
-                window
-            } else {
-                expand_render_tile(
-                    window,
-                    surface.width_px,
-                    surface.height_px,
-                    CONTRACT_WINDOW_OVERDRAW_PX,
-                )
-            };
-            let viewport = if expanded_window == full_window {
-                surface.clone()
-            } else {
-                surface.pixel_window(
-                    expanded_window.x,
-                    expanded_window.y,
-                    expanded_window.width,
-                    expanded_window.height,
-                )
-            };
-            if viewport.width_px == 0 || viewport.height_px == 0 {
-                return Err(WellfriendError::invalid_input(
-                    "render contract window is empty after clipping to the device surface",
-                ));
-            }
-            let mut plan_contract = engine.render_contract_for_tile_with_page_box(
-                page_number,
-                dpi,
-                render_mode,
-                RenderTile::full(surface.width_px, surface.height_px),
-                contract.page_box,
-            )?;
-            plan_contract.transform = contract.transform;
-            plan_contract.print_profile = contract.print_profile;
-            plan_contract.annotations = contract.annotations;
-            plan_contract.forms = contract.forms;
-            plan_contract.backend = contract.backend;
-            plan_contract.rendering_intent = contract.rendering_intent;
-            plan_contract.color_management = contract.color_management;
-            plan_contract.overprint = contract.overprint;
-            plan_contract.text_smoothing = contract.text_smoothing;
-            plan_contract.subpixel_text = contract.subpixel_text;
-            plan_contract.path_smoothing = contract.path_smoothing;
-            plan_contract.image_smoothing = contract.image_smoothing;
-            plan_contract.form_highlight = contract.form_highlight.clone();
-            plan_contract.xfa = contract.xfa;
-            plan_contract.thin_line_mode = contract.thin_line_mode;
-            plan_contract.vector_antialias_gamma = contract.vector_antialias_gamma;
-            plan_contract.text_gamma = contract.text_gamma;
-            plan_contract.forced_colors = contract.forced_colors;
-            let mut plan_resource_budget = resource_budget;
-            let full_plan_pixels =
-                u64::from(surface.width_px).saturating_mul(u64::from(surface.height_px));
-            plan_resource_budget.max_pixels = plan_resource_budget.max_pixels.max(full_plan_pixels);
-            plan_resource_budget.max_temporary_bytes = plan_resource_budget
-                .max_temporary_bytes
-                .max(full_plan_pixels.saturating_mul(4));
-            plan_contract.resource_budget = plan_resource_budget;
-            plan_contract.exactness = exactness_policy;
-            plan_contract.optional_content =
-                optional_content.visibility_fingerprint().to_string().into();
-            let transparent_page_group =
-                display_list_ops_need_transparent_page_group(&ops, &resources, &list, engine)?;
-            let plan = RenderPlan::compile_with_resources_cancellable(
-                list,
-                plan_contract,
-                &resources,
-                cancel,
-            )?;
-            let buf = Self::initial_page_buffer_with_background(
-                &viewport,
-                transparent_page_group,
-                render_mode,
-                background,
-            );
-            let mut state = RenderState::new_with_shared_document_cache(
-                buf,
-                viewport.clone(),
-                resources,
-                engine,
-                page_number,
-                cache,
-            );
-            state.apply_render_contract_identity(render_contract_fingerprint, resource_budget);
-            state.optional_content = optional_content.clone();
-            state.exactness_policy = exactness_policy;
-            state.cancel = cancel.clone();
-            state.print_profile = contract.print_profile;
-            state.annotation_policy = contract.annotations;
-            state.form_policy = contract.forms;
-            state.form_highlight = form_highlight_state(contract.form_highlight.clone());
-            state.xfa_policy = contract.xfa;
-            state.backend_policy = contract.backend;
-            state.color_management_policy = contract.color_management;
-            state.overprint_policy = contract.overprint;
-            state.text_smoothing_policy = contract.text_smoothing;
-            state.subpixel_text_policy = contract.subpixel_text;
-            state.path_smoothing_policy = contract.path_smoothing;
-            state.image_smoothing_policy = contract.image_smoothing;
-            state.forced_color_scheme = contract.forced_colors;
-            state.apply_rendering_intent_policy(contract.rendering_intent);
-            if let Some(plate) = plate.as_deref() {
-                if contract.forced_colors.is_some() {
-                    plate.note_issue("forced colour scheme");
-                }
-            }
-            state.plate = plate;
-            {
-                let mut adapter = RenderStatePlanAdapter {
-                    state: &mut state,
-                    viewport_ref: &viewport,
-                    vector_ctm_base: None,
-                    forced_vector_color: None,
-                    forced_vector_fill_pixel_color: None,
-                    forced_vector_stroke_pixel_color: None,
-                    ignore_bounds: false,
-                };
-                plan.execute_full(&mut adapter)?;
-            }
-            state.check_fatal_render_error()?;
-            cancel.check("contract packed plan replay")?;
-            state.render_page_annotations();
-            state.check_fatal_render_error()?;
-            cancel.check("contract packed plan annotation render")?;
-            let mut buf = state.into_buffer_and_document_cache(cache);
-            if transparent_page_group {
-                buf.flatten_onto_background(background);
-            }
-            if expanded_window == window {
-                return Ok(buf);
-            }
-            return crop_buffer(
-                &buf,
-                RenderTile {
-                    x: window.x - expanded_window.x,
-                    y: window.y - expanded_window.y,
-                    width: window.width,
-                    height: window.height,
-                },
-            );
-        }
-
-        if exactness_policy == ExactnessPolicy::HighQualityExact {
+        let retained_replay = list.is_fully_supported();
+        if !retained_replay && exactness_policy == ExactnessPolicy::HighQualityExact {
             return Err(exact_contract_unsupported_display_list_error(&list));
         }
-        Err(unsupported_retained_display_list_error(
-            &list,
-            "contract page render",
-        ))
+        if !retained_replay && render_mode.is_high_quality() {
+            return Err(unsupported_retained_display_list_error(
+                &list,
+                "contract page render",
+            ));
+        }
+        // A Compatibility-mode contract whose list refuses packed replay is
+        // interpreted immediately through the same render state below.
+        let full_window = RenderTile::full(surface.width_px, surface.height_px);
+        const CONTRACT_WINDOW_OVERDRAW_PX: u32 = 2;
+        let expanded_window = if window == full_window {
+            window
+        } else {
+            expand_render_tile(
+                window,
+                surface.width_px,
+                surface.height_px,
+                CONTRACT_WINDOW_OVERDRAW_PX,
+            )
+        };
+        let viewport = if expanded_window == full_window {
+            surface.clone()
+        } else {
+            surface.pixel_window(
+                expanded_window.x,
+                expanded_window.y,
+                expanded_window.width,
+                expanded_window.height,
+            )
+        };
+        if viewport.width_px == 0 || viewport.height_px == 0 {
+            return Err(WellfriendError::invalid_input(
+                "render contract window is empty after clipping to the device surface",
+            ));
+        }
+        let transparent_page_group =
+            display_list_ops_need_transparent_page_group(&ops, &resources, &list, engine)?;
+        let plan = if retained_replay {
+            Some(Self::compile_contract_window_plan(
+                engine,
+                contract,
+                surface,
+                list,
+                &resources,
+                &optional_content,
+                cancel,
+            )?)
+        } else {
+            log::debug!(
+                "page {page_number}: retained replay refused ({}); rendering immediately",
+                unsupported_display_list_reasons(&list)
+            );
+            None
+        };
+        let buf = Self::initial_page_buffer_with_background(
+            &viewport,
+            transparent_page_group,
+            render_mode,
+            background,
+        );
+        let mut state = RenderState::new_with_shared_document_cache(
+            buf,
+            viewport.clone(),
+            resources,
+            engine,
+            page_number,
+            cache,
+        );
+        state.apply_render_contract_identity(render_contract_fingerprint, resource_budget);
+        state.optional_content = optional_content.clone();
+        state.exactness_policy = exactness_policy;
+        state.cancel = cancel.clone();
+        state.print_profile = contract.print_profile;
+        state.annotation_policy = contract.annotations;
+        state.form_policy = contract.forms;
+        state.form_highlight = form_highlight_state(contract.form_highlight.clone());
+        state.xfa_policy = contract.xfa;
+        state.backend_policy = contract.backend;
+        state.color_management_policy = contract.color_management;
+        state.overprint_policy = contract.overprint;
+        state.text_smoothing_policy = contract.text_smoothing;
+        state.subpixel_text_policy = contract.subpixel_text;
+        state.path_smoothing_policy = contract.path_smoothing;
+        state.image_smoothing_policy = contract.image_smoothing;
+        state.forced_color_scheme = contract.forced_colors;
+        state.apply_rendering_intent_policy(contract.rendering_intent);
+        if let Some(plate) = plate.as_deref() {
+            if contract.forced_colors.is_some() {
+                plate.note_issue("forced colour scheme");
+            }
+        }
+        state.plate = plate;
+        if let Some(plan) = plan {
+            let mut adapter = RenderStatePlanAdapter {
+                state: &mut state,
+                viewport_ref: &viewport,
+                vector_ctm_base: None,
+                forced_vector_color: None,
+                forced_vector_fill_pixel_color: None,
+                forced_vector_stroke_pixel_color: None,
+                ignore_bounds: false,
+            };
+            plan.execute_full(&mut adapter)?;
+        } else {
+            state.dispatch_all(&ops);
+        }
+        state.check_fatal_render_error()?;
+        cancel.check("contract packed plan replay")?;
+        state.render_page_annotations();
+        state.check_fatal_render_error()?;
+        cancel.check("contract packed plan annotation render")?;
+        let mut buf = state.into_buffer_and_document_cache(cache);
+        if transparent_page_group {
+            buf.flatten_onto_background(background);
+        }
+        if expanded_window == window {
+            return Ok(buf);
+        }
+        crop_buffer(
+            &buf,
+            RenderTile {
+                x: window.x - expanded_window.x,
+                y: window.y - expanded_window.y,
+                width: window.width,
+                height: window.height,
+            },
+        )
+    }
+
+    /// Compile the packed plan for a contract window render. The plan is
+    /// always compiled against the whole device surface so plan identity is
+    /// the same for full and windowed renders.
+    fn compile_contract_window_plan(
+        engine: &ContentEngine,
+        contract: &RenderContract,
+        surface: &Viewport,
+        list: DisplayList,
+        resources: &PageResources,
+        optional_content: &OptionalContentContext,
+        cancel: &CancelToken,
+    ) -> Result<RenderPlan> {
+        let page_number = contract.page_number;
+        let dpi = contract.dpi;
+        let render_mode = contract.render_mode();
+        let resource_budget = contract.resource_budget;
+        let exactness_policy = contract.exactness;
+        let mut plan_contract = engine.render_contract_for_tile_with_page_box(
+            page_number,
+            dpi,
+            render_mode,
+            RenderTile::full(surface.width_px, surface.height_px),
+            contract.page_box,
+        )?;
+        plan_contract.transform = contract.transform;
+        plan_contract.print_profile = contract.print_profile;
+        plan_contract.annotations = contract.annotations;
+        plan_contract.forms = contract.forms;
+        plan_contract.backend = contract.backend;
+        plan_contract.rendering_intent = contract.rendering_intent;
+        plan_contract.color_management = contract.color_management;
+        plan_contract.overprint = contract.overprint;
+        plan_contract.text_smoothing = contract.text_smoothing;
+        plan_contract.subpixel_text = contract.subpixel_text;
+        plan_contract.path_smoothing = contract.path_smoothing;
+        plan_contract.image_smoothing = contract.image_smoothing;
+        plan_contract.form_highlight = contract.form_highlight.clone();
+        plan_contract.xfa = contract.xfa;
+        plan_contract.thin_line_mode = contract.thin_line_mode;
+        plan_contract.vector_antialias_gamma = contract.vector_antialias_gamma;
+        plan_contract.text_gamma = contract.text_gamma;
+        plan_contract.forced_colors = contract.forced_colors;
+        let mut plan_resource_budget = resource_budget;
+        let full_plan_pixels =
+            u64::from(surface.width_px).saturating_mul(u64::from(surface.height_px));
+        plan_resource_budget.max_pixels = plan_resource_budget.max_pixels.max(full_plan_pixels);
+        plan_resource_budget.max_temporary_bytes = plan_resource_budget
+            .max_temporary_bytes
+            .max(full_plan_pixels.saturating_mul(4));
+        plan_contract.resource_budget = plan_resource_budget;
+        plan_contract.exactness = exactness_policy;
+        plan_contract.optional_content =
+            optional_content.visibility_fingerprint().to_string().into();
+        RenderPlan::compile_with_resources_cancellable(list, plan_contract, resources, cancel)
     }
 
     /// Render a page with reusable per-document caches.
@@ -4983,28 +5104,24 @@ impl PageRenderer {
             cancel,
             cache,
         )?;
-        if list.is_fully_supported() {
-            let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
-            return Self::render_display_list_source_with_contract_policies_and_cache(
-                engine,
-                page_number,
-                dpi,
-                DisplayListSource::Shared(list),
-                cancel,
-                render_mode,
-                contract.print_profile,
-                contract.annotations,
-                contract.forms,
-                cache,
-            );
-        }
-        if render_mode.is_high_quality() {
+        if !list.is_fully_supported() && render_mode.is_high_quality() {
             return Err(exact_contract_unsupported_display_list_error(&list));
         }
-        Err(unsupported_retained_display_list_error(
-            &list,
-            "cached page render",
-        ))
+        // Compatibility renders of an unsupported list fall back to immediate
+        // interpretation inside the shared cached path.
+        let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
+        Self::render_display_list_source_with_contract_policies_and_cache(
+            engine,
+            page_number,
+            dpi,
+            DisplayListSource::Shared(list),
+            cancel,
+            render_mode,
+            contract.print_profile,
+            contract.annotations,
+            contract.forms,
+            cache,
+        )
     }
 
     /// Build the native retained display list for a page.
@@ -5059,10 +5176,14 @@ impl PageRenderer {
             if render_mode.is_high_quality() {
                 Err(exact_contract_unsupported_display_list_error(&list))
             } else {
-                Err(unsupported_retained_display_list_error(
+                Self::render_page_immediate_compat(
+                    engine,
+                    page_number,
+                    dpi,
                     &list,
-                    "display-list page helper",
-                ))
+                    &CancelToken::none(),
+                    render_mode,
+                )
             }
         } else {
             // All fully-supported lists (vector-only and native text/image/
@@ -5109,10 +5230,7 @@ impl PageRenderer {
         if render_mode.is_high_quality() {
             return Err(exact_contract_unsupported_display_list_error(list));
         }
-        Err(unsupported_retained_display_list_error(
-            list,
-            "display-list replay",
-        ))
+        Self::render_page_immediate_compat(engine, page_number, dpi, list, cancel, render_mode)
     }
 
     /// Replay a display list with reusable per-document caches.
@@ -5237,10 +5355,17 @@ impl PageRenderer {
             if render_mode.is_high_quality() {
                 return Err(exact_contract_unsupported_display_list_error(list));
             }
-            return Err(unsupported_retained_display_list_error(
+            Self::execute_immediate_compat_with_cache(
+                engine,
+                page_number,
+                dpi,
                 list,
-                "cached display-list replay",
-            ));
+                Arc::clone(&resources),
+                cancel,
+                render_mode,
+                cache,
+                policy,
+            )?
         };
         cancel.check("display-list annotation render")?;
         cache.insert_display_list_raster_copy(raster_key, &buf);
@@ -6593,6 +6718,14 @@ struct RenderState<'a> {
     /// Nesting depth of pattern paints, during which forced colours are
     /// suspended (pattern cells keep their real colours, as in PDFium).
     forced_color_suppression: u32,
+    /// Fill and stroke opacity a tiling-pattern cell inherits from the
+    /// object it fills (PDFium parses the cell with the filled object's
+    /// graphics state), applied to the cell's retained vector paints.
+    pattern_inherited_alpha: (f64, f64),
+    /// Graphics-state stack depth a `Q` may not restore below while a
+    /// content program is interpreted immediately (each Form has its own
+    /// state stack in PDFium).
+    gs_restore_floor: usize,
     /// Type 3 bitmap-glyph baseline snapping state (PDFium `AdjustBlue`):
     /// remembered device rows per Type 3 font and size.
     type3_blue_zones: Type3BlueState,
@@ -8479,6 +8612,8 @@ impl<'a> RenderState<'a> {
             forced_color_scheme: None,
             forced_color_text_depth: 0,
             forced_color_suppression: 0,
+            pattern_inherited_alpha: (1.0, 1.0),
+            gs_restore_floor: 0,
             type3_blue_zones: Type3BlueState::default(),
             plate: None,
             plate_mask_scopes: Mutex::default(),
@@ -10205,11 +10340,31 @@ impl<'a> RenderState<'a> {
                 image_ref.color_space
             ))
         };
+        // An Indexed image has one sample per pixel; PDFium reads the first
+        // range of a longer color-key array.
+        let items = if self.exactness_policy == ExactnessPolicy::Compatibility
+            && image_ref.color_space == "Indexed"
+            && items.len() > 2
+        {
+            &items[..2]
+        } else {
+            items
+        };
         if items.is_empty()
             || !items.len().is_multiple_of(2)
             || items.len() > 2 * MAX_COLOR_KEY_COMPONENTS
         {
-            return Err(malformed("expected 2 x component-count entries"));
+            if self.exactness_policy != ExactnessPolicy::Compatibility {
+                return Err(malformed("expected 2 x component-count entries"));
+            }
+            // PDFium ignores a color key of the wrong length and draws the
+            // image unmasked.
+            log::debug!(
+                "image Mask color-key array for {} image data has {} entries; ignoring it",
+                image_ref.color_space,
+                items.len()
+            );
+            return Ok(converted);
         }
         let components = items.len() / 2;
         let mut bounds = Vec::with_capacity(components);
@@ -10422,6 +10577,7 @@ impl<'a> RenderState<'a> {
                     image_ref.bits_per_component,
                     &image_ref.color_space,
                     items,
+                    self.exactness_policy == ExactnessPolicy::Compatibility,
                 )
                 .map(Some)
                 .ok_or_else(|| {
@@ -14453,6 +14609,8 @@ impl<'a> RenderState<'a> {
             forced_color_scheme: None,
             forced_color_text_depth: 0,
             forced_color_suppression: 0,
+            pattern_inherited_alpha: (1.0, 1.0),
+            gs_restore_floor: 0,
             type3_blue_zones: Type3BlueState::default(),
             // A luminosity mask is computed from the group's colours in its
             // own (RGB) blending space, not from plate ink.
@@ -15321,7 +15479,8 @@ impl<'a> RenderState<'a> {
                 "F",
             ]
             .iter()
-            .any(|k| matches!(dict.get(k), Some(PdfObject::Reference { .. })));
+            .any(|k| matches!(dict.get(k), Some(PdfObject::Reference { .. })))
+                || filter_array_has_reference(dict);
             if needs_resolve {
                 let reader = self.engine.document().reader();
                 let mut resolved = dict.clone();
@@ -15343,6 +15502,22 @@ impl<'a> RenderState<'a> {
                         if let Ok(resolved_value) = reader.resolve(value) {
                             resolved.insert(key, resolved_value);
                         }
+                    }
+                }
+                // Some producers write the filter names themselves as
+                // indirect objects: `/Filter [6 0 R /LZWDecode 7 0 R]`.
+                for key in ["Filter", "F"] {
+                    if let Some(PdfObject::Array(items)) = resolved.get(key).cloned() {
+                        let items = items
+                            .into_iter()
+                            .map(|item| match item {
+                                PdfObject::Reference { .. } => {
+                                    reader.resolve(item.clone()).unwrap_or(item)
+                                }
+                                other => other,
+                            })
+                            .collect();
+                        resolved.insert(key, PdfObject::Array(items));
                     }
                 }
                 owned_resolved_image_dict = resolved;
@@ -16312,6 +16487,8 @@ impl<'a> RenderState<'a> {
             forced_color_scheme: self.forced_color_scheme,
             forced_color_text_depth: self.forced_color_text_depth,
             forced_color_suppression: self.forced_color_suppression,
+            pattern_inherited_alpha: self.pattern_inherited_alpha,
+            gs_restore_floor: 0,
             type3_blue_zones: std::mem::take(&mut self.type3_blue_zones),
             plate: self.plate.clone(),
             plate_mask_scopes: Mutex::default(),
@@ -16374,6 +16551,12 @@ impl<'a> RenderState<'a> {
                     .state
                     .record_fatal_render_error(format!("Form group retained plan failed: {err}"));
             }
+        } else if group_state.exactness_policy == ExactnessPolicy::Compatibility {
+            log::debug!(
+                "Form XObject group /{name}: retained replay refused ({}); interpreting immediately",
+                retained_plan_refusal_reason(&program.retained_plan_refusal)
+            );
+            group_state.dispatch_program_ops_immediately(&program.ops);
         } else {
             let context = if self.exactness_policy == ExactnessPolicy::HighQualityExact {
                 format!(
@@ -16447,7 +16630,7 @@ impl<'a> RenderState<'a> {
     }
 
     fn page_content_restore_state_available(&mut self) -> bool {
-        if self.gs.stack_depth() == 0 {
+        if self.gs.stack_depth() <= self.gs_restore_floor {
             self.record_fatal_render_error(
                 "malformed graphics-state operator 'Q': restore has no saved graphics state",
             );
@@ -16463,6 +16646,34 @@ impl<'a> RenderState<'a> {
             return false;
         }
         true
+    }
+
+    /// Compatibility fallback for a Form XObject or tiling-pattern program
+    /// whose retained plan was refused: interpret its operators directly.
+    /// A `Q` cannot restore past the state the program started from, and
+    /// saves it leaves open are dropped when it ends.
+    fn dispatch_program_ops_immediately(&mut self, ops: &[ContentOperation]) {
+        let saved_floor = self.gs_restore_floor;
+        let clip_depth = self.clip_stack.len();
+        let smask_depth = self.smask_stack.len();
+        let resource_depth = self.active_resource_stack.len();
+        let saved_text_object_active = self.text_object_active;
+        self.gs_restore_floor = self.gs.stack_depth();
+        self.text_object_active = false;
+        self.dispatch_all(ops);
+        self.gs_restore_floor = saved_floor;
+        self.text_object_active = saved_text_object_active;
+        if self.clip_stack.len() > clip_depth {
+            let saved = self.clip_stack[clip_depth].clone();
+            self.clip_stack.truncate(clip_depth);
+            self.install_clip_node(saved);
+        }
+        if self.smask_stack.len() > smask_depth {
+            let saved = self.smask_stack[smask_depth].clone();
+            self.smask_stack.truncate(smask_depth);
+            self.buf.restore_smask(saved);
+        }
+        self.active_resource_stack.truncate(resource_depth);
     }
 
     fn render_page_annotations(&mut self) {
@@ -16839,6 +17050,12 @@ impl<'a> RenderState<'a> {
                     .state
                     .record_fatal_render_error(format!("Form retained plan failed: {err}"));
             }
+        } else if self.exactness_policy == ExactnessPolicy::Compatibility {
+            log::debug!(
+                "Form XObject /{name}: retained replay refused ({}); interpreting immediately",
+                retained_plan_refusal_reason(&program.retained_plan_refusal)
+            );
+            self.dispatch_program_ops_immediately(&program.ops);
         } else {
             let context = if self.exactness_policy == ExactnessPolicy::HighQualityExact {
                 format!(
@@ -17361,9 +17578,13 @@ impl<'a> RenderState<'a> {
             return;
         };
         let surface_pixels = i128::from(self.buf.width) * i128::from(self.buf.height);
+        // A cell only costs the pixels it can touch: the filled path's
+        // device bounds. A huge cell over a small fill is one cheap tile.
+        let fill_pixels = (i128::from(dx1) - i128::from(dx0) + 1).max(1)
+            * (i128::from(dy1) - i128::from(dy0) + 1).max(1);
         let over_budget = tiling_pattern_work_budget(
             tile_count,
-            tile_pixel_area,
+            tile_pixel_area.min(fill_pixels),
             program.ops.len() as i128,
             surface_pixels,
             self.buf.render_mode().is_high_quality(),
@@ -17689,6 +17910,18 @@ impl<'a> RenderState<'a> {
             }
         }
 
+        // The cell's paints take the filled object's fill opacity (/ca)
+        // unless the cell installs its own graphics state with `gs`; its
+        // stroke opacity (/CA) does not carry over (PDFium pixel tests
+        // bug_1161, bug_1693, bug_42270577).
+        let saved_pattern_alpha = self.pattern_inherited_alpha;
+        if !program.ops.iter().any(|op| op.operator == "gs") {
+            let fill_alpha = saved_gs.fill_alpha.clamp(0.0, 1.0);
+            self.pattern_inherited_alpha = (
+                saved_pattern_alpha.0 * fill_alpha,
+                saved_pattern_alpha.1 * fill_alpha,
+            );
+        }
         if let Some(plan) = program.retained_plan.as_ref() {
             let viewport = self.viewport.clone();
             let forced_vector_color = forced_color.map(|(_, color, _)| color.clone());
@@ -17706,6 +17939,12 @@ impl<'a> RenderState<'a> {
                     "tiling pattern retained plan failed: {err}"
                 ));
             }
+        } else if self.exactness_policy == ExactnessPolicy::Compatibility {
+            log::debug!(
+                "tiling pattern: retained replay refused ({}); interpreting immediately",
+                retained_plan_refusal_reason(&program.retained_plan_refusal)
+            );
+            self.dispatch_program_ops_immediately(&program.ops);
         } else {
             let context = if self.exactness_policy == ExactnessPolicy::HighQualityExact {
                 "HighQualityExact render contract refuses unsupported tiling pattern retained replay"
@@ -17720,6 +17959,7 @@ impl<'a> RenderState<'a> {
         }
 
         // Restore.
+        self.pattern_inherited_alpha = saved_pattern_alpha;
         self.form_depth = self.form_depth.saturating_sub(1);
         self.gs = saved_gs;
         self.resources = saved_resources;
@@ -23063,6 +23303,14 @@ fn exact_contract_unsupported_display_list_error(list: &DisplayList) -> Wellfrie
 /// Adapter that wraps a `RenderState` to implement the `PlanDispatcher` trait.
 /// This drives the active high-level packed-plan execution path, dispatching
 /// typed compiled descriptors through the existing RenderState semantic methods.
+/// Scale a straight-alpha pixel colour's opacity by `alpha` (0..=1).
+fn scale_pixel_alpha(mut color: PixelColor, alpha: f64) -> PixelColor {
+    if alpha < 1.0 {
+        color[3] = (f64::from(color[3]) * alpha.max(0.0)).round() as u8;
+    }
+    color
+}
+
 fn inherited_type3_vector_color_with_fallback_alpha(
     inherited: PixelColor,
     fallback: PixelColor,
@@ -23854,6 +24102,7 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
             None => self
                 .effective_vector_fill_color(draw_state.fill_color, draw_state.fill_color_explicit),
         };
+        let fill_color = scale_pixel_alpha(fill_color, self.state.pattern_inherited_alpha.0);
         if let Some(reason) = retained_fill_ext_g_state_paint_refusal_for_alpha(
             self.state.exactness_policy,
             draw_state,
@@ -23913,6 +24162,7 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 draw_state.stroke_color_explicit,
             ),
         };
+        let stroke_color = scale_pixel_alpha(stroke_color, self.state.pattern_inherited_alpha.1);
         if let Some(reason) = retained_stroke_ext_g_state_paint_refusal_for_alpha(
             self.state.exactness_policy,
             draw_state,
@@ -24767,6 +25017,9 @@ fn image_xobject_bits_per_component(
         None if dict.contains_key("BitsPerComponent") || dict.contains_key("BPC") => {
             Err(format!("{label} /BitsPerComponent is not an integer"))
         }
+        // JBIG2 and CCITT data is bilevel by definition; PDFium and Poppler
+        // take an omitted /BitsPerComponent as 1 for these filters.
+        None if crate::images::bilevel_terminal_filter(filters) => Ok(1),
         None => Err(format!("{label} missing /BitsPerComponent")),
     }
 }
@@ -24787,6 +25040,13 @@ fn image_xobject_color_space_name(
         None if image_terminal_filter_carries_sample_depth(filters) => Ok("JPXDecode".to_string()),
         None => Err(format!("{label} missing /ColorSpace")),
     }
+}
+
+fn filter_array_has_reference(dict: &PdfDictionary) -> bool {
+    ["Filter", "F"].iter().any(|key| {
+        matches!(dict.get(key), Some(PdfObject::Array(items))
+            if items.iter().any(|item| matches!(item, PdfObject::Reference { .. })))
+    })
 }
 
 fn image_terminal_filter_carries_sample_depth(filters: &[String]) -> bool {
@@ -26347,18 +26607,24 @@ fn raw_image_sample(data: &[u8], row_start: usize, index: usize, bpc: u8) -> Opt
     }
 }
 
+/// Apply a `/Mask` color-key array. Exact rendering refuses (returns `None`
+/// for) a malformed array; `lenient` (Compatibility) rendering follows PDFium
+/// (`CPDF_DIB::LoadColorKey`): an array of the wrong length is ignored and
+/// each range is clamped to the sample range, so out-of-range or inverted
+/// entries simply match nothing instead of dropping the image.
 fn apply_color_key_image_mask(
     main: crate::images::decoder::RawImage,
     bpc: u8,
     color_space: &str,
     items: &[PdfObject],
+    lenient: bool,
 ) -> Option<crate::images::decoder::RawImage> {
     let channels = match color_space {
         "DeviceGray" | "G" => 1usize,
         "DeviceRGB" | "RGB" | "sRGB" => 3usize,
         _ => return None,
     };
-    if main.channels as usize != channels || items.len() != channels * 2 {
+    if main.channels as usize != channels {
         return None;
     }
     let max_component = if bpc == 0 {
@@ -26368,31 +26634,51 @@ fn apply_color_key_image_mask(
     } else {
         ((1u16 << bpc) - 1) as f64
     };
-    let mut values = Vec::with_capacity(items.len());
-    for item in items {
-        let value = item.as_number()?;
-        if !value.is_finite()
-            || value < 0.0
-            || value > max_component
-            || value.fract().abs() > f64::EPSILON
+    if !lenient {
+        if items.len() != channels * 2 {
+            return None;
+        }
+        for item in items {
+            let value = item.as_number()?;
+            if !value.is_finite()
+                || value < 0.0
+                || value > max_component
+                || value.fract().abs() > f64::EPSILON
+            {
+                return None;
+            }
+        }
+        if items
+            .chunks(2)
+            .any(|pair| pair[0].as_number() > pair[1].as_number())
         {
             return None;
         }
-        values.push(value);
     }
     let scale = 255.0 / max_component.max(1.0);
-    let ranges = (0..channels)
-        .map(|idx| {
-            let lo_value = values[idx * 2];
-            let hi_value = values[idx * 2 + 1];
-            if lo_value > hi_value {
-                return None;
-            }
-            let lo = (lo_value * scale).round() as u8;
-            let hi = (hi_value * scale).round() as u8;
-            Some((lo, hi))
-        })
-        .collect::<Option<Vec<_>>>()?;
+    let ranges: Vec<(u8, u8)> = if items.len() >= channels * 2 {
+        let value = |item: &PdfObject| {
+            item.as_number()
+                .filter(|value| value.is_finite())
+                .unwrap_or(0.0)
+                .trunc()
+        };
+        (0..channels)
+            .map(|idx| {
+                let lo_value = value(&items[idx * 2]).max(0.0);
+                let hi_value = value(&items[idx * 2 + 1]).min(max_component);
+                if lo_value > hi_value {
+                    // An empty range: no sample is masked.
+                    return (1, 0);
+                }
+                let lo = (lo_value * scale).round() as u8;
+                let hi = (hi_value * scale).round() as u8;
+                (lo, hi)
+            })
+            .collect()
+    } else {
+        vec![(1, 0); channels]
+    };
     let pixel_count = usize::try_from(u64::from(main.width) * u64::from(main.height)).ok()?;
     if main.pixels.len() != pixel_count.checked_mul(channels)? {
         return None;
@@ -34867,12 +35153,23 @@ mod tests {
         assert_ne!(via_list.get_pixel(50, 50), WHITE);
     }
 
+    /// Compatibility rendering skips a malformed or missing object and keeps
+    /// rendering the page (PDFium, Poppler); the refusal these tests check
+    /// is now the HighQualityExact contract's, so assert the Compatibility
+    /// render succeeds and hand back the exact mode for the refusal.
+    fn compat_renders_then_exact(engine: &ContentEngine) -> RenderMode {
+        engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("Compatibility skips the malformed object and renders the page");
+        RenderMode::HighQuality
+    }
+
     #[test]
     fn malformed_device_sc_arity_returns_typed_refusal() {
         let pdf = simple_vector_pdf("/DeviceRGB cs\n1 0 sc\n10 10 40 40 re f\n");
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed color PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
             .expect_err("malformed DeviceRGB sc must not pad a missing component");
         let rendered = format!("{error}");
 
@@ -39229,139 +39526,107 @@ mod tests {
 
     #[test]
     fn high_quality_display_list_page_helpers_refuse_unsupported_list() {
-        let pdf = simple_vector_pdf("Q\n");
+        // A restore underflow makes the retained list unsupported. HighQuality
+        // (exact) entry points refuse it; Compatibility page entry points
+        // fall back to immediate interpretation and render the page.
+        let pdf = simple_vector_pdf("Q\n1 0 0 rg 10 10 30 30 re f\n");
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed vector PDF");
-        let compat_display_list = engine
-            .render_page_display_list_with_mode(1, 72, RenderMode::Compat)
-            .expect_err("compat display-list helper must fail closed");
-        assert!(matches!(
-            compat_display_list,
-            WellfriendError::UnsupportedFeature(message)
-                if message.contains("display-list page helper")
-                    && message.contains("unsupported retained display-list replay")
-                    && message.contains("Q")
-                    && !message.contains("HighQualityExact")
-        ));
-
-        let err = engine
-            .render_page_display_list_with_mode(1, 72, RenderMode::HighQuality)
-            .expect_err("high-quality display-list helper must fail closed");
-        assert!(matches!(
-            err,
-            WellfriendError::UnsupportedFeature(message)
-                if message.contains("HighQualityExact")
-                    && message.contains("unsupported retained display-list replay")
-                && message.contains("Q")
-        ));
-
-        let err = PageRenderer::render_page_cancellable_with_mode(
-            &engine,
-            1,
-            72,
-            &CancelToken::none(),
-            RenderMode::Compat,
-        )
-        .expect_err("compat page render must not use raw dispatch fallback");
-        assert!(matches!(
-            err,
-            WellfriendError::UnsupportedFeature(message)
-                if message.contains("page render")
-                    && message.contains("unsupported retained display-list replay")
-                    && message.contains("Q")
-                    && !message.contains("HighQualityExact")
-        ));
-
-        let err = PageRenderer::render_page_cancellable_with_mode(
-            &engine,
-            1,
-            72,
-            &CancelToken::none(),
-            RenderMode::HighQuality,
-        )
-        .expect_err("high-quality page render must not use raw dispatch fallback");
-        assert!(matches!(
-            err,
-            WellfriendError::UnsupportedFeature(message)
-                if message.contains("HighQualityExact")
-                    && message.contains("unsupported retained display-list replay")
-                && message.contains("Q")
-        ));
-
-        let mut cache = RenderDocumentCache::new();
-        let err = PageRenderer::render_page_cancellable_with_mode_and_cache(
-            &engine,
-            1,
-            72,
-            &CancelToken::none(),
-            RenderMode::Compat,
-            &mut cache,
-        )
-        .expect_err("compat cached page render must not use raw dispatch fallback");
-        assert!(matches!(
-            err,
-            WellfriendError::UnsupportedFeature(message)
-                if message.contains("cached page render")
-                    && message.contains("unsupported retained display-list replay")
-                    && message.contains("Q")
-                    && !message.contains("HighQualityExact")
-        ));
-
         let list = PageRenderer::build_display_list(&engine, 1, 72).expect("build display list");
         assert!(!list.is_fully_supported());
-        let err = PageRenderer::render_display_list_cancellable_with_mode(
-            &engine,
-            1,
-            72,
-            &list,
-            &CancelToken::none(),
-            RenderMode::Compat,
-        )
-        .expect_err("compat display-list replay must fail closed");
-        assert!(matches!(
-            err,
-            WellfriendError::UnsupportedFeature(message)
-                if message.contains("display-list replay")
-                    && message.contains("unsupported retained display-list replay")
-                    && message.contains("Q")
-                    && !message.contains("HighQualityExact")
-        ));
 
-        let err = PageRenderer::render_display_list_cancellable_with_mode(
-            &engine,
-            1,
-            72,
-            &list,
-            &CancelToken::none(),
-            RenderMode::HighQuality,
-        )
-        .expect_err("high-quality display-list replay must fail closed");
-        assert!(matches!(
-            err,
-            WellfriendError::UnsupportedFeature(message)
-                if message.contains("HighQualityExact")
-                    && message.contains("unsupported retained display-list replay")
-                && message.contains("Q")
-        ));
+        let assert_exact_refusal = |err: WellfriendError| {
+            assert!(matches!(
+                err,
+                WellfriendError::UnsupportedFeature(message)
+                    if message.contains("HighQualityExact")
+                        && message.contains("unsupported retained display-list replay")
+                        && message.contains("Q")
+            ));
+        };
+        assert_exact_refusal(
+            engine
+                .render_page_display_list_with_mode(1, 72, RenderMode::HighQuality)
+                .expect_err("high-quality display-list helper must fail closed"),
+        );
+        assert_exact_refusal(
+            PageRenderer::render_page_cancellable_with_mode(
+                &engine,
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::HighQuality,
+            )
+            .expect_err("high-quality page render must not use raw dispatch fallback"),
+        );
+        assert_exact_refusal(
+            PageRenderer::render_page_cancellable_with_mode_and_cache(
+                &engine,
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::HighQuality,
+                &mut RenderDocumentCache::new(),
+            )
+            .expect_err("high-quality cached page render must fail closed"),
+        );
+        assert_exact_refusal(
+            PageRenderer::render_display_list_cancellable_with_mode(
+                &engine,
+                1,
+                72,
+                &list,
+                &CancelToken::none(),
+                RenderMode::HighQuality,
+            )
+            .expect_err("high-quality display-list replay must fail closed"),
+        );
 
-        let mut replay_cache = RenderDocumentCache::new();
-        let err = PageRenderer::render_display_list_cancellable_with_mode_and_cache(
-            &engine,
-            1,
-            72,
-            &list,
-            &CancelToken::none(),
-            RenderMode::Compat,
-            &mut replay_cache,
-        )
-        .expect_err("compat cached display-list replay must fail closed");
-        assert!(matches!(
-            err,
-            WellfriendError::UnsupportedFeature(message)
-                if message.contains("cached display-list replay")
-                    && message.contains("unsupported retained display-list replay")
-                    && message.contains("Q")
-                    && !message.contains("HighQualityExact")
-        ));
+        let reference = engine
+            .render_page_display_list_with_mode(1, 72, RenderMode::Compat)
+            .expect("compat display-list helper renders immediately");
+        let red = reference.get_pixel(25, reference.height as i32 - 25);
+        assert_eq!(&red[..3], &[255, 0, 0], "rect drawn after the bad Q");
+        let renders = [
+            PageRenderer::render_page_cancellable_with_mode(
+                &engine,
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+            )
+            .expect("compat page render"),
+            PageRenderer::render_page_cancellable_with_mode_and_cache(
+                &engine,
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut RenderDocumentCache::new(),
+            )
+            .expect("compat cached page render"),
+            PageRenderer::render_display_list_cancellable_with_mode(
+                &engine,
+                1,
+                72,
+                &list,
+                &CancelToken::none(),
+                RenderMode::Compat,
+            )
+            .expect("compat display-list replay"),
+            PageRenderer::render_display_list_cancellable_with_mode_and_cache(
+                &engine,
+                1,
+                72,
+                &list,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut RenderDocumentCache::new(),
+            )
+            .expect("compat cached display-list replay"),
+        ];
+        for render in &renders {
+            assert_same_pixels(&reference, render);
+        }
     }
 
     #[test]
@@ -40165,7 +40430,7 @@ mod tests {
         let pdf = pdf_with_missing_tiling_pattern_resource();
         let engine = ContentEngine::open_bytes(pdf).expect("open missing pattern PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
             .expect_err("missing active pattern must not silently drop paint");
         assert!(format!("{error}").contains("pattern fill resource /P1 is missing"));
     }
@@ -40306,7 +40571,7 @@ mod tests {
         let pdf = pdf_with_missing_named_shading_resource();
         let engine = ContentEngine::open_bytes(pdf).expect("open missing shading PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
             .expect_err("missing shading paint must not silently render a no-op");
         assert!(format!("{error}").contains("shading resource /S1 is missing"));
     }
@@ -40485,7 +40750,7 @@ mod tests {
         let pdf = pdf_with_missing_xobject_resource();
         let engine = ContentEngine::open_bytes(pdf).expect("open missing XObject PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
             .expect_err("missing active XObject must not silently drop paint");
         assert!(format!("{error}").contains("XObject resource /Im1 is missing"));
     }
@@ -40495,7 +40760,7 @@ mod tests {
         let pdf = pdf_with_xobject_resource_object("(not a stream)");
         let engine = ContentEngine::open_bytes(pdf).expect("open non-stream XObject PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
             .expect_err("non-stream XObject must not silently drop paint");
         assert!(format!("{error}").contains("did not resolve to a stream"));
     }
@@ -40514,7 +40779,8 @@ mod tests {
         ] {
             let pdf = pdf_with_xobject_resource_object(object);
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed XObject PDF");
-            let error = match engine.render_page_with_mode(1, 72, RenderMode::Compat) {
+            let mode = compat_renders_then_exact(&engine);
+            let error = match engine.render_page_with_mode(1, 72, mode) {
                 Ok(_) => panic!("malformed XObject must fail: {expected}"),
                 Err(error) => error,
             };
@@ -41504,7 +41770,7 @@ mod tests {
         let pdf = pdf_with_missing_extgstate_resource();
         let engine = ContentEngine::open_bytes(pdf).expect("open missing ExtGState PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
             .expect_err("missing ExtGState must not silently keep default state");
         assert!(format!("{error}").contains("ExtGState resource /GS1 is missing"));
     }
@@ -41543,7 +41809,7 @@ mod tests {
         let pdf = pdf_with_smask_extgstate("<< /Type /ExtGState /BM 42 >>");
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed ExtGState /BM PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
             .expect_err("malformed ExtGState /BM must not silently select default blend");
         let message = format!("{error}");
         assert!(
@@ -41628,7 +41894,7 @@ mod tests {
             let engine =
                 ContentEngine::open_bytes(pdf).expect("open malformed ExtGState metadata PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
                 .expect_err("malformed ExtGState metadata must not mutate graphics state");
             let message = format!("{error}");
             assert!(
@@ -42071,7 +42337,7 @@ mod tests {
         let pdf = simple_vector_pdf("/BadWidth w\n0 0 100 100 re S\n");
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed graphics-state PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
             .expect_err("malformed graphics state must not render with a default line width");
         assert!(
             format!("{error}").contains("malformed graphics-state operator 'w'"),
@@ -42081,7 +42347,7 @@ mod tests {
         let pdf = simple_vector_pdf("Q\n0 0 100 100 re f\n");
         let engine = ContentEngine::open_bytes(pdf).expect("open restore-underflow PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
             .expect_err("graphics-state restore underflow must not render with default state");
         assert!(
             format!("{error}").contains("restore has no saved graphics state"),
@@ -42776,7 +43042,7 @@ mod tests {
         let pdf = simple_vector_pdf("BT /F1 Tf (Hi) Tj ET\n");
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed text PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
             .expect_err("malformed text state must not render with default font size");
         assert!(
             format!("{error}").contains("malformed text operator 'Tf'"),
@@ -43363,7 +43629,7 @@ mod tests {
             let pdf = simple_vector_pdf(content);
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed marked-content PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
                 .expect_err("malformed marked content must not render with default visibility");
             assert!(
                 format!("{error}")
@@ -43394,7 +43660,7 @@ mod tests {
         let pdf = simple_vector_pdf("/Span BMC 0 0 10 10 re f\n");
         let engine = ContentEngine::open_bytes(pdf).expect("open unterminated marked-content PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
             .expect_err("unterminated marked content must not render with leaked visibility");
         assert!(
             format!("{error}").contains("malformed marked-content sequence: 1 unterminated"),
@@ -43418,7 +43684,7 @@ mod tests {
             let engine =
                 ContentEngine::open_bytes(pdf).expect("open malformed compatibility-section PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
                 .expect_err("unbalanced compatibility sections must fail typed");
             assert!(format!("{error}").contains(expected), "got {error}");
         }
@@ -43430,7 +43696,7 @@ mod tests {
             let pdf = simple_vector_pdf(content);
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed path PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
                 .expect_err("malformed path must not render with default path state");
             assert!(
                 format!("{error}").contains(&format!("malformed path operator '{expected}'")),
@@ -43451,7 +43717,7 @@ mod tests {
             let pdf = simple_vector_pdf(content);
             let engine = ContentEngine::open_bytes(pdf).expect("open malformed path PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
                 .expect_err("malformed clipping sequence must not render as a no-op");
             assert!(format!("{error}").contains(expected), "got {error}");
         }
@@ -43502,7 +43768,7 @@ mod tests {
             let engine =
                 ContentEngine::open_bytes(pdf).expect("open malformed resource invocation PDF");
             let error = engine
-                .render_page_with_mode(1, 72, RenderMode::Compat)
+                .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
                 .expect_err("malformed resource invocation must not render as a no-op");
             assert!(
                 format!("{error}").contains(&format!(
@@ -43518,7 +43784,7 @@ mod tests {
         let pdf = simple_vector_pdf("500 0 d1\n");
         let engine = ContentEngine::open_bytes(pdf).expect("open malformed Type 3 metric PDF");
         let error = engine
-            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .render_page_with_mode(1, 72, compat_renders_then_exact(&engine))
             .expect_err("malformed Type 3 metric must not render with a default bbox");
         assert!(
             format!("{error}").contains("malformed Type 3 glyph metric operator 'd1'"),
@@ -49538,7 +49804,8 @@ mod tests {
             PdfObject::Integer(30),
             PdfObject::Integer(30),
         ];
-        let out = apply_color_key_image_mask(main, 8, "DeviceRGB", &mask).expect("color key mask");
+        let out =
+            apply_color_key_image_mask(main, 8, "DeviceRGB", &mask, false).expect("color key mask");
         assert_eq!(out.channels, 4);
         assert_eq!(&out.pixels[0..4], &[10, 20, 30, 0]);
         assert_eq!(&out.pixels[4..8], &[200, 210, 220, 255]);
@@ -49562,7 +49829,7 @@ mod tests {
             PdfObject::Integer(30),
         ];
         assert!(
-            apply_color_key_image_mask(main, 8, "DeviceRGB", &mask).is_none(),
+            apply_color_key_image_mask(main, 8, "DeviceRGB", &mask, false).is_none(),
             "short color-key source image must not be padded"
         );
     }
@@ -49585,7 +49852,7 @@ mod tests {
             PdfObject::Integer(30),
         ];
         assert!(
-            apply_color_key_image_mask(main, 8, "DeviceRGB", &mask).is_none(),
+            apply_color_key_image_mask(main, 8, "DeviceRGB", &mask, false).is_none(),
             "nonnumeric color-key entries must not be filtered out"
         );
     }
@@ -49605,7 +49872,7 @@ mod tests {
             PdfObject::Integer(20),
         ];
         assert!(
-            apply_color_key_image_mask(main, 8, "DeviceGray", &mask).is_none(),
+            apply_color_key_image_mask(main, 8, "DeviceGray", &mask, false).is_none(),
             "extra color-key entries must not be ignored"
         );
     }
@@ -49622,7 +49889,7 @@ mod tests {
             };
             let mask = vec![PdfObject::Integer(10), bad_entry];
             assert!(
-                apply_color_key_image_mask(main, 8, "DeviceGray", &mask).is_none(),
+                apply_color_key_image_mask(main, 8, "DeviceGray", &mask, false).is_none(),
                 "malformed color-key range values must not be clamped or rounded"
             );
         }
@@ -49639,7 +49906,7 @@ mod tests {
         };
         let mask = vec![PdfObject::Integer(20), PdfObject::Integer(10)];
         assert!(
-            apply_color_key_image_mask(main, 8, "DeviceGray", &mask).is_none(),
+            apply_color_key_image_mask(main, 8, "DeviceGray", &mask, false).is_none(),
             "reversed color-key ranges must not be silently swapped"
         );
     }
