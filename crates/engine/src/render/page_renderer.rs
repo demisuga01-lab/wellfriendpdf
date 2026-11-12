@@ -18585,6 +18585,14 @@ impl<'a> RenderState<'a> {
             tricky: false,
         });
 
+        // Like PDFium (`ShouldApplyGlyphSpacingHeuristic`), substitute glyphs
+        // are fitted to the PDF widths only for fonts that are not a standard
+        // font or one of its aliases (Arial, TimesNewRoman,Bold, ...).
+        let standard_font_name = font_dict
+            .as_ref()
+            .and_then(|dict| dict.get_name("BaseFont"))
+            .is_some_and(crate::fonts::resolver::is_standard14_alias);
+
         if let Some(refusal) = exact_font_refusal {
             if decoded.iter().any(|glyph| {
                 should_paint_decoded_glyph(glyph)
@@ -18728,9 +18736,11 @@ impl<'a> RenderState<'a> {
                             offset_y: glyph.vertical_origin.map(|(_, vy)| vy).unwrap_or(0.0),
                             fill_color,
                             stroke_color,
-                            substitute_pdf_width: glyph
-                                .width
-                                .filter(|_| prepared_font.is_substitute && !glyph.is_vertical),
+                            substitute_pdf_width: glyph.width.filter(|_| {
+                                prepared_font.is_substitute
+                                    && !glyph.is_vertical
+                                    && !standard_font_name
+                            }),
                             fallback_pdf_width: glyph.width.filter(|_| !glyph.is_vertical),
                             vertical: glyph.is_vertical,
                             fallback_language: prepared_font.fallback_language,
