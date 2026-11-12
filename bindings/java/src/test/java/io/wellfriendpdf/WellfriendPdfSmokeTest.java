@@ -20,6 +20,7 @@ public final class WellfriendPdfSmokeTest {
         pageMediaRasterPoliciesAndSearchUseTheNativeCore();
         Path fixture = fixturePath();
         Path semantic_closeoutFixture = locateFixture("multi_stream.pdf");
+        extractTextReadingOrderMatchesTheCliLayout(semantic_closeoutFixture);
         try (WellfriendPdf.Document doc = WellfriendPdf.Document.open(fixture)) {
             assertTrue(doc.pageCount() >= 1, "page count");
             assertTrue(!doc.page(1).text().isBlank(), "text extraction");
@@ -987,6 +988,29 @@ public final class WellfriendPdfSmokeTest {
             String report = doc.searchTextJson("the", "{\"pages\":[1],\"case_sensitive\":false,\"whole_word\":true}");
             assertTrue(report.contains("\"schema_version\":\"binding_media.text_search.v1\""), "search report");
             assertTrue(report.contains("\"whole_word\":true"), "search options echoed");
+        }
+    }
+
+    private static void extractTextReadingOrderMatchesTheCliLayout(Path fixture) throws Exception {
+        try (WellfriendPdf.Document doc = WellfriendPdf.Document.open(fixture)) {
+            StringBuilder document = new StringBuilder();
+            for (int page = 1; page <= doc.pageCount(); page++) {
+                String text = doc.extractTextReadingOrder(page);
+                if (page == 1) {
+                    assertTrue(text.contains("Hello"), "reading-order page text");
+                    assertTrue(text.equals(doc.page(1).readingOrderText()), "page reading-order text");
+                }
+                document.append(text).append('\n');
+            }
+            // Page 0 is the whole document as `extract-text` prints it.
+            assertTrue(document.toString().equals(doc.extractTextReadingOrder()), "reading-order document text");
+            boolean rejected = false;
+            try {
+                doc.extractTextReadingOrder(doc.pageCount() + 1);
+            } catch (WellfriendPdf.WellfriendPdfException expected) {
+                rejected = true;
+            }
+            assertTrue(rejected, "reading-order text rejects a missing page");
         }
     }
 

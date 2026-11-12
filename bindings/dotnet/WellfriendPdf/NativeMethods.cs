@@ -339,6 +339,13 @@ internal static partial class NativeMethods
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_extract_text_reading_order(
+        DocumentHandle document,
+        UIntPtr page,
+        out IntPtr text,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int wellfriendpdf_document_render_page_png(
         DocumentHandle document,
         UIntPtr page,

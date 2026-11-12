@@ -3513,6 +3513,19 @@ impl ContentEngine {
         )
     }
 
+    /// Every page in reading order, as `wellfriendpdf extract-text` prints
+    /// a document by default: each page's
+    /// [`get_page_text_reading_order`](Self::get_page_text_reading_order)
+    /// text followed by a newline.
+    pub fn get_text_reading_order(&self) -> Result<String> {
+        let mut text = String::new();
+        for page_number in 1..=self.page_count()? {
+            text.push_str(&self.get_page_text_reading_order(page_number)?);
+            text.push('\n');
+        }
+        Ok(text)
+    }
+
     /// [`get_page_text_reading_order`](Self::get_page_text_reading_order)
     /// with explicit layout options (e.g. discarding diagonal text).
     pub fn get_page_text_reading_order_with(

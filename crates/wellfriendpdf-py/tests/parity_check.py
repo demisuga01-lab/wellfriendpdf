@@ -6,9 +6,10 @@ deterministic first-N corpus loop and shells out to the release CLI for each fil
 Text is compared per extraction profile against `extract-text --raw --profile P`,
 the CLI path that runs the same engine call as `Document.extract_text(profile=P)`.
 The CLI's default output is Poppler-style reading order (since "Make layout-aware
-reading order the default for extract-text") and `--raw` with the fast-text profile
-is true content-stream order (pdftotext -raw); neither is what the bindings'
-`extract_text()` returns, so the plain default is not a parity pair.
+reading order the default for extract-text"); its parity pair is
+`Document.extract_text_reading_order()`, compared against plain `extract-text`.
+`--raw` with the fast-text profile is true content-stream order (pdftotext -raw),
+which is not what the bindings' `extract_text()` returns, so it is not checked.
 """
 
 from __future__ import annotations
@@ -68,6 +69,13 @@ def check_file(wellfriendpdf_bin: Path, pdf: Path) -> tuple[bool, str]:
         )
         if py_text != cli_text:
             return False, f"text mismatch for {pdf.name} (profile {profile})"
+
+    # Reading order: the CLI default prints each page followed by a newline,
+    # exactly what extract_text_reading_order() returns for the whole document.
+    py_reading = norm_text(doc.extract_text_reading_order())
+    cli_reading = norm_text(run_cli(wellfriendpdf_bin, ["extract-text", str(pdf)]))
+    if py_reading != cli_reading:
+        return False, f"reading-order text mismatch for {pdf.name}"
 
     py_tables = doc.extract_tables()
     cli_table_payload = cli_tables(run_cli(wellfriendpdf_bin, ["extract-tables", str(pdf), "--format", "json"]))

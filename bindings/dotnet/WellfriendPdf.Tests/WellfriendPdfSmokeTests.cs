@@ -122,6 +122,23 @@ public sealed class WellfriendPdfSmokeTests
     }
 
     [Fact]
+    public void ExtractTextReadingOrder()
+    {
+        using var doc = WellfriendDocument.Open(FixturePath("multi_stream.pdf"));
+        var pages = new List<string>();
+        for (var page = 1; page <= doc.PageCount; page++)
+        {
+            pages.Add(doc.ExtractTextReadingOrder(page));
+        }
+        Assert.Contains("Hello", pages[0]);
+        Assert.Equal(pages[0], doc.GetPage(1).ReadingOrderText);
+        // Page 0 (the default) is the whole document as `extract-text` prints it.
+        Assert.Equal(string.Concat(pages.Select(text => text + "\n")), doc.ExtractTextReadingOrder());
+        Assert.Throws<WellfriendPdfException>(() => doc.ExtractTextReadingOrder(doc.PageCount + 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => doc.ExtractTextReadingOrder(-1));
+    }
+
+    [Fact]
     public void OpenExtractAndConvert()
     {
         using var doc = WellfriendDocument.Open(FixturePath());

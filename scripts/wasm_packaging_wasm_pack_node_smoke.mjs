@@ -213,6 +213,23 @@ try {
     "renderContractObjectPng(profile)",
   );
 
+  // Reading-order text (the CLI extract-text default): page 0 is the whole
+  // document, each page followed by a newline.
+  const readingPages = [];
+  for (let page = 1; page <= result.page_count; page += 1) {
+    readingPages.push(pdf.extractTextReadingOrder(page));
+  }
+  result.reading_order_text = readingPages[0];
+  result.reading_order_document_matches_pages =
+    pdf.extractTextReadingOrder(0) === readingPages.map((text) => `${text}\n`).join("");
+  try {
+    pdf.extractTextReadingOrder(result.page_count + 1);
+    result.reading_order_rejects_bad_page = false;
+  } catch {
+    result.reading_order_rejects_bad_page = true;
+  }
+  result.apis_tested.push("extractTextReadingOrder");
+
   pdf.close();
   result.apis_tested.push("close");
 
@@ -249,6 +266,9 @@ try {
     result.stroke_adjustment_off === "Off",
     result.profile_png_signature === true,
     result.profile_rejects_unknown === true,
+    typeof result.reading_order_text === "string" && result.reading_order_text.trim().length > 0,
+    result.reading_order_document_matches_pages === true,
+    result.reading_order_rejects_bad_page === true,
   ];
   result.status = checks.every(Boolean) ? "passed" : "failed";
 } catch (error) {

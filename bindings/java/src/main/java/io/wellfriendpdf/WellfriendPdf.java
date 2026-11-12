@@ -2468,6 +2468,35 @@ public final class WellfriendPdf {
             }
         }
 
+        /**
+         * Text in reading order (columns, blocks and lines in the order a reader
+         * follows them), the {@code wellfriendpdf extract-text} default;
+         * {@link #extractText(int)} returns the faster content order.
+         *
+         * @param pageNumber 1-based page; 0 returns every page, each followed by a
+         *     newline, as the CLI prints the document
+         */
+        public String extractTextReadingOrder(int pageNumber) {
+            ensureOpen();
+            if (pageNumber < 0) throw new IllegalArgumentException("page numbers are 1-based; 0 means every page");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment textOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.EXTRACT_TEXT_READING_ORDER.invokeExact(handle, (long) pageNumber, textOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(textOut);
+            } catch (WellfriendPdfException | IllegalArgumentException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend extract_text_reading_order failed", ex);
+            }
+        }
+
+        /** Every page in reading order, as {@code wellfriendpdf extract-text} prints the document. */
+        public String extractTextReadingOrder() {
+            return extractTextReadingOrder(0);
+        }
+
         public byte[] renderPagePng(int pageNumber, int dpi) {
             ensureOpen();
             if (pageNumber < 1 || dpi < 1) throw new IllegalArgumentException("page and dpi must be positive");
@@ -5048,6 +5077,11 @@ public final class WellfriendPdf {
             return document.extractText(number);
         }
 
+        /** This page's text in reading order (see {@link Document#extractTextReadingOrder(int)}). */
+        public String readingOrderText() {
+            return document.extractTextReadingOrder(number);
+        }
+
         public byte[] renderPng(int dpi) {
             return document.renderPagePng(number, dpi);
         }
@@ -5293,6 +5327,10 @@ public final class WellfriendPdf {
         );
         private static final MethodHandle EXTRACT_TEXT = downcall(
             "wellfriendpdf_document_extract_text",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle EXTRACT_TEXT_READING_ORDER = downcall(
+            "wellfriendpdf_document_extract_text_reading_order",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle RENDER_PAGE_PNG = downcall(

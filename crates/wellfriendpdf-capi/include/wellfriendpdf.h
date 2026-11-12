@@ -415,6 +415,17 @@ WELLFRIENDPDF_API int wellfriendpdf_document_extract_text(
     char **out_text,
     char **error_out);
 
+/* Reading-order text: columns, blocks and lines in the order a reader follows
+ * them, the `wellfriendpdf extract-text` default (extract_text above returns
+ * the faster content order). `page` is 1-based; 0 extracts every page, each
+ * page's text followed by a newline, exactly as `extract-text` prints the
+ * document. Free the text with wellfriendpdf_string_free. */
+WELLFRIENDPDF_API int wellfriendpdf_document_extract_text_reading_order(
+    const WellfriendDocument *document,
+    size_t page,
+    char **out_text,
+    char **error_out);
+
 WELLFRIENDPDF_API int wellfriendpdf_document_parse_markdown(
     const WellfriendDocument *document,
     char **out_markdown,

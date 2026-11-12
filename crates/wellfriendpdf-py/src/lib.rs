@@ -1222,6 +1222,18 @@ impl PyDocument {
         }
     }
 
+    /// Text in reading order (columns, blocks and lines in the order a reader
+    /// follows them): the `wellfriendpdf extract-text` default. Without
+    /// `page`, every page, each followed by a newline, as the CLI prints the
+    /// document. `extract_text()` returns the faster content order.
+    #[pyo3(signature = (page=None))]
+    fn extract_text_reading_order(&self, page: Option<usize>) -> PyResult<String> {
+        match page {
+            Some(page) => run_wellfriendpdf(|| self.engine.get_page_text_reading_order(page)),
+            None => run_wellfriendpdf(|| self.engine.get_text_reading_order()),
+        }
+    }
+
     #[pyo3(signature = (page=None))]
     fn extract_tables<'py>(&self, py: Python<'py>, page: Option<usize>) -> PyResult<Py<PyAny>> {
         if let Some(page) = page {

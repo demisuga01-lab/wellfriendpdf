@@ -1248,6 +1248,23 @@ mod wasm_api {
             self.engine.get_page_text(page).map_err(js_err)
         }
 
+        /// Text in reading order (columns, blocks and lines in the order a
+        /// reader follows them), the `wellfriendpdf extract-text` default;
+        /// `extractText` returns the faster content order. `page` is 1-based;
+        /// 0 returns every page, each followed by a newline, as the CLI
+        /// prints the document.
+        #[wasm_bindgen(js_name = extractTextReadingOrder)]
+        pub fn extract_text_reading_order(&self, page: usize) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            if page == 0 {
+                self.engine.get_text_reading_order().map_err(js_err)
+            } else {
+                self.engine
+                    .get_page_text_reading_order(page)
+                    .map_err(js_err)
+            }
+        }
+
         #[wasm_bindgen(js_name = extractStructuredText)]
         pub fn extract_structured_text(&self, page: usize) -> Result<String, JsValue> {
             self.ensure_open()?;
