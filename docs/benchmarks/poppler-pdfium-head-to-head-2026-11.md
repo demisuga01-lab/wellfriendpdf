@@ -664,3 +664,27 @@ Remaining pages, all with evidence that they are not rendering gaps:
 Tests on the VPS: workspace check clean; engine 5,727 passed, 0 failed;
 CLI + C API 162 passed, 0 failed; .NET binding and tests build; Java binding
 compiles.
+
+## Speed and memory techniques: PDFium and Poppler vs Wellfriend
+
+Each technique below was found by reading PDFium's and Poppler's source and
+checked against Wellfriend's code. "Measured" gives the before/after from the
+round that added it.
+
+| Technique | PDFium | Poppler | Wellfriend | Measured |
+|---|---|---|---|---|
+| Clip regions bounded to the clip's box; rectangle clips kept as a box | `CFX_AggClipRgn` | `SplashClip` rect + paths | yes | nested-clip stress 14.9 s -> 0.8 s, 4.7 GB -> 107 MB |
+| Coverage spans blended straight into the page, no per-path mask | AGG scanline renderer | Splash pipe | yes | tracemonkey 1.6 s -> 0.59 s |
+| Axis-aligned rectangle fast path (no rasteriser) | `DrawPath` -> `FillRect` | Splash `fillRect` | yes (default Splash-style; `--rect-snapping pdfium` for PDFium's rule) | HighQuality table 179 -> 71 ms |
+| Shared, reference-counted objects and resources instead of deep copies | `RetainPtr` | `Object` refcount | yes (`Arc`) | |
+| Document-level font, glyph-outline and glyph-bitmap caches | `CPDF_DocPageData`, `CFX_GlyphCache` | `SplashFontEngine`, glyph cache | yes | |
+| Soft masks shared between graphics states, not copied on save | yes | yes | yes | soft-mask stress 1.7 s -> 0.52 s |
+| Reduced-size JPEG decode when the image is drawn small | libjpeg scaled IDCT | no | yes (native reduced IDCT) | |
+| JPEG 2000 resolution-level skipping | `CJPX_Decoder` resolution levels | no | yes, when the full image exceeds limits | |
+| Annotations drawn in the same pass, form data prepared once | `CPDF_AnnotList` in one `CPDF_RenderContext` | `Annots::draw` in same `Gfx` | yes | f1040 annotation pass 28.6 -> 12.8 ms |
+| Compact content operations (interned operators, inline operands) | `CPDF_PageObject` tree | streamed, not stored | yes | 177 -> 83 bytes/op, 2.04 -> 0.06 allocs/op |
+| Streaming page output instead of collecting every page | page by page | page by page | yes (streaming ZIP, reorder buffer) | 303-page atlas peak 5.4 GB -> 378 MB |
+| Parallel page rendering with one cache per worker | single-threaded per document | single-threaded | yes (`par_bridge`, per-worker cache) | 93 docs 11.8 s vs Poppler 101.8 s, PDFium 26.8 s |
+| SIMD blending and colour conversion | AGG + Skia SIMD | limited | yes (`render-simd` crate) | |
+| Link-time optimisation in release builds | yes | distro-dependent | yes (`lto = "thin"`) | |
+| Tuned memory allocator | PartitionAlloc | system malloc | under evaluation | |
