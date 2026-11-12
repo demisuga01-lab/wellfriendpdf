@@ -1,5 +1,6 @@
 use crate::images::decoder::RawImage;
 use crate::render::buffer::PixelBuffer;
+use crate::render::contract::RectSnapping;
 use crate::render::transform::{Transform2D, Viewport};
 use crate::render::RoundByte;
 
@@ -134,7 +135,7 @@ impl ImagePainter {
         } else {
             SmoothMode::Nearest
         };
-        Self::paint_image_with_mode(buf, image, ctm, viewport, mode, paint_alpha);
+        Self::paint_image_with_mode(buf, image, ctm, viewport, mode, paint_alpha, true);
     }
 
     /// Paint with optional `/Interpolate` smoothing and an additional
@@ -152,7 +153,7 @@ impl ImagePainter {
         } else {
             SmoothMode::None
         };
-        Self::paint_image_with_mode(buf, image, ctm, viewport, mode, paint_alpha);
+        Self::paint_image_with_mode(buf, image, ctm, viewport, mode, paint_alpha, false);
     }
 
     /// Paint an image or stencil mask with image smoothing disabled by the
@@ -165,8 +166,36 @@ impl ImagePainter {
         ctm: &Transform2D,
         viewport: &Viewport,
         paint_alpha: f32,
+        stencil: bool,
     ) {
-        Self::paint_image_with_mode(buf, image, ctm, viewport, SmoothMode::NoSmooth, paint_alpha);
+        Self::paint_image_with_mode(
+            buf,
+            image,
+            ctm,
+            viewport,
+            SmoothMode::NoSmooth,
+            paint_alpha,
+            stencil,
+        );
+    }
+
+    /// An image mask's coverage (expanded to RGBA) sampled like an image
+    /// (`/Interpolate` smoothing as for images) but placed like a stencil:
+    /// the coverage a pattern is painted through.
+    pub(crate) fn paint_stencil_coverage_with_options_and_alpha(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        interpolate: bool,
+        paint_alpha: f32,
+    ) {
+        let mode = if interpolate {
+            SmoothMode::Interpolate
+        } else {
+            SmoothMode::None
+        };
+        Self::paint_image_with_mode(buf, image, ctm, viewport, mode, paint_alpha, true);
     }
 
     /// Return an exact integer-pixel target for a non-skewed image draw.
@@ -230,6 +259,11 @@ impl ImagePainter {
             return None;
         }
         let combined = ctm.concat(&viewport.to_transform());
+        // Under PDFium rectangle snapping images are placed on the snapped
+        // rectangle by the general painter.
+        if crate::render::vector_quality::contract_rect_snapping() == RectSnapping::Pdfium {
+            return None;
+        }
         let inverse = combined.inverse()?;
         let epsilon = 1e-10;
         let source_width = 1.0;
@@ -760,6 +794,17 @@ impl ImagePainter {
         true
     }
 
+    /// Paint an image, or (`stencil`) an expanded image-mask stencil.
+    ///
+    /// An upright image (not a stencil) is drawn over every device pixel it
+    /// touches in Compatibility rendering, as PDFium and Poppler both do:
+    /// the pixels its edges only partly cover take the nearest edge sample
+    /// ([`Self::paint_axis_aligned_edges`]). Under PDFium rectangle
+    /// snapping it is placed instead on exactly the pixels a filled
+    /// rectangle with the same corners snaps to, so images and paths with
+    /// the same fractional coordinates line up (pdfium bug 1973). Images in
+    /// tiling-pattern cells and Type 3 glyphs, which PDFium draws through
+    /// intermediate bitmaps, keep the pixel-centre placement.
     fn paint_image_with_mode(
         buf: &mut PixelBuffer,
         image: &RawImage,
@@ -767,6 +812,7 @@ impl ImagePainter {
         viewport: &Viewport,
         smooth_mode: SmoothMode,
         paint_alpha: f32,
+        stencil: bool,
     ) {
         let paint_alpha = paint_alpha.clamp(0.0, 1.0);
         if paint_alpha <= 0.0 {
@@ -793,7 +839,20 @@ impl ImagePainter {
         let combined = ctm.concat(&vp_transform);
 
         if Self::is_top_down_axis_aligned(&combined) {
-            Self::paint_axis_aligned(buf, image, &combined, smooth_mode, paint_alpha);
+            let compat_image = !stencil
+                && !buf.render_mode().is_high_quality()
+                && !crate::render::vector_quality::in_intermediate_bitmap();
+            let pdfium_snapping =
+                crate::render::vector_quality::contract_rect_snapping() == RectSnapping::Pdfium;
+            if compat_image && pdfium_snapping {
+                let snapped = pdfium_snapped_image_transform(&combined).unwrap_or(combined);
+                Self::paint_axis_aligned(buf, image, &snapped, smooth_mode, paint_alpha);
+            } else {
+                Self::paint_axis_aligned(buf, image, &combined, smooth_mode, paint_alpha);
+                if compat_image {
+                    Self::paint_axis_aligned_edges(buf, image, &combined, smooth_mode, paint_alpha);
+                }
+            }
         } else if crate::render::vector_quality::contract_profile().is_default()
             || !crate::render::pdfium_image_transform::paint(
                 buf,
@@ -805,6 +864,106 @@ impl ImagePainter {
             )
         {
             Self::paint_affine(buf, image, &combined, smooth_mode, paint_alpha);
+        }
+    }
+
+    /// Companion of the cached scaled-image path
+    /// ([`Self::paint_scaled_rgb_at_device_target`], which paints the pixels
+    /// whose centres the image covers): paints the image's partly covered
+    /// edge pixels, as [`Self::paint_image_with_mode`] does for an image
+    /// drawn without `/Interpolate`.
+    pub(crate) fn paint_image_edges(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        paint_alpha: f32,
+    ) {
+        if buf.render_mode().is_high_quality()
+            || crate::render::vector_quality::in_intermediate_bitmap()
+        {
+            return;
+        }
+        let combined = ctm.concat(&viewport.to_transform());
+        if Self::is_top_down_axis_aligned(&combined) {
+            Self::paint_axis_aligned_edges(buf, image, &combined, SmoothMode::None, paint_alpha);
+        }
+    }
+
+    /// Paint the device pixels an axis-aligned image only partly covers
+    /// whose centres lie outside it (the sampler skips those) with the
+    /// nearest edge sample: PDFium (`GetUnitRect().GetOuterRect()`) and
+    /// Poppler (`imgCoordMungeLower/Upper`) both draw an image over every
+    /// pixel it touches.
+    fn paint_axis_aligned_edges(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        combined: &Transform2D,
+        smooth_mode: SmoothMode,
+        paint_alpha: f32,
+    ) {
+        let paint_alpha = paint_alpha.clamp(0.0, 1.0);
+        if paint_alpha <= 0.0 {
+            return;
+        }
+        let corners = [
+            combined.transform_point(0.0, 0.0),
+            combined.transform_point(1.0, 0.0),
+            combined.transform_point(0.0, 1.0),
+            combined.transform_point(1.0, 1.0),
+        ];
+        let (px_min, px_max, py_min, py_max) = bounding_box(&corners);
+        if !px_min.is_finite() || !px_max.is_finite() || !py_min.is_finite() || !py_max.is_finite()
+        {
+            return;
+        }
+        let dst_w = (px_max - px_min).max(1.0);
+        let dst_h = (py_max - py_min).max(1.0);
+        let footprint_x = image.width as f64 / dst_w;
+        let footprint_y = image.height as f64 / dst_h;
+        let smooth = Self::effective_smooth_mode(image, dst_w, dst_h, smooth_mode);
+        let use_area_average =
+            smooth_mode != SmoothMode::NoSmooth && (footprint_x > 1.0 || footprint_y > 1.0);
+        let (x0, x1, y0, y1) = clipped_bounds(buf, px_min, px_max, py_min, py_max);
+        if x0 > x1 || y0 > y1 {
+            return;
+        }
+        // A pixel overlaps the image when it intersects its open extent by
+        // more than rounding noise (an edge within EDGE_EPSILON of a pixel
+        // boundary is on it).
+        let overlaps = |p: i32, lo: f64, hi: f64| {
+            f64::from(p) + 1.0 > lo + EDGE_EPSILON && f64::from(p) < hi - EDGE_EPSILON
+        };
+        let last = 1.0 - 1e-9;
+        for py in y0..=y1 {
+            if !overlaps(py, py_min, py_max) {
+                continue;
+            }
+            let v = (py as f64 + 0.5 - py_min) / dst_h;
+            for px in x0..=x1 {
+                if !overlaps(px, px_min, px_max) {
+                    continue;
+                }
+                let u = (px as f64 + 0.5 - px_min) / dst_w;
+                if inside_unit_image_sample(u) && inside_unit_image_sample(v) {
+                    continue;
+                }
+                let sample = Self::sample(
+                    image,
+                    u.clamp(0.0, last),
+                    v.clamp(0.0, last),
+                    footprint_x,
+                    footprint_y,
+                    smooth,
+                    use_area_average,
+                );
+                let coverage = if image.channels == 4 {
+                    sample[3] as f32 / 255.0
+                } else {
+                    1.0
+                } * paint_alpha;
+                buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
+            }
         }
     }
 
@@ -2229,6 +2388,34 @@ fn box_pixel_weight(source_index: usize, start: f64, finish: f64) -> f64 {
     ((source_index + 1) as f64).min(finish) - (source_index as f64).max(start)
 }
 
+/// The device transform of an upright image moved onto the whole-pixel
+/// rectangle PDFium snaps a filled rectangle with the same corners to
+/// (`pdfium_fill_rect`), preserving its orientation.
+fn pdfium_snapped_image_transform(combined: &Transform2D) -> Option<Transform2D> {
+    // Whole-pixel edges (to rounding noise) keep their exact placement and
+    // sampling.
+    let on_pixel = |v: f64| (v - v.round()).abs() <= EDGE_EPSILON;
+    let edges = [
+        combined.e,
+        combined.e + combined.a,
+        combined.f,
+        combined.f + combined.d,
+    ];
+    if edges.iter().all(|&edge| on_pixel(edge)) {
+        return None;
+    }
+    let mut unit = crate::render::path::Path::new();
+    unit.rect(0.0, 0.0, 1.0, 1.0);
+    let (x, y, width, height) = crate::render::rect_snap::pdfium_fill_rect(&unit, combined)?;
+    let (x, y) = (f64::from(x), f64::from(y));
+    let (width, height) = (f64::from(width), f64::from(height));
+    Some(Transform2D::new(width, 0.0, 0.0, -height, x, y + height))
+}
+
+/// Device-pixel tolerance within which an image edge counts as lying on a
+/// pixel boundary.
+const EDGE_EPSILON: f64 = 1e-4;
+
 fn bounding_box(corners: &[(f64, f64); 4]) -> (f64, f64, f64, f64) {
     let px_min = corners
         .iter()
@@ -2492,6 +2679,9 @@ mod tests {
             target.paint,
             1.0,
         ));
+        // The page renderer completes a cached paint with the image's partly
+        // covered edge pixels.
+        ImagePainter::paint_image_edges(&mut cached, &image, &ctm, &viewport, 1.0);
 
         assert_eq!(cached.to_rgba_bytes(), general.to_rgba_bytes());
     }
@@ -2533,6 +2723,9 @@ mod tests {
             target.paint,
             1.0,
         ));
+        // The page renderer completes a cached paint with the image's partly
+        // covered edge pixels.
+        ImagePainter::paint_image_edges(&mut cached, &image, &ctm, &viewport, 1.0);
 
         assert_eq!(cached.to_rgba_bytes(), general.to_rgba_bytes());
     }
@@ -2700,6 +2893,103 @@ mod tests {
         assert!(buf.get_pixel(74, 50)[0] > 200);
         assert_eq!(buf.get_pixel(75, 50), WHITE);
         assert_eq!(buf.get_pixel(50, 75), WHITE);
+    }
+
+    /// Red left half, blue right half.
+    fn red_blue_image() -> RawImage {
+        RawImage {
+            width: 2,
+            height: 1,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![255, 0, 0, 0, 0, 255],
+        }
+    }
+
+    #[test]
+    fn fractional_image_edges_cover_every_touched_pixel() {
+        // PDFium and Poppler draw an image over its outer pixel rectangle:
+        // x 7.7222..97.2782 covers columns 7..=97 (pdfium bug 1973's
+        // coordinates), each edge pixel with the nearest edge sample.
+        let vp = Viewport::new([0.0, 0.0, 105.0, 80.0], 72);
+        let mut buf = PixelBuffer::new_filled(105, 80, WHITE);
+        let ctm = Transform2D::new(89.556, 0.0, 0.0, 60.0, 7.7222, 10.0);
+        ImagePainter::paint_image(&mut buf, &red_blue_image(), &ctm, &vp);
+        assert_eq!(buf.get_pixel(6, 40), WHITE);
+        assert_eq!(buf.get_pixel(7, 40), [255, 0, 0, 255]);
+        assert_eq!(buf.get_pixel(8, 40), [255, 0, 0, 255]);
+        assert_eq!(buf.get_pixel(97, 40), [0, 0, 255, 255]);
+        assert_eq!(buf.get_pixel(98, 40), WHITE);
+        // Whole-pixel edges are unchanged: rows 10..70 exactly.
+        assert_eq!(buf.get_pixel(50, 9), WHITE);
+        assert_eq!(buf.get_pixel(50, 70), WHITE);
+    }
+
+    #[test]
+    fn image_edges_on_pixel_boundaries_up_to_rounding_noise_stay_put() {
+        // pdfium bug_1241587: an edge a few ulps off a pixel boundary must
+        // not paint the neighbouring pixel, with or without PDFium
+        // rectangle snapping.
+        let vp = Viewport::new([0.0, 0.0, 40.0, 40.0], 72);
+        let ctm = Transform2D::new(
+            20.000_000_4,
+            0.0,
+            0.0,
+            20.000_000_3,
+            9.999_999_8,
+            9.999_999_9,
+        );
+        for snapping in [RectSnapping::Default, RectSnapping::Pdfium] {
+            let _snap = crate::render::vector_quality::PixelSnapContractGuard::enter(
+                snapping,
+                crate::render::contract::StrokeAdjustment::Off,
+            );
+            let mut buf = PixelBuffer::new_filled(40, 40, WHITE);
+            ImagePainter::paint_image(&mut buf, &red_blue_image(), &ctm, &vp);
+            assert_eq!(buf.get_pixel(9, 20), WHITE, "{snapping:?}");
+            assert_eq!(buf.get_pixel(30, 20), WHITE, "{snapping:?}");
+            assert_eq!(buf.get_pixel(20, 9), WHITE, "{snapping:?}");
+            assert_eq!(buf.get_pixel(20, 30), WHITE, "{snapping:?}");
+            assert_eq!(buf.get_pixel(10, 10), [255, 0, 0, 255], "{snapping:?}");
+            assert_eq!(buf.get_pixel(29, 29), [0, 0, 255, 255], "{snapping:?}");
+        }
+    }
+
+    #[test]
+    fn pdfium_rect_snapping_places_images_like_rectangles() {
+        // Under PDFium rectangle snapping the image takes the pixels a
+        // filled rectangle with the same corners snaps to: columns 8..=97.
+        let _snap = crate::render::vector_quality::PixelSnapContractGuard::enter(
+            RectSnapping::Pdfium,
+            crate::render::contract::StrokeAdjustment::Off,
+        );
+        let vp = Viewport::new([0.0, 0.0, 105.0, 80.0], 72);
+        let mut buf = PixelBuffer::new_filled(105, 80, WHITE);
+        let ctm = Transform2D::new(89.556, 0.0, 0.0, 60.0, 7.7222, 10.0);
+        ImagePainter::paint_image(&mut buf, &red_blue_image(), &ctm, &vp);
+        assert_eq!(buf.get_pixel(7, 40), WHITE);
+        assert_eq!(buf.get_pixel(8, 40), [255, 0, 0, 255]);
+        assert_eq!(buf.get_pixel(97, 40), [0, 0, 255, 255]);
+        assert_eq!(buf.get_pixel(98, 40), WHITE);
+        // Stencil masks keep the pixel-centre rule.
+        let mut stencil = PixelBuffer::new_filled(105, 80, WHITE);
+        let mask = RawImage {
+            width: 1,
+            height: 1,
+            channels: 4,
+            bits_per_sample: 8,
+            pixels: vec![0, 0, 0, 255],
+        };
+        ImagePainter::paint_stencil_with_options_and_alpha(
+            &mut stencil,
+            &mask,
+            &ctm,
+            &vp,
+            false,
+            1.0,
+        );
+        assert_eq!(stencil.get_pixel(97, 40), WHITE);
+        assert_eq!(stencil.get_pixel(96, 40), [0, 0, 0, 255]);
     }
 
     #[test]

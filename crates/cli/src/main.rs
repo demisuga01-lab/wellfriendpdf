@@ -3245,6 +3245,11 @@ struct RenderArgs {
     /// form field name.
     #[arg(long, value_name = "FIELD")]
     form_focus_field: Option<String>,
+    /// The pointer is over the page annotation with this 0-based `/Annots`
+    /// index: its pop-up is open, and PDFium's generated pop-up (a yellow
+    /// 200x200 note with the annotation's /T and /Contents) is drawn for it.
+    #[arg(long, value_name = "INDEX")]
+    hover_annotation: Option<usize>,
     /// Emit a JSON result summary
     #[arg(long)]
     json: bool,
@@ -8965,6 +8970,7 @@ struct CliRenderContractOptions {
     forced_colors: Option<wellfriendpdf_engine::render::ForcedColorScheme>,
     form_highlight: Option<wellfriendpdf_engine::render::FormHighlightPolicy>,
     form_focus_field: Option<String>,
+    hover_annotation: Option<usize>,
     max_render_pixels: Option<u64>,
     max_decoded_bytes: Option<u64>,
     max_temporary_bytes: Option<u64>,
@@ -9025,6 +9031,7 @@ fn render_args_have_raster_policy_options(args: &RenderArgs) -> bool {
         || args.forced_colors.is_some()
         || args.form_highlight.is_some()
         || args.form_focus_field.is_some()
+        || args.hover_annotation.is_some()
 }
 
 fn render_args_have_contract_builder_options(args: &RenderArgs) -> bool {
@@ -9135,6 +9142,7 @@ fn parse_cli_render_contract_options(
             .map(str::trim)
             .filter(|field| !field.is_empty())
             .map(str::to_string),
+        hover_annotation: args.hover_annotation,
         max_render_pixels: args.max_render_pixels,
         max_decoded_bytes: args.max_decoded_bytes,
         max_temporary_bytes: args.max_temporary_bytes,
@@ -9567,6 +9575,7 @@ fn build_cli_render_contract(
         contract.form_highlight = form_highlight;
     }
     contract.form_highlight.focus_field = options.form_focus_field;
+    contract.form_highlight.hover_annotation = options.hover_annotation;
     if let Some(cap) = options.max_render_pixels {
         contract.resource_budget.max_pixels = cap;
     }

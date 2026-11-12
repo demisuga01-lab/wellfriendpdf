@@ -512,6 +512,7 @@ impl PyRenderContract {
             list_box: pick("list_box", list_box)?,
             signature: pick("signature", signature)?,
             focus_field: focus_field.filter(|field| !field.trim().is_empty()),
+            hover_annotation: self.contract.form_highlight.hover_annotation,
         };
         validate_py_render_contract(contract)
     }

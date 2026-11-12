@@ -8766,7 +8766,14 @@ impl<'a> RenderState<'a> {
         paint_alpha: f32,
     ) {
         if policy == SmoothingPolicy::Disabled {
-            ImagePainter::paint_image_unsmoothed_with_alpha(buf, image, ctm, viewport, paint_alpha);
+            ImagePainter::paint_image_unsmoothed_with_alpha(
+                buf,
+                image,
+                ctm,
+                viewport,
+                paint_alpha,
+                stencil,
+            );
         } else if stencil {
             ImagePainter::paint_stencil_with_options_and_alpha(
                 buf,
@@ -16205,6 +16212,13 @@ impl<'a> RenderState<'a> {
                                 target.paint,
                                 paint_alpha,
                             ) {
+                                ImagePainter::paint_image_edges(
+                                    &mut self.buf,
+                                    paint_raw,
+                                    &paint_ctm,
+                                    &self.viewport,
+                                    paint_alpha,
+                                );
                                 return;
                             }
                         }
@@ -17063,6 +17077,11 @@ impl<'a> RenderState<'a> {
         let need_appearances = resolve_acroform_dict(self.engine, reader)
             .and_then(|dict| dict.get_bool("NeedAppearances"))
             .unwrap_or(false);
+        let hover_annotation = self
+            .form_highlight
+            .as_ref()
+            .and_then(|policy| policy.hover_annotation);
+        let mut open_popup = None;
 
         for (index, annot_obj) in annots.into_iter().enumerate() {
             if self.cancel.is_cancelled() {
@@ -17111,6 +17130,10 @@ impl<'a> RenderState<'a> {
                     continue;
                 }
             };
+            if hover_annotation == Some(index) {
+                open_popup =
+                    annotation_synthesis::pdfium_popup(&annot, reader, self.pdfium_page_size());
+            }
             // With /NeedAppearances, text and choice widgets are regenerated
             // from their values instead of replaying a stale stored
             // appearance (signatures and buttons keep theirs), like Poppler.
@@ -17191,6 +17214,40 @@ impl<'a> RenderState<'a> {
             if annot_subtype == "Widget" && self.form_highlight.is_some() {
                 self.render_widget_highlight(&annot, &annot_obj, index, rect);
             }
+        }
+        // PDFium appends the pop-ups it generates after the page's
+        // annotations (CPDF_AnnotList); a pop-up has /F 0, so it is not
+        // printed.
+        if let Some(popup) = open_popup {
+            if self.cancel.is_cancelled() || self.print_profile != PrintProfile::Display {
+                return;
+            }
+            let name = "PDFiumPopup";
+            if let Some(program) = self.cached_annotation_appearance_program(
+                name,
+                &PdfObject::Null,
+                usize::MAX - 1,
+                &popup.dict,
+                popup.raw,
+                popup.rect,
+            ) {
+                self.render_annotation_appearance_program(name, &program, popup.rect, false);
+            }
+        }
+    }
+
+    /// The page width and height as PDFium's `CPDF_Page::GetPageWidth` and
+    /// `GetPageHeight` report them: the crop box, turned by `/Rotate`.
+    fn pdfium_page_size(&self) -> (f64, f64) {
+        let [x0, y0, x1, y1] = self
+            .engine
+            .page_crop_box(self.page_number)
+            .unwrap_or(self.viewport.media_box);
+        let (width, height) = ((x1 - x0).abs(), (y1 - y0).abs());
+        if self.viewport.rotation % 180 == 90 {
+            (height, width)
+        } else {
+            (width, height)
         }
     }
 
@@ -18230,6 +18287,7 @@ impl<'a> RenderState<'a> {
         )>,
         clip_to_bbox: bool,
     ) {
+        let _cell_bitmap = crate::render::vector_quality::IntermediateBitmapGuard::enter();
         let saved_gs = self.gs.clone();
         let saved_resources = self.resources.clone();
         let saved_base_ctm = self.base_ctm;
@@ -18776,16 +18834,27 @@ impl<'a> RenderState<'a> {
         let (width, height) = (self.buf.width, self.buf.height);
         let render_mode = self.buf.render_mode();
         let mut surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
-        Self::paint_image_with_smoothing_policy(
-            self.image_smoothing_policy,
-            false,
-            &mut surface,
-            stencil,
-            paint_ctm,
-            &self.viewport,
-            interpolate,
-            1.0,
-        );
+        // The mask's coverage is sampled like an image but placed like a
+        // stencil.
+        if self.image_smoothing_policy == SmoothingPolicy::Disabled {
+            ImagePainter::paint_image_unsmoothed_with_alpha(
+                &mut surface,
+                stencil,
+                paint_ctm,
+                &self.viewport,
+                1.0,
+                true,
+            );
+        } else {
+            ImagePainter::paint_stencil_coverage_with_options_and_alpha(
+                &mut surface,
+                stencil,
+                paint_ctm,
+                &self.viewport,
+                interpolate,
+                1.0,
+            );
+        }
         let alpha = surface
             .to_rgba_bytes()
             .chunks_exact(4)
@@ -20692,6 +20761,7 @@ impl<'a> RenderState<'a> {
         font_dict: &PdfDictionary,
         glyph: &DecodedGlyph,
     ) -> Option<f64> {
+        let _glyph_bitmap = crate::render::vector_quality::IntermediateBitmapGuard::enter();
         let Some(glyph_name) = glyph.glyph_name.as_deref() else {
             log::debug!(
                 "PageRenderer: Type3 glyph code {} has no PDF Encoding glyph name; refusing Unicode-derived CharProc alias",

@@ -354,6 +354,12 @@ pub struct FormHighlightPolicy {
     /// widgets get PDFium's black dotted focus rectangle, 1pt outside the
     /// widget rectangle, and no highlight colour.
     pub focus_field: Option<String>,
+    /// Index in the page's `/Annots` of the annotation under the pointer
+    /// (the `mousemove` events of pdfium_test): its pop-up is open, so
+    /// PDFium's generated pop-up (`CreatePopupAnnot`, `GeneratePopupAP`)
+    /// is drawn for it when it has `/Contents`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hover_annotation: Option<usize>,
 }
 
 impl FormHighlightPolicy {
@@ -369,6 +375,7 @@ impl FormHighlightPolicy {
             list_box: Some(color),
             signature: Some(color),
             focus_field: None,
+            hover_annotation: None,
         }
     }
 
@@ -383,6 +390,7 @@ impl FormHighlightPolicy {
             && off(&self.list_box)
             && off(&self.signature)
             && self.focus_field.as_deref().is_none_or(str::is_empty)
+            && self.hover_annotation.is_none()
     }
 }
 
@@ -1153,7 +1161,8 @@ impl RenderContract {
 
     /// Sets the fields a [`RenderProfile`] bundles: rectangle snapping,
     /// stroke adjustment, text gamma and the form highlight (the focus field
-    /// is kept). `RenderProfile::Default` resets them to their defaults.
+    /// and hovered annotation are kept). `RenderProfile::Default` resets them
+    /// to their defaults.
     pub fn apply_profile(&mut self, profile: RenderProfile) {
         self.profile = profile;
         let pdfium = profile != RenderProfile::Default;
@@ -1173,12 +1182,14 @@ impl RenderContract {
             TextGamma::Linear
         };
         let focus_field = self.form_highlight.focus_field.take();
+        let hover_annotation = self.form_highlight.hover_annotation.take();
         self.form_highlight = if profile == RenderProfile::PdfiumTest {
             RenderProfile::pdfium_test_form_highlight()
         } else {
             FormHighlightPolicy::default()
         };
         self.form_highlight.focus_field = focus_field;
+        self.form_highlight.hover_annotation = hover_annotation;
     }
 
     /// A copy of this contract with `profile` applied.
@@ -1559,7 +1570,9 @@ mod tests {
     fn render_profiles_bundle_the_pdfium_options() {
         let mut base = contract(1);
         base.form_highlight.focus_field = Some("field".to_string());
+        base.form_highlight.hover_annotation = Some(2);
         let pdfium = base.with_profile(RenderProfile::Pdfium);
+        assert_eq!(pdfium.form_highlight.hover_annotation, Some(2));
         assert_eq!(pdfium.profile, RenderProfile::Pdfium);
         assert_eq!(serde_json::to_value(&pdfium).unwrap()["profile"], "Pdfium");
         assert!(serde_json::to_value(&base)
