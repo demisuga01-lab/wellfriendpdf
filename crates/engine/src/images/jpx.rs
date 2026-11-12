@@ -98,7 +98,7 @@ pub(crate) fn decode_with_limits(data: &[u8], limits: &DecodeLimits) -> Result<R
 /// full-resolution image would not fit. Halves both sides per step, matching
 /// JPEG 2000 resolution levels.
 fn reduced_target_within_limits(data: &[u8], limits: &DecodeLimits) -> Option<(u32, u32)> {
-    let image = Image::new(data, &DecodeSettings::default()).ok()?;
+    let image = codec_image(data, &DecodeSettings::default()).ok()?;
     let (width, height) = (u64::from(image.width()), u64::from(image.height()));
     let channels =
         u64::from(image.color_space().num_channels().max(1)) + u64::from(image.has_alpha());
@@ -123,8 +123,7 @@ fn reduced_target_within_limits(data: &[u8], limits: &DecodeLimits) -> Option<(u
 /// state without decoding pixels.
 pub fn inspect_metadata(data: &[u8]) -> Result<JpxMetadata> {
     let data = &*repair_jp2c_length(data);
-    let image = Image::new(data, &DecodeSettings::default())
-        .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
+    let image = codec_image(data, &DecodeSettings::default())?;
     metadata_from_image(&image)
 }
 
@@ -139,8 +138,7 @@ pub(crate) fn decode_with_target_resolution(
     // decode budget rather than refusing an oversized scan.
     let target_resolution =
         target_resolution.or_else(|| reduced_target_within_limits(data, limits));
-    let original = Image::new(data, &DecodeSettings::default())
-        .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
+    let original = codec_image(data, &DecodeSettings::default())?;
     let original_width = original.width();
     let original_height = original.height();
     let settings = DecodeSettings {
@@ -186,21 +184,17 @@ pub(crate) fn decode_components(
     validate_jpx_limits(data, limits)?;
     let target_resolution =
         target_resolution.or_else(|| reduced_target_within_limits(data, limits));
-    let original = Image::new(data, &DecodeSettings::default())
-        .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
+    let original = codec_image(data, &DecodeSettings::default())?;
     let (original_width, original_height) = (original.width(), original.height());
     let settings = DecodeSettings {
         resolve_palette_indices: resolve_palette,
         target_resolution,
         ..DecodeSettings::default()
     };
-    let image = Image::new(data, &settings)
-        .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
+    let image = codec_image(data, &settings)?;
     let metadata = metadata_from_image(&image)?;
     validate_decoded_shape(&metadata, limits)?;
-    let decoded = image
-        .decode()
-        .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode failed: {err}")))?;
+    let decoded = codec_decode(&image)?;
     ensure_exact_jpx_decoded_len(
         metadata.width,
         metadata.height,
@@ -228,13 +222,41 @@ pub(crate) fn decode_components(
     })
 }
 
+/// Parse a JPX stream with `hayro-jpeg2000`. The codec can panic on some
+/// malformed codestreams (an unchecked `Option::unwrap`); untrusted image data
+/// must never abort a render, so a panic becomes a typed parse error.
+fn codec_image<'a>(data: &'a [u8], settings: &DecodeSettings) -> Result<Image<'a>> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Image::new(data, settings))) {
+        Ok(Ok(image)) => Ok(image),
+        Ok(Err(err)) => Err(WellfriendError::MalformedPdf(format!(
+            "JPXDecode parse failed: {err}"
+        ))),
+        Err(_) => Err(WellfriendError::MalformedPdf(
+            "JPXDecode parse failed: codec rejected the malformed codestream".to_string(),
+        )),
+    }
+}
+
+/// Decode pixels of a parsed JPX image; a codec panic becomes a typed error
+/// (see [`codec_image`]).
+fn codec_decode(image: &Image<'_>) -> Result<Vec<u8>> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| image.decode())) {
+        Ok(Ok(decoded)) => Ok(decoded),
+        Ok(Err(err)) => Err(WellfriendError::MalformedPdf(format!(
+            "JPXDecode failed: {err}"
+        ))),
+        Err(_) => Err(WellfriendError::MalformedPdf(
+            "JPXDecode failed: codec rejected the malformed codestream".to_string(),
+        )),
+    }
+}
+
 fn decode_with_settings(
     data: &[u8],
     settings: DecodeSettings,
     limits: &DecodeLimits,
 ) -> Result<RawImage> {
-    let image = Image::new(data, &settings)
-        .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
+    let image = codec_image(data, &settings)?;
 
     let metadata = metadata_from_image(&image)?;
     let width = metadata.width;
@@ -246,9 +268,7 @@ fn decode_with_settings(
 
     validate_decoded_shape(&metadata, limits)?;
 
-    let decoded = image
-        .decode()
-        .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode failed: {err}")))?;
+    let decoded = codec_decode(&image)?;
     ensure_exact_jpx_decoded_len(width, height, stored_channels, decoded.len())?;
 
     let color_channels = usize::from(color_channels);

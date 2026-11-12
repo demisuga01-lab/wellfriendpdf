@@ -11,3 +11,12 @@ pub mod smask;
 pub mod tiff;
 
 pub use smask::SmaskLoader;
+
+/// Whether the last filter of an image stream produces bilevel data (JBIG2,
+/// CCITT fax), so an omitted /BitsPerComponent can only mean 1.
+pub(crate) fn bilevel_terminal_filter(filters: &[String]) -> bool {
+    matches!(
+        filters.last().map(String::as_str),
+        Some("JBIG2Decode" | "CCITTFaxDecode" | "CCF")
+    )
+}

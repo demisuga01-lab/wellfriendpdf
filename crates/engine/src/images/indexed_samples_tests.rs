@@ -406,8 +406,9 @@ fn no_paint_palette_keeps_transparent_alpha() {
 #[test]
 fn invalid_palettes_decode_maps_and_base_families_are_rejected() {
     let reader = reader();
+    // A short lookup table is zero-filled on the image route (PDFium); see
+    // `indexed_image_zero_fills_an_undersized_lookup_table`.
     for space in [
-        indexed_space(name("DeviceRGB"), 0, vec![0, 0]),
         // A complete surplus RGB entry is malformed. Fewer than three bytes
         // are only tolerated by the image compatibility route as producer
         // padding because they cannot encode another addressable entry.
