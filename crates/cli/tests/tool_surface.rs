@@ -2974,6 +2974,8 @@ fn render_contract_raster_policy_options_reach_the_contract() {
         "0,0,255,80",
         "--form-focus-field",
         "form.name",
+        "--hover-annotation",
+        "3",
         "--write-contract-json",
         "--json",
     ]);
@@ -2995,6 +2997,7 @@ fn render_contract_raster_policy_options_reach_the_contract() {
     assert_eq!(contract["forced_colors"]["convert_fill_to_stroke"], true);
     assert_eq!(contract["form_highlight"]["check_box"]["a"], 80);
     assert_eq!(contract["form_highlight"]["focus_field"], "form.name");
+    assert_eq!(contract["form_highlight"]["hover_annotation"], 3);
     assert!(entries.iter().any(|(name, _)| name == "page-001.png"));
 
     let out = run(&[

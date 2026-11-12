@@ -17063,6 +17063,11 @@ impl<'a> RenderState<'a> {
         let need_appearances = resolve_acroform_dict(self.engine, reader)
             .and_then(|dict| dict.get_bool("NeedAppearances"))
             .unwrap_or(false);
+        let hover_annotation = self
+            .form_highlight
+            .as_ref()
+            .and_then(|policy| policy.hover_annotation);
+        let mut open_popup = None;
 
         for (index, annot_obj) in annots.into_iter().enumerate() {
             if self.cancel.is_cancelled() {
@@ -17111,6 +17116,10 @@ impl<'a> RenderState<'a> {
                     continue;
                 }
             };
+            if hover_annotation == Some(index) {
+                open_popup =
+                    annotation_synthesis::pdfium_popup(&annot, reader, self.pdfium_page_size());
+            }
             // With /NeedAppearances, text and choice widgets are regenerated
             // from their values instead of replaying a stale stored
             // appearance (signatures and buttons keep theirs), like Poppler.
@@ -17191,6 +17200,40 @@ impl<'a> RenderState<'a> {
             if annot_subtype == "Widget" && self.form_highlight.is_some() {
                 self.render_widget_highlight(&annot, &annot_obj, index, rect);
             }
+        }
+        // PDFium appends the pop-ups it generates after the page's
+        // annotations (CPDF_AnnotList); a pop-up has /F 0, so it is not
+        // printed.
+        if let Some(popup) = open_popup {
+            if self.cancel.is_cancelled() || self.print_profile != PrintProfile::Display {
+                return;
+            }
+            let name = "PDFiumPopup";
+            if let Some(program) = self.cached_annotation_appearance_program(
+                name,
+                &PdfObject::Null,
+                usize::MAX - 1,
+                &popup.dict,
+                popup.raw,
+                popup.rect,
+            ) {
+                self.render_annotation_appearance_program(name, &program, popup.rect, false);
+            }
+        }
+    }
+
+    /// The page width and height as PDFium's `CPDF_Page::GetPageWidth` and
+    /// `GetPageHeight` report them: the crop box, turned by `/Rotate`.
+    fn pdfium_page_size(&self) -> (f64, f64) {
+        let [x0, y0, x1, y1] = self
+            .engine
+            .page_crop_box(self.page_number)
+            .unwrap_or(self.viewport.media_box);
+        let (width, height) = ((x1 - x0).abs(), (y1 - y0).abs());
+        if self.viewport.rotation % 180 == 90 {
+            (height, width)
+        } else {
+            (width, height)
         }
     }
 

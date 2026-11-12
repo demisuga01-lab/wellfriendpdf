@@ -3236,6 +3236,117 @@ impl RoundTo for f64 {
     }
 }
 
+/// Annotation subtypes PDFium gives a pop-up (`PopupAppearsForAnnotType`).
+fn pdfium_popup_parent_subtype(subtype: &str) -> bool {
+    matches!(
+        subtype,
+        "Text"
+            | "Line"
+            | "Square"
+            | "Circle"
+            | "Polygon"
+            | "PolyLine"
+            | "Highlight"
+            | "Underline"
+            | "Squiggly"
+            | "StrikeOut"
+            | "Stamp"
+            | "Caret"
+            | "Ink"
+            | "FileAttachment"
+            | "Redact"
+    )
+}
+
+/// PDFium's pop-up for `parent` once it is open (the pointer entered the
+/// annotation: `CPDFSDK_BAAnnot::OnMouseEnter`): `CreatePopupAnnot` places
+/// a 200x200 pop-up below and to the right of the annotation's `/Rect`
+/// (above and to the left when that would leave the page at its
+/// bottom-right corner), and `GeneratePopupAP` draws it as a yellow square
+/// with a 1pt black border and the title (`/T`) and `/Contents` laid out
+/// from its top-left corner in 12pt Helvetica (WinAnsi; characters that
+/// font cannot encode are dropped), offset by (3, -3). `page_size` is the
+/// page width and height (`CPDF_Page::GetPageWidth/Height`). `None` when
+/// PDFium gives the annotation no pop-up (another subtype, or empty
+/// `/Contents`).
+pub(crate) fn pdfium_popup(
+    parent: &PdfDictionary,
+    reader: &PdfReader,
+    page_size: (f64, f64),
+) -> Option<SynthesizedAppearance> {
+    const SIZE: f64 = 200.0;
+    const FONT_SIZE: f64 = 12.0;
+    // The face metrics PDFium uses for its non-embedded Helvetica
+    // (FPDFFont_GetAscent/GetDescent of the standard font).
+    const ASCENT: f64 = 0.945;
+    const DESCENT: f64 = -0.224;
+    if !pdfium_popup_parent_subtype(parent.get_name("Subtype")?) {
+        return None;
+    }
+    let text_for = |key: &str| {
+        parent
+            .get(key)
+            .and_then(|obj| resolve(reader, obj))
+            .and_then(|obj| obj.as_string().map(crate::info::decode_pdf_text_string))
+            .unwrap_or_default()
+    };
+    let contents = text_for("Contents");
+    if contents.is_empty() {
+        return None;
+    }
+    let title = text_for("T");
+    let rect = normalized_rect(
+        number_array(reader, parent.get("Rect"))
+            .filter(|values| values.len() == 4)
+            .map(|values| [values[0], values[1], values[2], values[3]])?,
+    );
+    let (page_width, _) = page_size;
+    let (left, bottom) = if rect[0] + SIZE > page_width && rect[1] - SIZE < 0.0 {
+        (rect[2] - SIZE, rect[3])
+    } else {
+        (rect[0].min(page_width - SIZE), (rect[1] - SIZE).max(0.0))
+    };
+
+    let mut fonts = TextFonts::standard_named("Helvetica", "FONT", "FONTU");
+    let text: String = format!("{title}\n{contents}")
+        .chars()
+        .filter(|&ch| ch == '\n' || ch == '\r' || fonts.primary.char_width(ch).is_some())
+        .collect();
+    let mut out = format!(
+        "1 1 0 rg\n0 0 0 RG\n1 w\n0.5 0.5 {} {} re b\n",
+        n(SIZE - 1.0),
+        n(SIZE - 1.0)
+    );
+    let lines = wrap_lines(&mut fonts, &text, FONT_SIZE, SIZE);
+    if lines.iter().any(|line| !line.is_empty()) {
+        out.push_str("BT\n0 g\n");
+        let (ascent, descent) = (ASCENT * FONT_SIZE, DESCENT * FONT_SIZE);
+        let mut last = (0.0, 0.0);
+        for (index, line) in lines.iter().enumerate() {
+            if line.is_empty() {
+                continue;
+            }
+            let baseline = SIZE - (ascent + index as f64 * (ascent - descent)) - 3.0;
+            if baseline < 0.0 {
+                break;
+            }
+            let _ = writeln!(out, "{} {} Td", n(3.0 - last.0), n(baseline - last.1));
+            last = (3.0, baseline);
+            fonts.show(&mut out, line, FONT_SIZE);
+        }
+        out.push_str("ET\n");
+    }
+    let mut resources = Resources::default();
+    fonts.add_to(&mut resources);
+    finish(
+        out,
+        [0.0, 0.0, SIZE, SIZE],
+        [left, bottom, left + SIZE, bottom + SIZE],
+        resources,
+        1.0,
+    )
+}
+
 /// Known annotation subtypes for which the legacy Invisible flag is
 /// ignored, as Poppler and PDFium do (it only applies to unknown types).
 pub(crate) fn is_standard_annotation_subtype(subtype: &str) -> bool {

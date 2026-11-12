@@ -283,6 +283,81 @@ mod pdfium_gap_rendering {
         assert_eq!(buf.get_pixel(10, 50), [255 - blue, 0, blue, 255]);
     }
 
+    fn popup_engine(annots: &str, media_box: &str) -> ContentEngine {
+        let objects = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox {media_box} /Contents 4 0 R /Annots [{annots}] >>"
+            )
+            .into_bytes(),
+            stream("", b""),
+        ];
+        ContentEngine::open_bytes(build_test_pdf_from_objects(&objects)).unwrap()
+    }
+
+    fn render_hovered(engine: &ContentEngine, hover: Option<usize>) -> PixelBuffer {
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .unwrap();
+        contract.form_highlight.hover_annotation = hover;
+        engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .unwrap()
+    }
+
+    #[test]
+    fn hovered_annotation_shows_pdfiums_generated_popup() {
+        // pdfium bug_40643646: the pointer over a Text annotation opens the
+        // 200x200 pop-up PDFium generates below and to the right of it.
+        let engine = popup_engine(
+            "<< /Type /Annot /Subtype /Text /Rect [10 240 30 260] /Contents (Hello) >>",
+            "[0 0 220 270]",
+        );
+        let closed = render_hovered(&engine, None);
+        assert_eq!(closed.get_pixel(150, 150), [255, 255, 255, 255], "closed");
+        let open = render_hovered(&engine, Some(0));
+        // Pop-up [10 40 210 240]: device x 10..210, y 30..230.
+        assert_eq!(open.get_pixel(150, 150), [255, 255, 0, 255], "yellow body");
+        assert_eq!(open.get_pixel(9, 150), [255, 255, 255, 255], "left of it");
+        assert_eq!(open.get_pixel(150, 231), [255, 255, 255, 255], "below it");
+        let border = open.get_pixel(10, 150);
+        assert!(border[0] < 80 && border[2] < 80, "black border {border:?}");
+        // "Hello" on the second line (the first holds the empty /T).
+        let ink = (31..60)
+            .flat_map(|y| (12..60).map(move |x| (x, y)))
+            .filter(|&(x, y)| open.get_pixel(x, y)[0] < 128)
+            .count();
+        assert!(ink > 20, "contents text is drawn: {ink}");
+        // Hovering another index or an annotation without contents shows
+        // nothing.
+        assert_eq!(
+            render_hovered(&engine, Some(1)).get_pixel(150, 150),
+            [255, 255, 255, 255]
+        );
+        let empty = popup_engine(
+            "<< /Type /Annot /Subtype /Text /Rect [10 240 30 260] >>",
+            "[0 0 220 270]",
+        );
+        assert_eq!(
+            render_hovered(&empty, Some(0)).get_pixel(150, 150),
+            [255, 255, 255, 255]
+        );
+    }
+
+    #[test]
+    fn popup_at_the_bottom_right_corner_opens_above_and_left() {
+        let engine = popup_engine(
+            "<< /Type /Annot /Subtype /Square /Rect [380 20 400 40] /Contents (x) >>",
+            "[0 0 400 300]",
+        );
+        let open = render_hovered(&engine, Some(0));
+        // Pop-up [200 40 400 240]: device x 200..400, y 60..260.
+        assert_eq!(open.get_pixel(300, 150), [255, 255, 0, 255]);
+        assert_eq!(open.get_pixel(198, 150), [255, 255, 255, 255]);
+        assert_eq!(open.get_pixel(300, 262), [255, 255, 255, 255]);
+    }
+
     #[test]
     fn type3_image_masks_take_the_text_alpha_twice() {
         // pdfium bug_1746: image masks in a Type 3 glyph shown with ca 0.5.
