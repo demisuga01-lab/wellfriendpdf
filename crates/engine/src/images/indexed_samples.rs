@@ -325,6 +325,13 @@ pub(crate) fn convert_indices<'a>(
         if !value.is_finite() {
             return Err(invalid("Indexed pixel is not finite"));
         }
+        // A sample above hival is black, as in PDFium, whose palette maps
+        // every entry past hival to zero (`GetRGBOrZerosOnError`).
+        if value.round() > maximum as f64 {
+            // Grey, RGB or opaque RGBA black.
+            output.extend_from_slice(&[0, 0, 0, 255][..channels as usize]);
+            continue;
+        }
         let index = value.clamp(0.0, maximum as f64).round() as usize;
         let start = index * channels as usize;
         output.extend_from_slice(&palette[start..start + channels as usize]);

@@ -8695,6 +8695,7 @@ impl<'a> RenderState<'a> {
             options: self.color_transform_options(),
             functions: self.function_resources(),
             plate: self.plate.as_deref(),
+            lenient_decode: !self.buf.render_mode().is_high_quality(),
         }
     }
 
