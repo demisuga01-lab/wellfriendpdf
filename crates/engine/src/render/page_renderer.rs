@@ -11575,6 +11575,25 @@ impl<'a> RenderState<'a> {
                     self.buf.render_mode(),
                     state.stroke_adjustment,
                 );
+                let zero_area = crate::render::zero_area::compat_zero_area_paint(
+                    &self.buf,
+                    path,
+                    &state.ctm,
+                    &self.viewport,
+                );
+                if let Some(crate::render::zero_area::ZeroAreaPaint::Cosmetic(segment)) = zero_area
+                {
+                    crate::render::zero_area::stroke_device_hairlines(
+                        &mut self.buf,
+                        &self.viewport,
+                        &[segment],
+                        state.fill_color,
+                        path_binary_alpha,
+                        &self.cancel,
+                    );
+                    self.buf.blend_mode = saved_blend;
+                    return;
+                }
                 if !paint_cached_path_fill(
                     &mut self.path_fill_mask_cache,
                     &mut self.buf,
@@ -11605,6 +11624,16 @@ impl<'a> RenderState<'a> {
                         state.flatness,
                         path_binary_alpha,
                         raster_options,
+                        &self.cancel,
+                    );
+                }
+                if let Some(crate::render::zero_area::ZeroAreaPaint::Lines(subpaths)) = zero_area {
+                    crate::render::zero_area::paint_zero_area_lines(
+                        &mut self.buf,
+                        &self.viewport,
+                        &subpaths,
+                        state.fill_color,
+                        path_binary_alpha,
                         &self.cancel,
                     );
                 }
@@ -13819,6 +13848,27 @@ impl<'a> RenderState<'a> {
             }
         }
         let color = self.fill_pixel_color();
+        // Compat rendering keeps degenerate fills visible the way PDFium
+        // does: a two-point path is a one-pixel line instead of a fill, and
+        // retraced parts of other subpaths are stroked one pixel wide.
+        let zero_area = crate::render::zero_area::compat_zero_area_paint(
+            &self.buf,
+            &self.path,
+            &ctm,
+            &self.viewport,
+        );
+        if let Some(crate::render::zero_area::ZeroAreaPaint::Cosmetic(segment)) = zero_area {
+            crate::render::zero_area::stroke_device_hairlines(
+                &mut self.buf,
+                &self.viewport,
+                &[segment],
+                color,
+                path_binary_alpha,
+                &self.cancel,
+            );
+            self.path.clear();
+            return;
+        }
         if !paint_cached_path_fill(
             &mut self.path_fill_mask_cache,
             &mut self.buf,
@@ -13843,6 +13893,16 @@ impl<'a> RenderState<'a> {
                 self.gs.path_flatness_tolerance(),
                 path_binary_alpha,
                 raster_options,
+                &self.cancel,
+            );
+        }
+        if let Some(crate::render::zero_area::ZeroAreaPaint::Lines(subpaths)) = zero_area {
+            crate::render::zero_area::paint_zero_area_lines(
+                &mut self.buf,
+                &self.viewport,
+                &subpaths,
+                color,
+                path_binary_alpha,
                 &self.cancel,
             );
         }
@@ -24241,6 +24301,24 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
             self.state.buf.render_mode(),
             draw_state.stroke_adjustment,
         );
+        let zero_area = crate::render::zero_area::compat_zero_area_paint(
+            &self.state.buf,
+            path,
+            &ctm,
+            self.viewport_ref,
+        );
+        if let Some(crate::render::zero_area::ZeroAreaPaint::Cosmetic(segment)) = zero_area {
+            crate::render::zero_area::stroke_device_hairlines(
+                &mut self.state.buf,
+                self.viewport_ref,
+                &[segment],
+                fill_color,
+                path_binary_alpha,
+                &self.state.cancel,
+            );
+            self.state.buf.blend_mode = saved_blend;
+            return;
+        }
         if !paint_cached_path_fill(
             &mut self.state.path_fill_mask_cache,
             &mut self.state.buf,
@@ -24265,6 +24343,16 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 draw_state.flatness,
                 path_binary_alpha,
                 raster_options,
+                &self.state.cancel,
+            );
+        }
+        if let Some(crate::render::zero_area::ZeroAreaPaint::Lines(subpaths)) = zero_area {
+            crate::render::zero_area::paint_zero_area_lines(
+                &mut self.state.buf,
+                self.viewport_ref,
+                &subpaths,
+                fill_color,
+                path_binary_alpha,
                 &self.state.cancel,
             );
         }
