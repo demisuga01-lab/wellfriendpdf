@@ -83,13 +83,23 @@ during development. The loader also checks the current directory,
 `target/debug`, `target/release`, and `runtimes/<rid>/native` under both the
 current directory and the JAR/package directory.
 
-Run the smoke test directly:
+Run the smoke test directly (the other test sources are JUnit tests; run them
+through Maven or Gradle):
 
 ```powershell
 javac --enable-preview --release 25 -d bindings/java/target/classes `
   (Get-ChildItem bindings/java/src/main/java -Recurse -Filter *.java).FullName `
-  (Get-ChildItem bindings/java/src/test/java -Recurse -Filter *.java).FullName
+  bindings/java/src/test/java/io/wellfriendpdf/WellfriendPdfSmokeTest.java
 java --enable-preview --enable-native-access=ALL-UNNAMED `
+  -cp bindings/java/target/classes io.wellfriendpdf.WellfriendPdfSmokeTest
+```
+
+```bash
+javac --enable-preview --release 25 -d bindings/java/target/classes \
+  $(find bindings/java/src/main/java -name '*.java') \
+  bindings/java/src/test/java/io/wellfriendpdf/WellfriendPdfSmokeTest.java
+WELLFRIENDPDF_NATIVE_LIBRARY=target/release/libwellfriendpdf_capi.so \
+  java --enable-preview --enable-native-access=ALL-UNNAMED \
   -cp bindings/java/target/classes io.wellfriendpdf.WellfriendPdfSmokeTest
 ```
 
