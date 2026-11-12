@@ -1126,6 +1126,45 @@ pub unsafe extern "C" fn wellfriendpdf_render_contract_with_vector_raster_polici
     })
 }
 
+/// Return a copy of `contract` with the filled-rectangle snapping policy
+/// replaced.
+///
+/// `rect_snapping` accepts `Default` or `Pdfium` (PDFium's whole-pixel
+/// rectangle fast path: axis-aligned rectangle fills cover whole pixels
+/// without anti-aliasing, so abutting fills show no seams). It is
+/// case-insensitive and also accepts kebab/snake forms. NULL keeps the
+/// current value.
+///
+/// # Safety
+/// `contract` must be a valid render-contract handle returned by this library.
+/// `rect_snapping` must be NULL or NUL-terminated UTF-8. `out_contract` must
+/// be a valid writable pointer; on success it receives an owned handle that
+/// the caller must release with `wellfriendpdf_render_contract_free`.
+/// `error_out` may be NULL or a valid writable error-string pointer.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_render_contract_with_rect_snapping(
+    contract: *const WellfriendRenderContract,
+    rect_snapping: *const c_char,
+    out_contract: *mut *mut WellfriendRenderContract,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let contract = checked_render_contract(contract)?;
+        if out_contract.is_null() {
+            return Err("out_contract pointer is null".into());
+        }
+        let mut next = contract.contract.clone();
+        if let Some(value) = unsafe { optional_c_string(rect_snapping) }? {
+            next.rect_snapping = parse_contract_enum("rect_snapping", &value)?;
+        }
+        let next = validate_render_contract(next)?;
+        unsafe {
+            *out_contract = Box::into_raw(Box::new(next));
+        }
+        Ok(())
+    })
+}
+
 /// Return a copy of `contract` with a forced (high-contrast) colour scheme.
 ///
 /// Colours are packed straight-alpha `0xRRGGBBAA` values for path fill, path
@@ -15581,6 +15620,34 @@ BT /F1 12 Tf 10 150 Td (The cat sat; concatenate.) Tj ET";
         assert_eq!(value["form_highlight"]["signature"]["a"], 64);
         assert_eq!(value["form_highlight"]["push_button"]["g"], 255);
 
+        assert!(contract_json(base).get("rect_snapping").is_none());
+        let pdfium = CString::new("pdfium").unwrap();
+        let mut snapped = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_rect_snapping(
+                raster,
+                pdfium.as_ptr(),
+                &mut snapped,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let value = contract_json(snapped);
+        assert_eq!(value["rect_snapping"], "Pdfium");
+        assert_eq!(value["thin_line_mode"], "Shape", "earlier fields are kept");
+        let mut rejected_snap = ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_render_contract_with_rect_snapping(
+                base,
+                bad.as_ptr(),
+                &mut rejected_snap,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_ERROR);
+        assert!(take_error(error).contains("rect_snapping"));
+        error = ptr::null_mut();
+
         let mut png = WellfriendBuffer::empty();
         let status = unsafe {
             wellfriendpdf_document_render_page_png_with_contract_handle(
@@ -15590,8 +15657,29 @@ BT /F1 12 Tf 10 150 Td (The cat sat; concatenate.) Tj ET";
         assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
         assert!(take_buffer(png).starts_with(b"\x89PNG\r\n\x1a\n"));
 
+        let mut snapped_png = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_render_page_png_with_contract_handle(
+                doc,
+                snapped,
+                &mut snapped_png,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(take_buffer(snapped_png).starts_with(b"\x89PNG\r\n\x1a\n"));
+
         unsafe {
-            for handle in [base, raster, forced, plain, highlighted, cleared, all] {
+            for handle in [
+                base,
+                raster,
+                forced,
+                plain,
+                highlighted,
+                cleared,
+                all,
+                snapped,
+            ] {
                 wellfriendpdf_render_contract_free(handle);
             }
             wellfriendpdf_document_free(doc);

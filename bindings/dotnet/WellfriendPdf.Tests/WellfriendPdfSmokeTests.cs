@@ -815,6 +815,7 @@ public sealed class WellfriendPdfSmokeTests
         var built = contract
             .WithThinLineMode(RenderContractThinLineMode.Shape)
             .WithVectorAntialiasGamma(RenderContractVectorAntialiasGamma.Gamma15)
+            .WithRectSnapping(RenderContractRectSnapping.Pdfium)
             .WithForcedColors(
                 new RenderContractColor(0, 0, 0, 255),
                 new RenderContractColor(10, 20, 30, 255),
@@ -826,6 +827,7 @@ public sealed class WellfriendPdfSmokeTests
         var root = json.RootElement;
         Assert.Equal("Shape", root.GetProperty("thin_line_mode").GetString());
         Assert.Equal("Gamma15", root.GetProperty("vector_antialias_gamma").GetString());
+        Assert.Equal("Pdfium", root.GetProperty("rect_snapping").GetString());
         Assert.Equal(20, root.GetProperty("forced_colors").GetProperty("path_stroke").GetProperty("g").GetInt32());
         Assert.True(root.GetProperty("forced_colors").GetProperty("convert_fill_to_stroke").GetBoolean());
         Assert.Equal(80, root.GetProperty("form_highlight").GetProperty("signature").GetProperty("a").GetInt32());

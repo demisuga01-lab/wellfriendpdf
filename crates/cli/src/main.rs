@@ -3204,6 +3204,12 @@ struct RenderArgs {
     /// (Poppler/Splash, crisper edges).
     #[arg(long = "aa-gamma", alias = "vector-antialias-gamma", default_value = "linear", value_parser = ["linear", "gamma15"])]
     aa_gamma: String,
+    /// Filled-rectangle pixel snapping: default (Wellfriend/Splash), or
+    /// pdfium (PDFium's rectangle fast path: axis-aligned rectangle fills
+    /// cover whole pixels without anti-aliasing, so abutting chart bars and
+    /// table cells show no seams).
+    #[arg(long = "rect-snapping", default_value = "default", value_parser = ["default", "pdfium"])]
+    rect_snapping: String,
     /// Forced (high-contrast) colours for path and text paint: one r,g,b[,a]
     /// colour for everything, or four separated by '/' in the order
     /// path-fill/path-stroke/text-fill/text-stroke. Images and shadings keep
@@ -8926,6 +8932,7 @@ struct CliRenderContractOptions {
     forms: wellfriendpdf_engine::render::FormRenderPolicy,
     thin_line_mode: wellfriendpdf_engine::render::ThinLineMode,
     vector_antialias_gamma: wellfriendpdf_engine::render::VectorAntialiasGamma,
+    rect_snapping: wellfriendpdf_engine::render::RectSnapping,
     forced_colors: Option<wellfriendpdf_engine::render::ForcedColorScheme>,
     form_highlight: wellfriendpdf_engine::render::FormHighlightPolicy,
     max_render_pixels: Option<u64>,
@@ -8981,6 +8988,7 @@ fn render_args_have_contract_options(args: &RenderArgs) -> bool {
 fn render_args_have_raster_policy_options(args: &RenderArgs) -> bool {
     !args.thin_line_mode.eq_ignore_ascii_case("none")
         || !args.aa_gamma.eq_ignore_ascii_case("linear")
+        || !args.rect_snapping.eq_ignore_ascii_case("default")
         || args.forced_colors.is_some()
         || args.form_highlight.is_some()
         || args.form_focus_field.is_some()
@@ -9057,6 +9065,7 @@ fn parse_cli_render_contract_options(
         forms: parse_render_forms_cli(&args.forms)?,
         thin_line_mode: parse_render_thin_line_mode_cli(&args.thin_line_mode)?,
         vector_antialias_gamma: parse_render_aa_gamma_cli(&args.aa_gamma)?,
+        rect_snapping: parse_render_rect_snapping_cli(&args.rect_snapping)?,
         forced_colors: args
             .forced_colors
             .as_deref()
@@ -9314,6 +9323,18 @@ fn parse_render_aa_gamma_cli(
     }
 }
 
+fn parse_render_rect_snapping_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::RectSnapping, Box<dyn Error>> {
+    match name.to_ascii_lowercase().as_str() {
+        "default" => Ok(wellfriendpdf_engine::render::RectSnapping::Default),
+        "pdfium" => Ok(wellfriendpdf_engine::render::RectSnapping::Pdfium),
+        other => Err(usage_error(format!(
+            "unknown --rect-snapping '{other}'; use default or pdfium"
+        ))),
+    }
+}
+
 /// `r,g,b[,a]` for every path/text paint, or four such colours separated by
 /// `/` (path fill, path stroke, text fill, text stroke).
 fn parse_forced_colors_cli(
@@ -9447,6 +9468,7 @@ fn build_cli_render_contract(
     contract.forms = options.forms;
     contract.thin_line_mode = options.thin_line_mode;
     contract.vector_antialias_gamma = options.vector_antialias_gamma;
+    contract.rect_snapping = options.rect_snapping;
     contract.forced_colors = options.forced_colors;
     contract.form_highlight = options.form_highlight;
     if let Some(cap) = options.max_render_pixels {

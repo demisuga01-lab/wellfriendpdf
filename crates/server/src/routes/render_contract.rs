@@ -24,8 +24,8 @@ use wellfriendpdf_engine::render::{
     AlphaMode, AnnotationRenderPolicy, BackendSelection, ColorManagementPolicy, ColorScheme,
     CompositingPolicy, ContractColor, DeterminismPolicy, DeviceClip, DeviceMatrix, ExactnessPolicy,
     ExecutionMode, ForcedColorScheme, FormHighlightPolicy, FormRenderPolicy, HalftonePolicy,
-    OptionalContentStateId, OverprintPolicy, PageBox, PixelFormat, PrintProfile, RenderContract,
-    RenderingIntent, SmoothingPolicy, ThinLineMode, VectorAntialiasGamma,
+    OptionalContentStateId, OverprintPolicy, PageBox, PixelFormat, PrintProfile, RectSnapping,
+    RenderContract, RenderingIntent, SmoothingPolicy, ThinLineMode, VectorAntialiasGamma,
 };
 use wellfriendpdf_engine::{
     ContentEngine, FontSubstitutionLog, RenderContractTelemetryReport, RenderMode,
@@ -86,6 +86,7 @@ struct ContractFields {
     determinism: Option<String>,
     thin_line_mode: Option<String>,
     vector_antialias_gamma: Option<String>,
+    rect_snapping: Option<String>,
     forced_colors: Option<String>,
     form_highlight: Option<String>,
     max_pixels: Option<String>,
@@ -525,6 +526,7 @@ async fn read_fields(mut multipart: Multipart) -> ServerResult<ContractFields> {
             Some("vector_antialias_gamma") | Some("aa_gamma") => {
                 f.vector_antialias_gamma = text!("vector_antialias_gamma")
             }
+            Some("rect_snapping") => f.rect_snapping = text!("rect_snapping"),
             Some("forced_colors") => f.forced_colors = text!("forced_colors"),
             Some("form_highlight") => f.form_highlight = text!("form_highlight"),
             Some("max_pixels") => f.max_pixels = text!("max_pixels"),
@@ -932,6 +934,9 @@ fn apply_policy_overrides(
     if let Some(value) = optional_text(fields.vector_antialias_gamma.as_deref()) {
         contract.vector_antialias_gamma = parse_vector_antialias_gamma(value)?;
     }
+    if let Some(value) = optional_text(fields.rect_snapping.as_deref()) {
+        contract.rect_snapping = parse_rect_snapping(value)?;
+    }
     if let Some(value) = optional_text(fields.forced_colors.as_deref()) {
         contract.forced_colors = if is_off_token(value) {
             None
@@ -970,6 +975,17 @@ fn parse_vector_antialias_gamma(value: &str) -> ServerResult<VectorAntialiasGamm
         "gamma15" | "gamma-15" | "gamma-1.5" | "1.5" => Ok(VectorAntialiasGamma::Gamma15),
         _ => Err(ServerError::InvalidParameter(format!(
             "vector_antialias_gamma must be Linear or Gamma15; got '{}'",
+            value
+        ))),
+    }
+}
+
+fn parse_rect_snapping(value: &str) -> ServerResult<RectSnapping> {
+    match normalized_policy_token(value).as_str() {
+        "default" => Ok(RectSnapping::Default),
+        "pdfium" => Ok(RectSnapping::Pdfium),
+        _ => Err(ServerError::InvalidParameter(format!(
+            "rect_snapping must be Default or Pdfium; got '{}'",
             value
         ))),
     }

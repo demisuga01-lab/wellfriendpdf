@@ -85,7 +85,7 @@ use crate::render::vector_fallback::{
     form_program_is_opaque_normal_group_subset, transparency_group_color_space_is_vector_inert,
 };
 use crate::render::widget_synthesis;
-use crate::render::vector_quality::{stroke_adjusted_fill_rect, VectorRasterOptions};
+use crate::render::vector_quality::{snapped_fill_rect, VectorRasterOptions};
 use crate::render::RoundByte;
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
@@ -5073,6 +5073,7 @@ impl PageRenderer {
         plan_contract.thin_line_mode = contract.thin_line_mode;
         plan_contract.vector_antialias_gamma = contract.vector_antialias_gamma;
         plan_contract.text_gamma = contract.text_gamma;
+        plan_contract.rect_snapping = contract.rect_snapping;
         plan_contract.forced_colors = contract.forced_colors;
         let mut plan_resource_budget = resource_budget;
         let full_plan_pixels =
@@ -5803,6 +5804,7 @@ impl PageRenderer {
         accepted_expected.thin_line_mode = contract.thin_line_mode;
         accepted_expected.vector_antialias_gamma = contract.vector_antialias_gamma;
         accepted_expected.text_gamma = contract.text_gamma;
+        accepted_expected.rect_snapping = contract.rect_snapping;
         if contract.overprint != OverprintPolicy::PreserveSeparations {
             accepted_expected.overprint = contract.overprint;
         }
@@ -5947,6 +5949,8 @@ impl PageRenderer {
         );
         let _text_raster_guard =
             crate::render::vector_quality::TextRasterContractGuard::enter(contract.text_gamma);
+        let _rect_snap_guard =
+            crate::render::vector_quality::RectSnapContractGuard::enter(contract.rect_snapping);
         let mut state = RenderState::new_with_shared_document_cache(
             buf,
             viewport.clone(),
@@ -25358,11 +25362,9 @@ fn paint_cached_path_fill(
         return false;
     }
     let device_t = ctm.concat(&viewport.to_transform());
-    if options.stroke_adjust {
-        if let Some((x, y, width, height)) = stroke_adjusted_fill_rect(path, &device_t) {
-            buf.fill_rect(x, y, width, height, color);
-            return true;
-        }
+    if let Some((x, y, width, height)) = snapped_fill_rect(path, &device_t, options) {
+        buf.fill_rect(x, y, width, height, color);
+        return true;
     }
     if [
         device_t.a, device_t.b, device_t.c, device_t.d, device_t.e, device_t.f,

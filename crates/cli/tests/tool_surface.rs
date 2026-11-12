@@ -2965,6 +2965,8 @@ fn render_contract_raster_policy_options_reach_the_contract() {
         "shape",
         "--aa-gamma",
         "gamma15",
+        "--rect-snapping",
+        "pdfium",
         "--forced-colors",
         "0,0,0/10,20,30/255,255,0,200/1,2,3",
         "--convert-fill-to-stroke",
@@ -2985,6 +2987,7 @@ fn render_contract_raster_policy_options_reach_the_contract() {
     let contract: serde_json::Value = serde_json::from_slice(&contract.1).unwrap();
     assert_eq!(contract["thin_line_mode"], "Shape");
     assert_eq!(contract["vector_antialias_gamma"], "Gamma15");
+    assert_eq!(contract["rect_snapping"], "Pdfium");
     assert_eq!(contract["forced_colors"]["path_fill"]["a"], 255);
     assert_eq!(contract["forced_colors"]["path_stroke"]["g"], 20);
     assert_eq!(contract["forced_colors"]["text_fill"]["a"], 200);

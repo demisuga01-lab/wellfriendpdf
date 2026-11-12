@@ -587,6 +587,7 @@ pub(crate) fn unsupported_active_cpu_contract_fields(
     push_if_changed!(thin_line_mode);
     push_if_changed!(vector_antialias_gamma);
     push_if_changed!(text_gamma);
+    push_if_changed!(rect_snapping);
     push_if_changed!(grayscale);
     push_if_changed!(forced_colors);
     push_if_changed!(color_scheme);
@@ -2786,6 +2787,7 @@ impl ContentEngine {
         accepted_expected.thin_line_mode = contract.thin_line_mode;
         accepted_expected.vector_antialias_gamma = contract.vector_antialias_gamma;
         accepted_expected.text_gamma = contract.text_gamma;
+        accepted_expected.rect_snapping = contract.rect_snapping;
         if contract.overprint != OverprintPolicy::PreserveSeparations {
             accepted_expected.overprint = contract.overprint;
         }
@@ -2811,6 +2813,8 @@ impl ContentEngine {
         );
         let _text_raster_guard =
             crate::render::vector_quality::TextRasterContractGuard::enter(contract.text_gamma);
+        let _rect_snap_guard =
+            crate::render::vector_quality::RectSnapContractGuard::enter(contract.rect_snapping);
         // Only the requested window is rasterized; objects outside it are
         // culled against their retained device bounds.
         let mut buffer = PageRenderer::render_contract_window_with_cache(
@@ -6934,6 +6938,7 @@ mod tests {
             crate::render::ContractColor::default(),
         ));
         every_field.text_gamma = crate::render::TextGamma::Pdfium;
+        every_field.rect_snapping = crate::render::RectSnapping::Pdfium;
         every_field.xfa = crate::render::XfaRenderPolicy::Foreground;
         let contract_fields = serde_json::to_value(&every_field)
             .expect("serialize contract")

@@ -1264,6 +1264,10 @@ public final class WellfriendPdf {
             return withEnum("vector_antialias_gamma", vectorAntialiasGamma, "vectorAntialiasGamma");
         }
 
+        public RenderContract withRectSnapping(RectSnapping rectSnapping) {
+            return withEnum("rect_snapping", rectSnapping, "rectSnapping");
+        }
+
         /** One forced colour, packed straight-alpha {@code 0xRRGGBBAA}, for every path and text paint. */
         public RenderContract withForcedColors(int foregroundRgba) {
             return withForcedColors(foregroundRgba, foregroundRgba, foregroundRgba, foregroundRgba, false);
@@ -1419,6 +1423,7 @@ public final class WellfriendPdf {
             requiredEnum("determinism", DeterminismPolicy.class);
             optionalEnum("thin_line_mode", ThinLineMode.class);
             optionalEnum("vector_antialias_gamma", VectorAntialiasGamma.class);
+            optionalEnum("rect_snapping", RectSnapping.class);
             Object forcedColors = values.get("forced_colors");
             if (forcedColors != null) {
                 if (!(forcedColors instanceof Map<?, ?>)) {
@@ -1736,6 +1741,12 @@ public final class WellfriendPdf {
         public enum VectorAntialiasGamma {
             Linear,
             Gamma15
+        }
+
+        /** Filled-rectangle pixel snapping: Default (Wellfriend/Splash) or Pdfium (whole-pixel rectangle fills). */
+        public enum RectSnapping {
+            Default,
+            Pdfium
         }
     }
 

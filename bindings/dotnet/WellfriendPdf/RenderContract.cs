@@ -102,6 +102,11 @@ public sealed record RenderContract
     public RenderContractVectorAntialiasGamma VectorAntialiasGamma { get; init; } =
         RenderContractVectorAntialiasGamma.Linear;
 
+    /// <summary>Filled-rectangle pixel snapping; omitted from the JSON while Default.</summary>
+    [JsonPropertyName("rect_snapping")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public RenderContractRectSnapping RectSnapping { get; init; } = RenderContractRectSnapping.Default;
+
     [JsonPropertyName("grayscale")]
     public bool Grayscale { get; init; }
 
@@ -339,6 +344,11 @@ public sealed record RenderContract
         };
     }
 
+    public RenderContract WithRectSnapping(RenderContractRectSnapping rectSnapping)
+    {
+        return this with { RectSnapping = RequireDefined(rectSnapping, nameof(rectSnapping)) };
+    }
+
     /// <summary>One forced colour for every path and text paint.</summary>
     public RenderContract WithForcedColors(RenderContractColor foreground, bool convertFillToStroke = false)
     {
@@ -468,6 +478,7 @@ public sealed record RenderContract
         ValidateEnum(SubpixelText, nameof(SubpixelText));
         ValidateEnum(ThinLineMode, nameof(ThinLineMode));
         ValidateEnum(VectorAntialiasGamma, nameof(VectorAntialiasGamma));
+        ValidateEnum(RectSnapping, nameof(RectSnapping));
         ValidateEnum(ColorScheme, nameof(ColorScheme));
         ValidateEnum(PrintProfile, nameof(PrintProfile));
         ValidateEnum(Halftone, nameof(Halftone));
@@ -736,6 +747,13 @@ public enum RenderContractVectorAntialiasGamma
 {
     Linear,
     Gamma15,
+}
+
+/// <summary>Filled-rectangle pixel snapping: Default (Wellfriend/Splash) or Pdfium (whole-pixel rectangle fills, no seams).</summary>
+public enum RenderContractRectSnapping
+{
+    Default,
+    Pdfium,
 }
 
 public enum RenderContractAnnotationPolicy

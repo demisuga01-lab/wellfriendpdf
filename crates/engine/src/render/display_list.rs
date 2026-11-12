@@ -28,7 +28,7 @@ use crate::render::plan::{
     PatternPaintPhase, PatternPathDescriptor,
 };
 use crate::render::transform::{Transform2D, Viewport};
-use crate::render::vector_quality::{stroke_adjusted_fill_rect, VectorRasterOptions};
+use crate::render::vector_quality::{snapped_fill_rect, VectorRasterOptions};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -1201,11 +1201,9 @@ fn cpu_paint_cached_path_fill(
         return false;
     }
     let device_t = ctm.concat(&viewport.to_transform());
-    if options.stroke_adjust {
-        if let Some((x, y, width, height)) = stroke_adjusted_fill_rect(path, &device_t) {
-            buf.fill_rect(x, y, width, height, color);
-            return true;
-        }
+    if let Some((x, y, width, height)) = snapped_fill_rect(path, &device_t, options) {
+        buf.fill_rect(x, y, width, height, color);
+        return true;
     }
     if let Some((x, y, width, height)) = axis_aligned_integer_rect(path, ctm, viewport) {
         buf.fill_rect(x, y, width, height, color);

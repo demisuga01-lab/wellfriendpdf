@@ -920,6 +920,18 @@ mod wasm_api {
             validate_render_contract(contract)
         }
 
+        /// Filled-rectangle pixel snapping: default or pdfium (PDFium's
+        /// whole-pixel rectangle fast path; abutting fills show no seams).
+        #[wasm_bindgen(js_name = withRectSnapping)]
+        pub fn with_rect_snapping(
+            &self,
+            rect_snapping: &str,
+        ) -> Result<WellfriendRenderContract, JsValue> {
+            let mut contract = self.contract.clone();
+            contract.rect_snapping = parse_contract_enum("rect_snapping", rect_snapping)?;
+            validate_render_contract(contract)
+        }
+
         /// Forced (high-contrast) paint colours as packed straight-alpha
         /// `0xRRGGBBAA` numbers for path fill, path stroke, text fill and
         /// text stroke.

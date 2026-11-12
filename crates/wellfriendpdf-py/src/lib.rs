@@ -415,6 +415,14 @@ impl PyRenderContract {
         validate_py_render_contract(contract)
     }
 
+    /// Filled-rectangle pixel snapping: `default` or `pdfium` (PDFium's
+    /// whole-pixel rectangle fast path; abutting fills show no seams).
+    fn with_rect_snapping(&self, rect_snapping: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.rect_snapping = parse_render_contract_enum_py("rect_snapping", rect_snapping)?;
+        validate_py_render_contract(contract)
+    }
+
     /// Forced (high-contrast) paint colours. Colours are `(r, g, b)` or
     /// `(r, g, b, a)` tuples; omitted stroke/text colours default to
     /// `path_fill`.

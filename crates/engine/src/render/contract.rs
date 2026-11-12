@@ -171,6 +171,33 @@ impl TextGamma {
     }
 }
 
+/// Pixel snapping of filled, axis-aligned rectangles.
+///
+/// * `Default`: Wellfriend's regular behaviour. In Compatibility mode a
+///   rectangle fill is stroke-adjusted (Splash rounds each edge to the
+///   nearest pixel boundary); HighQuality mode anti-aliases it unless the
+///   content asks for `/SA true`.
+/// * `Pdfium`: PDFium's rectangle fast path (`CFX_RenderDevice::DrawPath`).
+///   A fill-only path that is a single device-axis-aligned rectangle is
+///   filled as whole pixels, without anti-aliasing: the enclosing pixel
+///   rectangle, trimmed to `ceil(width) x ceil(height)` (at least one pixel)
+///   by dropping the less-covered edge column/row. Abutting chart bars and
+///   table cells then never show anti-aliased seams. Other paths are
+///   rasterized as in `Default` mode minus the Splash rectangle snapping,
+///   which PDFium does not have.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RectSnapping {
+    #[default]
+    Default,
+    Pdfium,
+}
+
+impl RectSnapping {
+    pub fn is_default(&self) -> bool {
+        *self == RectSnapping::Default
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AnnotationRenderPolicy {
     #[default]
@@ -753,6 +780,14 @@ pub const RENDER_CONTRACT_FIELD_EFFECTS: &[RenderContractFieldEffect] = &[
         effect: "glyph-coverage-text-gamma-table",
     },
     RenderContractFieldEffect {
+        field: "rect_snapping",
+        cache_identity: true,
+        validation: false,
+        active_execution: true,
+        binding_builder: true,
+        effect: "pdfium-whole-pixel-rectangle-fill-snapping",
+    },
+    RenderContractFieldEffect {
         field: "grayscale",
         cache_identity: true,
         validation: false,
@@ -903,6 +938,11 @@ pub struct RenderContract {
     /// cache identities stay stable.
     #[serde(default, skip_serializing_if = "TextGamma::is_linear")]
     pub text_gamma: TextGamma,
+    /// Filled-rectangle pixel snapping (PDFium rectangle fast path). Off
+    /// by default; the field is omitted from the serialized contract while
+    /// default so existing cache identities stay stable.
+    #[serde(default, skip_serializing_if = "RectSnapping::is_default")]
+    pub rect_snapping: RectSnapping,
     pub grayscale: bool,
     pub color_scheme: ColorScheme,
     /// Optional forced (high-contrast) paint colours for paths and text.
@@ -968,6 +1008,7 @@ impl RenderContract {
             thin_line_mode: ThinLineMode::None,
             vector_antialias_gamma: VectorAntialiasGamma::Linear,
             text_gamma: TextGamma::Linear,
+            rect_snapping: RectSnapping::Default,
             grayscale: false,
             color_scheme: ColorScheme::Light,
             forced_colors: None,
@@ -1323,6 +1364,26 @@ mod tests {
     }
 
     #[test]
+    fn rect_snapping_changes_identity_only_when_set() {
+        let base = contract(1);
+        assert_eq!(base.rect_snapping, RectSnapping::Default);
+        let json = serde_json::to_value(&base).expect("serialize contract");
+        assert!(
+            json.get("rect_snapping").is_none(),
+            "default rectangle snapping keeps the legacy serialized identity"
+        );
+        let mut snapped = base.clone();
+        snapped.rect_snapping = RectSnapping::Pdfium;
+        assert_ne!(base.cache_fingerprint(), snapped.cache_fingerprint());
+        let value = serde_json::to_value(&snapped).unwrap();
+        assert_eq!(value["rect_snapping"], "Pdfium");
+        let parsed: RenderContract = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, snapped);
+        let legacy: RenderContract = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.rect_snapping, RectSnapping::Default);
+    }
+
+    #[test]
     fn forced_colors_change_identity_only_when_set() {
         let base = contract(1);
         let json = serde_json::to_value(&base).expect("serialize contract");
@@ -1357,6 +1418,7 @@ mod tests {
         contract.forced_colors = Some(ForcedColorScheme::uniform(ContractColor::default()));
         contract.xfa = XfaRenderPolicy::Foreground;
         contract.text_gamma = TextGamma::Pdfium;
+        contract.rect_snapping = RectSnapping::Pdfium;
         let serialized = serde_json::to_value(&contract).expect("serialize render contract");
         let serialized_fields = serialized
             .as_object()
