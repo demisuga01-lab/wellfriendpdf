@@ -16701,6 +16701,7 @@ impl<'a> RenderState<'a> {
     }
 
     fn render_page_annotations(&mut self) {
+        let _pass_cache = crate::render::annotation_pass_cache::AnnotationPassCacheGuard::enter();
         // XFA foreground (static XFA forms): the XFA fields replace the
         // page's widget annotations and are drawn after the other annotations.
         let xfa_overlay = if self.form_policy == FormRenderPolicy::Include {
@@ -31177,16 +31178,19 @@ fn inherited_field_integer(chain: &[PdfDictionary], key: &str) -> Option<i64> {
     chain.iter().find_map(|dict| dict.get_integer(key))
 }
 
+/// The catalog's `/AcroForm` dictionary, resolved once per annotation pass.
 fn resolve_acroform_dict(
     engine: &ContentEngine,
     reader: &crate::reader::PdfReader,
-) -> Option<PdfDictionary> {
-    let catalog = engine.document().get_catalog().ok()?;
-    let acroform = catalog.get("AcroForm")?.clone();
-    match reader.resolve(acroform).ok()? {
-        PdfObject::Dictionary(dict) => Some(dict),
-        _ => None,
-    }
+) -> Option<Arc<PdfDictionary>> {
+    crate::render::annotation_pass_cache::acroform(|| {
+        let catalog = engine.document().get_catalog().ok()?;
+        let acroform = catalog.get("AcroForm")?.clone();
+        match reader.resolve(acroform).ok()? {
+            PdfObject::Dictionary(dict) => Some(dict),
+            _ => None,
+        }
+    })
 }
 
 fn object_string_bytes(obj: &PdfObject) -> Option<Vec<u8>> {

@@ -1,3 +1,4 @@
+pub(crate) mod annotation_pass_cache;
 pub(crate) mod annotation_synthesis;
 pub(crate) mod widget_synthesis;
 pub mod buffer;
