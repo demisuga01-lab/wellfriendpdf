@@ -12366,7 +12366,7 @@ impl<'a> RenderState<'a> {
                 self.inline_begin_pending = false;
                 // Stash the inline image parameters; the pixel bytes arrive in
                 // the following `inline_image_data` operation.
-                self.pending_inline = Some(op.operands.clone());
+                self.pending_inline = Some(op.operands.to_vec());
             }
             "inline_image_data" => {
                 let Some(params) = self.pending_inline.take() else {

@@ -3,7 +3,7 @@ pub mod parser;
 pub mod state;
 pub mod tokenizer;
 
-pub use operation::{ContentOperation, Operand};
+pub use operation::{ContentOperation, Operand, Operands, Operator};
 pub use parser::ContentParser;
 pub use state::{
     concat_matrix, transform_point, transform_vector, translate_matrix, BlendMode, Color,

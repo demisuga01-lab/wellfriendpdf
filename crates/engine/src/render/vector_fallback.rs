@@ -636,7 +636,7 @@ fn classify_ops_for_vector_output(
                         reason: "unsupported inline image",
                     };
                 }
-                pending_inline_params = Some(op.operands.clone());
+                pending_inline_params = Some(op.operands.to_vec());
                 inline_begin_pending = false;
             }
             "inline_image_data" => {

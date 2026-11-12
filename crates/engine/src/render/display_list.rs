@@ -216,7 +216,7 @@ impl RetainedTextOp {
     pub fn from_content_operation(op: &ContentOperation) -> Self {
         if let Some(reason) = text_operand_refusal(op) {
             return Self::Unsupported {
-                operator: op.operator.clone(),
+                operator: op.operator.to_string(),
                 reason,
             };
         }
@@ -2527,7 +2527,7 @@ impl<'a> DisplayListBuilder<'a> {
                     return;
                 }
                 self.inline_begin_pending = false;
-                self.pending_inline_params = Some(op.operands.clone());
+                self.pending_inline_params = Some(op.operands.to_vec());
             }
             "inline_image_data" => self.push_native_inline_image(op),
             "EI" => {
@@ -2571,7 +2571,7 @@ impl<'a> DisplayListBuilder<'a> {
 
     fn reject_graphics_state_op(&mut self, op: &ContentOperation, reason: String) {
         self.unsupported.push(UnsupportedRenderOp {
-            operator: op.operator.clone(),
+            operator: op.operator.to_string(),
             reason,
         });
     }
@@ -2580,7 +2580,7 @@ impl<'a> DisplayListBuilder<'a> {
         match path_operand_refusal(op, self.path.current_point.is_some()) {
             Some(reason) => {
                 self.unsupported.push(UnsupportedRenderOp {
-                    operator: op.operator.clone(),
+                    operator: op.operator.to_string(),
                     reason,
                 });
                 false
@@ -2592,7 +2592,7 @@ impl<'a> DisplayListBuilder<'a> {
     fn set_pending_clip(&mut self, op: &ContentOperation, rule: FillRule) -> bool {
         if self.pending_clip.is_some() {
             self.unsupported.push(UnsupportedRenderOp {
-                operator: op.operator.clone(),
+                operator: op.operator.to_string(),
                 reason:
                     "malformed path clipping sequence: W/W* was not terminated before another clipping operator"
                         .to_string(),
@@ -2608,7 +2608,7 @@ impl<'a> DisplayListBuilder<'a> {
         match text_operand_refusal(op) {
             Some(reason) => {
                 self.unsupported.push(UnsupportedRenderOp {
-                    operator: op.operator.clone(),
+                    operator: op.operator.to_string(),
                     reason,
                 });
                 false
@@ -2634,7 +2634,7 @@ impl<'a> DisplayListBuilder<'a> {
     fn validate_marked_content_op(&mut self, op: &ContentOperation) -> bool {
         if let Some(reason) = marked_content_operand_refusal(op) {
             self.unsupported.push(UnsupportedRenderOp {
-                operator: op.operator.clone(),
+                operator: op.operator.to_string(),
                 reason,
             });
             return false;
@@ -2647,7 +2647,7 @@ impl<'a> DisplayListBuilder<'a> {
             "EMC" => {
                 if self.marked_content_depth == 0 {
                     self.unsupported.push(UnsupportedRenderOp {
-                        operator: op.operator.clone(),
+                        operator: op.operator.to_string(),
                         reason:
                             "malformed marked-content operator 'EMC': end has no active marked-content sequence"
                                 .to_string(),
@@ -2663,7 +2663,7 @@ impl<'a> DisplayListBuilder<'a> {
             "EX" => {
                 if self.compatibility_section_depth == 0 {
                     self.unsupported.push(UnsupportedRenderOp {
-                        operator: op.operator.clone(),
+                        operator: op.operator.to_string(),
                         reason:
                             "malformed compatibility-section operator 'EX': end has no active compatibility section"
                                 .to_string(),
@@ -2681,7 +2681,7 @@ impl<'a> DisplayListBuilder<'a> {
         match resource_invocation_operand_refusal(op) {
             Some(reason) => {
                 self.unsupported.push(UnsupportedRenderOp {
-                    operator: op.operator.clone(),
+                    operator: op.operator.to_string(),
                     reason,
                 });
                 false
@@ -2694,7 +2694,7 @@ impl<'a> DisplayListBuilder<'a> {
         match type3_glyph_metric_operand_refusal(op) {
             Some(reason) => {
                 self.unsupported.push(UnsupportedRenderOp {
-                    operator: op.operator.clone(),
+                    operator: op.operator.to_string(),
                     reason,
                 });
                 false
@@ -2931,7 +2931,7 @@ impl<'a> DisplayListBuilder<'a> {
     fn push_stateful_path_run(&mut self, paint_op: &ContentOperation) {
         let Some(phase) = PatternPaintPhase::from_operator(paint_op.operator.as_str()) else {
             self.unsupported.push(UnsupportedRenderOp {
-                operator: paint_op.operator.clone(),
+                operator: paint_op.operator.to_string(),
                 reason:
                     "stateful path paint operator cannot be represented as a typed pattern path"
                         .to_string(),

@@ -12680,7 +12680,7 @@ fn lex_content_inner(data: &[u8], tolerant: bool) -> Result<Vec<LexicalToken>> {
                 }
                 LexicalKind::ReferenceMarker
             }
-            ContentToken::Operator(operator) => LexicalKind::Word(operator),
+            ContentToken::Operator(operator) => LexicalKind::Word(operator.into()),
         };
         if containers.len() > 256 {
             return Err(WellfriendError::ResourceLimit(

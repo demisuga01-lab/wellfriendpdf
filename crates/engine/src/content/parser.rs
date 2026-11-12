@@ -1,5 +1,5 @@
 use crate::cancel::CancelToken;
-use crate::content::operation::{ContentOperation, Operand};
+use crate::content::operation::{ContentOperation, Operand, Operands};
 use crate::content::tokenizer::{ContentToken, ContentTokenizer};
 use crate::error::{Result, WellfriendError};
 use crate::object::{PdfDictionary, PdfObject};
@@ -181,10 +181,13 @@ impl ContentParser {
                 }
                 ContentToken::Operator(op) => {
                     ensure_content_operation_capacity(operations.len(), max_operations)?;
-                    let mut operands = drain_operands(&mut stack);
-                    if op == "ID" {
-                        operands = normalize_inline_image_operands(operands)?;
-                    }
+                    let operands = if op == "ID" {
+                        Operands::from(normalize_inline_image_operands(
+                            drain_operands(&mut stack).into_vec(),
+                        )?)
+                    } else {
+                        drain_operands(&mut stack)
+                    };
                     if array_depth > 0 {
                         if propagate_all_errors {
                             return Err(WellfriendError::MalformedPdf(format!(
@@ -194,7 +197,7 @@ impl ContentParser {
                         log::warn!("operator '{op}' encountered before closing array");
                         array_depth = 0;
                     }
-                    operations.push(ContentOperation::new(op, operands));
+                    operations.push(ContentOperation::from_parts(op, operands));
                 }
                 ContentToken::InlineImageData(bytes) => {
                     if !stack.is_empty() {
@@ -240,6 +243,9 @@ impl ContentParser {
             );
         }
 
+        // The program is kept (and cached) for the page's lifetime; drop the
+        // up-to-2x growth slack of the vector.
+        operations.shrink_to_fit();
         Ok(operations)
     }
 }
@@ -367,8 +373,10 @@ fn collect_dictionary(stack: &mut Vec<StackItem>) -> Option<Vec<(String, Operand
     None
 }
 
-fn drain_operands(stack: &mut Vec<StackItem>) -> Vec<Operand> {
-    let mut operands = Vec::with_capacity(stack.len());
+/// The operands collected for the operator just read. Up to two are stored
+/// inline (no allocation); longer lists are allocated once at their size.
+fn drain_operands(stack: &mut Vec<StackItem>) -> Operands {
+    let mut operands = Operands::with_capacity(stack.len());
     for item in stack.drain(..) {
         match item {
             StackItem::Operand(operand) => operands.push(operand),

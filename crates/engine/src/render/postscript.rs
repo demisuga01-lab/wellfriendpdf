@@ -1211,7 +1211,7 @@ impl PsRenderState<'_> {
             }
             "ID" => {
                 if self.regional_inline_image_count > 0 {
-                    self.pending_inline_params = Some(op.operands.clone());
+                    self.pending_inline_params = Some(op.operands.to_vec());
                 }
                 self.gs.process(op);
             }
