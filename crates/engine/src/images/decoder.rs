@@ -785,7 +785,7 @@ impl ImageDecoder {
                 "JBIG2Decode" => {
                     Self::ensure_monochrome_terminal_color_space(last_filter, color_space)?;
                     return Self::finish_monochrome_decoded_image(
-                        jbig2::decode(&decompressed, None)?,
+                        jbig2::decode_with_page_size(&decompressed, None, Some((width, height)))?,
                         width,
                         height,
                         "inline image",
@@ -992,7 +992,7 @@ impl ImageDecoder {
                     "JBIG2Decode" => {
                         Self::ensure_monochrome_terminal_color_space(filter, color_space)?;
                         Self::finish_monochrome_decoded_image(
-                            jbig2::decode(&data, None)?,
+                            jbig2::decode_with_page_size(&data, None, Some((width, height)))?,
                             width,
                             height,
                             "inline image",
@@ -1821,7 +1821,11 @@ impl ImageDecoder {
                 let decode_params = image_decode_params(dict, Some(reader), filter)?;
                 let globals = jbig2_globals(decode_params.as_ref(), reader, limits)?;
                 Self::finish_monochrome_decoded_image(
-                    jbig2::decode(data, globals.as_deref())?,
+                    jbig2::decode_with_page_size(
+                        data,
+                        globals.as_deref(),
+                        Some((image.width, image.height)),
+                    )?,
                     image.width,
                     image.height,
                     &format!("image {}", image.xobject_name),
