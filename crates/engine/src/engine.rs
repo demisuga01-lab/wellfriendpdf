@@ -3533,6 +3533,8 @@ impl ContentEngine {
         page_number: usize,
         options: &crate::text::FlowLayoutOptions,
     ) -> Result<String> {
+        // The fallbacks below return empty text for a missing page.
+        self.validate_page(page_number)?;
         if let Ok(page) = self.analyze_page_flows(page_number, options) {
             let text = page.text_with(options.dehyphenate);
             if !text.trim().is_empty() {
