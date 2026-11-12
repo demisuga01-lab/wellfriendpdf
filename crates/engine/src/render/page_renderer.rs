@@ -6718,6 +6718,9 @@ struct RenderState<'a> {
     /// Set while text is stroked into the coverage mask a stroke pattern is
     /// painted through.
     pattern_text_stroke_pass: bool,
+    /// Soft-mask groups are drawn without stroke adjustment: Poppler's
+    /// transparency-group Splash does not adjust, and PDFium never does.
+    stroke_adjust_suppressed: bool,
     /// Nesting depth of pattern paints, during which forced colours are
     /// suspended (pattern cells keep their real colours, as in PDFium).
     forced_color_suppression: u32,
@@ -8616,6 +8619,7 @@ impl<'a> RenderState<'a> {
             forced_color_text_depth: 0,
             pattern_text_stroke_pass: false,
             forced_color_suppression: 0,
+            stroke_adjust_suppressed: false,
             pattern_inherited_alpha: (1.0, 1.0),
             gs_restore_floor: 0,
             type3_blue_zones: Type3BlueState::default(),
@@ -8781,7 +8785,18 @@ impl<'a> RenderState<'a> {
     /// Vector raster options for a non-glyph path paint under the current
     /// graphics state (stroke adjustment follows the render mode and `/SA`).
     fn path_raster_options(&self) -> VectorRasterOptions {
-        VectorRasterOptions::for_path_paint(self.buf.render_mode(), self.gs.stroke_adjustment)
+        self.raster_options_for(self.gs.stroke_adjustment)
+    }
+
+    fn raster_options_for(&self, stroke_adjustment_requested: bool) -> VectorRasterOptions {
+        let mut options = VectorRasterOptions::for_path_paint(
+            self.buf.render_mode(),
+            stroke_adjustment_requested,
+        );
+        if self.stroke_adjust_suppressed {
+            options.stroke_adjust = false;
+        }
+        options
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -11572,10 +11587,7 @@ impl<'a> RenderState<'a> {
                 let saved_blend = self.buf.blend_mode;
                 self.buf.blend_mode = state.blend_mode;
                 let path_binary_alpha = self.path_smoothing_disabled();
-                let raster_options = VectorRasterOptions::for_path_paint(
-                    self.buf.render_mode(),
-                    state.stroke_adjustment,
-                );
+                let raster_options = self.raster_options_for(state.stroke_adjustment);
                 let zero_area = crate::render::zero_area::compat_zero_area_paint(
                     &self.buf,
                     path,
@@ -11663,10 +11675,7 @@ impl<'a> RenderState<'a> {
                 let saved_blend = self.buf.blend_mode;
                 self.buf.blend_mode = state.blend_mode;
                 let path_binary_alpha = self.path_smoothing_disabled();
-                let raster_options = VectorRasterOptions::for_path_paint(
-                    self.buf.render_mode(),
-                    state.stroke_adjustment,
-                );
+                let raster_options = self.raster_options_for(state.stroke_adjustment);
                 if !paint_cached_path_stroke(
                     &mut self.path_stroke_mask_cache,
                     &mut self.buf,
@@ -14675,6 +14684,7 @@ impl<'a> RenderState<'a> {
             forced_color_text_depth: 0,
             pattern_text_stroke_pass: false,
             forced_color_suppression: 0,
+            stroke_adjust_suppressed: true,
             pattern_inherited_alpha: (1.0, 1.0),
             gs_restore_floor: 0,
             type3_blue_zones: Type3BlueState::default(),
@@ -16554,6 +16564,7 @@ impl<'a> RenderState<'a> {
             forced_color_text_depth: self.forced_color_text_depth,
             pattern_text_stroke_pass: false,
             forced_color_suppression: self.forced_color_suppression,
+            stroke_adjust_suppressed: self.stroke_adjust_suppressed,
             pattern_inherited_alpha: self.pattern_inherited_alpha,
             gs_restore_floor: 0,
             type3_blue_zones: std::mem::take(&mut self.type3_blue_zones),
@@ -24298,10 +24309,7 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
             return;
         }
         let path_binary_alpha = self.state.path_smoothing_disabled();
-        let raster_options = VectorRasterOptions::for_path_paint(
-            self.state.buf.render_mode(),
-            draw_state.stroke_adjustment,
-        );
+        let raster_options = self.state.raster_options_for(draw_state.stroke_adjustment);
         let zero_area = crate::render::zero_area::compat_zero_area_paint(
             &self.state.buf,
             path,
@@ -24386,10 +24394,7 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
             return;
         }
         let path_binary_alpha = self.state.path_smoothing_disabled();
-        let raster_options = VectorRasterOptions::for_path_paint(
-            self.state.buf.render_mode(),
-            draw_state.stroke_adjustment,
-        );
+        let raster_options = self.state.raster_options_for(draw_state.stroke_adjustment);
         if !paint_cached_path_stroke(
             &mut self.state.path_stroke_mask_cache,
             &mut self.state.buf,
