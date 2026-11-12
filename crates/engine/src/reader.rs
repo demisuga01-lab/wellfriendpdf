@@ -1353,20 +1353,32 @@ impl PdfReader {
                 // of decrypting the containing ObjStm, so they must NOT be
                 // decrypted again here (PDF 32000-1 §7.6.2 note).
                 self.ensure_object_stream_cached(stream_obj)?;
-                let cache = self
-                    .object_stream_cache
-                    .read()
-                    .expect("object stream cache lock poisoned");
-                let objects = cache
-                    .get(&stream_obj)
-                    .ok_or(WellfriendError::MissingObject { number, generation })?;
-                let (actual_index, object) = objects
-                    .get(&number)
-                    .ok_or(WellfriendError::MissingObject { number, generation })?;
-                if *actual_index != index {
+                let cached = {
+                    let cache = self
+                        .object_stream_cache
+                        .read()
+                        .expect("object stream cache lock poisoned");
+                    let objects = cache
+                        .get(&stream_obj)
+                        .ok_or(WellfriendError::MissingObject { number, generation })?;
+                    match objects.get(&number) {
+                        Some((actual_index, object)) if *actual_index == index => {
+                            Some(Arc::clone(object))
+                        }
+                        _ => None,
+                    }
+                };
+                if let Some(object) = cached {
+                    return Ok(object);
+                }
+                // An object stream may hold several copies of one object
+                // number; the cache keeps the first, and the xref entry's
+                // member index selects the copy that is meant.
+                let (member_number, object) = self.object_stream_member(stream_obj, index)?;
+                if member_number != number {
                     return Err(WellfriendError::MissingObject { number, generation });
                 }
-                Ok(Arc::clone(object))
+                Ok(Arc::new(object))
             }
         }
     }
@@ -1425,15 +1437,45 @@ impl PdfReader {
         // Trust the declared /Length only when `endstream` follows it inside
         // the object; otherwise (Length too short, too long, or missing) find
         // the real end of the body, as Poppler does.
-        let declared_end = header
+        let declared_length = header
             .length
-            .and_then(|length| usize::try_from(length).ok())
+            .and_then(|length| usize::try_from(length).ok());
+        let declared_end = declared_length
             .and_then(|length| stream_start.checked_add(length))
             .filter(|end| *end <= window_end);
-        let verified_end = match declared_end {
+        let mut stream_start = stream_start;
+        let mut verified_end = match declared_end {
             Some(end) if self.endstream_follows(end, window_end)? => Some(end),
             _ => None,
         };
+        // Junk after the `stream` keyword on its line (`stream   "x"`): the
+        // data starts on the next line when /Length confirms it (PDFium).
+        let keyword_line_ends = header.stream_start > 0
+            && matches!(header_bytes[header.stream_start - 1], b'\n' | b'\r');
+        if verified_end.is_none() && !keyword_line_ends {
+            let next_line = header_bytes[header.stream_start..]
+                .iter()
+                .position(|byte| matches!(byte, b'\r' | b'\n'))
+                .map(|rel| {
+                    let eol = header.stream_start + rel;
+                    let skip = if header_bytes[eol] == b'\r'
+                        && header_bytes.get(eol + 1) == Some(&b'\n')
+                    {
+                        2
+                    } else {
+                        1
+                    };
+                    offset + eol + skip
+                });
+            if let (Some(start), Some(length)) = (next_line, declared_length) {
+                if let Some(end) = start.checked_add(length).filter(|end| *end <= window_end) {
+                    if self.endstream_follows(end, window_end)? {
+                        stream_start = start;
+                        verified_end = Some(end);
+                    }
+                }
+            }
+        }
         let stream_end = match verified_end {
             Some(end) => end,
             None => {
@@ -1472,7 +1514,7 @@ impl PdfReader {
             .iter()
             .position(|byte| !is_pdf_whitespace(*byte))
             .unwrap_or(probe.len());
-        Ok(probe[start..].starts_with(b"endstream"))
+        Ok(crate::parser::endstream_keyword_at(&probe, start))
     }
 
     /// Offset where a stream body really ends: the first `endstream` after
@@ -1491,8 +1533,20 @@ impl PdfReader {
                 &owned
             }
         };
-        let Some(marker) = find_marker_accelerated(window, b"endstream") else {
-            return Ok(None);
+        // Like PDFium, end at the first `endstream` or `endobj` that stands
+        // as a keyword, so `eendstream`, `endstream.` or `(endstream ...)`
+        // inside the data do not cut it short; with neither keyword, a bare
+        // `endstream` still ends it.
+        let keyword_end = crate::parser::find_keyword(window, 0, b"endstream");
+        let keyword_endobj = crate::parser::find_keyword(window, 0, b"endobj");
+        let marker = match (keyword_end, keyword_endobj) {
+            (Some(end), Some(endobj)) => end.min(endobj),
+            (Some(end), None) => end,
+            (None, Some(endobj)) => endobj,
+            (None, None) => match find_marker_accelerated(window, b"endstream") {
+                Some(end) => end,
+                None => return Ok(None),
+            },
         };
         let mut end = marker;
         if end > 0 && window[end - 1] == b'\n' {
@@ -1862,6 +1916,50 @@ impl PdfReader {
         let first = required_nonnegative_usize(dict, "First")?;
         let _ = raw;
         parse_object_stream_data(&decoded, n, first, Some(self))
+    }
+
+    /// Parse the object at member `index` of object stream `stream_obj`,
+    /// returning its object number and value.
+    fn object_stream_member(&self, stream_obj: u32, index: u32) -> Result<(u32, PdfObject)> {
+        let stream = self.get_object(stream_obj, 0)?;
+        let (dict, _) = stream.as_stream().ok_or_else(|| {
+            WellfriendError::MalformedPdf(format!("object {stream_obj} 0 is not an object stream"))
+        })?;
+        let limits = metadata_decode_limits();
+        let decoded = crate::filters::decode_stream_with_limits(&stream, self, &limits)?;
+        let n = required_positive_usize(dict, "N")?;
+        let first = required_nonnegative_usize(dict, "First")?;
+        let index = index as usize;
+        if index >= n || first > decoded.len() {
+            return Err(WellfriendError::MalformedPdf(format!(
+                "object stream {stream_obj} has no member {index}"
+            )));
+        }
+        let header = &decoded[..first];
+        let mut pos = 0usize;
+        let mut member = (0u64, 0u64);
+        for _ in 0..=index {
+            member = (
+                read_u64_token(header, &mut pos)?,
+                read_u64_token(header, &mut pos)?,
+            );
+        }
+        let number = u32::try_from(member.0).map_err(|_| {
+            WellfriendError::MalformedPdf(
+                "object stream object number does not fit in u32".to_string(),
+            )
+        })?;
+        let offset = usize::try_from(member.1)
+            .ok()
+            .and_then(|offset| first.checked_add(offset))
+            .filter(|offset| *offset < decoded.len())
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(format!(
+                    "object stream offset for object {number} exceeds decoded length"
+                ))
+            })?;
+        let mut parser = PdfParser::with_resolver(&decoded, offset, Some(self))?;
+        Ok((number, parser.parse_object()?))
     }
 }
 
@@ -2506,6 +2604,10 @@ fn find_catalog_reference(data: &[u8], scanned: &HashMap<(u32, u16), usize>) -> 
 
 fn scan_indirect_object_headers(data: &[u8]) -> HashMap<(u32, u16), usize> {
     let mut offsets = HashMap::new();
+    // Headers that do not start a line (`>>4 0 obj`, `]2 0 obj`) are still
+    // objects to PDFium's rebuild; they fill in numbers no line-start header
+    // claims.
+    let mut mid_line = HashMap::new();
     let stream_spans = stream_data_spans(data);
     let marker = b" obj";
     let mut rel = 0usize;
@@ -2519,18 +2621,60 @@ fn scan_indirect_object_headers(data: &[u8]) -> HashMap<(u32, u16), usize> {
             .rposition(|byte| *byte == b'\r' || *byte == b'\n')
             .map_or(0, |pos| pos + 1);
         let object_start = skip_ws_and_comments(data, line_start);
-        if offset_in_spans(object_start, &stream_spans) {
-            rel += 1;
-            continue;
+        match mid_line_object_header_start(data, line_start, rel) {
+            // A second header later on a line (`5 0 obj [...] >6 0 obj`).
+            Some(start) if start > object_start => {
+                if !offset_in_spans(start, &stream_spans) {
+                    if let Some(id) = parse_indirect_object_header(data, start) {
+                        mid_line.insert(id, start);
+                    }
+                }
+            }
+            _ => {
+                if !offset_in_spans(object_start, &stream_spans) {
+                    if let Some(id) = parse_indirect_object_header(data, object_start) {
+                        offsets.insert(id, object_start);
+                    }
+                }
+            }
         }
-        let Some((number, generation)) = parse_indirect_object_header(data, object_start) else {
-            rel += 1;
-            continue;
-        };
-        offsets.insert((number, generation), object_start);
         rel += 1;
     }
+    for (id, offset) in mid_line {
+        offsets.entry(id).or_insert(offset);
+    }
     offsets
+}
+
+/// The start of an `N G` object header that ends right before the ` obj`
+/// marker at `marker`, when it follows a delimiter or whitespace within the
+/// line that starts at `line_start`.
+fn mid_line_object_header_start(data: &[u8], line_start: usize, marker: usize) -> Option<usize> {
+    let mut pos = marker;
+    let digits_before = |mut pos: usize| -> Option<usize> {
+        let end = pos;
+        while pos > line_start && data[pos - 1].is_ascii_digit() {
+            pos -= 1;
+        }
+        (pos < end).then_some(pos)
+    };
+    pos = digits_before(pos)?;
+    let mut spaces = 0;
+    while pos > line_start && matches!(data[pos - 1], b' ' | b'\t') {
+        pos -= 1;
+        spaces += 1;
+    }
+    if spaces == 0 {
+        return None;
+    }
+    pos = digits_before(pos)?;
+    if pos > line_start {
+        let before = data[pos - 1];
+        if !(is_pdf_whitespace(before) || is_delimiter(before)) {
+            return None;
+        }
+    }
+    Some(pos)
 }
 
 fn stream_data_spans(data: &[u8]) -> Vec<(usize, usize)> {
@@ -2547,7 +2691,12 @@ fn stream_data_spans(data: &[u8]) -> Vec<(usize, usize)> {
             pos = after_marker;
             continue;
         };
-        let data_end = find_endstream(data, data_start).unwrap_or(data.len());
+        // Without an `endstream` the data has no known end: like PDFium's
+        // rebuild, keep scanning it for object headers.
+        let Some(data_end) = find_endstream(data, data_start) else {
+            pos = after_marker;
+            continue;
+        };
         spans.push((data_start, data_end));
         pos = data_end.saturating_add(b"endstream".len()).min(data.len());
     }
@@ -2965,9 +3114,9 @@ pub(crate) fn parse_object_stream_data(
             )
         })?;
         if !seen_object_numbers.insert(object_number) {
-            return Err(WellfriendError::MalformedPdf(format!(
-                "object stream contains duplicate object {object_number}"
-            )));
+            // A later copy of an object number is reachable only through an
+            // xref entry naming its member index (see `object_stream_member`).
+            continue;
         }
         table.push((
             object_number,
@@ -3860,14 +4009,13 @@ trailer
     }
 
     #[test]
-    fn object_stream_rejects_duplicate_object_numbers() {
+    fn object_stream_keeps_first_copy_of_duplicate_object_numbers() {
         let decoded = b"10 0 10 5 true /Name";
 
-        let err = parse_object_stream_data(decoded, 2, 10, None).unwrap_err();
+        let objects = parse_object_stream_data(decoded, 2, 10, None).unwrap();
 
-        assert!(err
-            .to_string()
-            .contains("object stream contains duplicate object 10"));
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects.get(&10).unwrap(), &(0, PdfObject::Boolean(true)));
     }
 
     #[test]
