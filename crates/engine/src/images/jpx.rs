@@ -225,6 +225,61 @@ pub(crate) fn decode_components(
 /// Parse a JPX stream with `hayro-jpeg2000`. The codec can panic on some
 /// malformed codestreams (an unchecked `Option::unwrap`); untrusted image data
 /// must never abort a render, so a panic becomes a typed parse error.
+/// Whether a PDF device colour space contradicts the enumerated colour space
+/// of the JP2 header (`colr` box, method 1). PDFium (`JpxDecodeConversion`)
+/// does not draw such an image: DeviceGray, DeviceRGB and DeviceCMYK require
+/// a greyscale, sRGB or CMYK codestream, or one with no enumerated space.
+pub(crate) fn device_space_conflicts(data: &[u8], pdf_space: &str) -> bool {
+    let expected = match pdf_space {
+        "DeviceGray" => 17,
+        "DeviceRGB" => 16,
+        "DeviceCMYK" => 12,
+        _ => return false,
+    };
+    // Enumerated spaces OpenJPEG recognises; any other value is "unknown",
+    // which PDFium accepts.
+    match enumerated_color_space(data) {
+        Some(space @ (12 | 16 | 17 | 18 | 24)) => space != expected,
+        _ => false,
+    }
+}
+
+/// The EnumCS of the first `colr` box in the JP2 header, when it uses the
+/// enumerated method.
+fn enumerated_color_space(data: &[u8]) -> Option<u32> {
+    let jp2h = find_box(data, b"jp2h")?;
+    let colr = find_box(jp2h, b"colr")?;
+    if colr.first() != Some(&1) {
+        return None;
+    }
+    be_u32_opt(colr, 3)
+}
+
+/// The payload of the first box of `kind` among the boxes in `data`.
+fn find_box<'a>(data: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
+    let mut offset = 0usize;
+    while offset + 8 <= data.len() {
+        let length = be_u32_opt(data, offset)? as usize;
+        let (header, size) = match length {
+            0 => (8, data.len() - offset),
+            1 => {
+                let high = u64::from(be_u32_opt(data, offset + 8)?);
+                let low = u64::from(be_u32_opt(data, offset + 12)?);
+                (16, usize::try_from((high << 32) | low).ok()?)
+            }
+            length => (8, length),
+        };
+        if size < header || offset.checked_add(size)? > data.len() {
+            return None;
+        }
+        if &data[offset + 4..offset + 8] == kind {
+            return Some(&data[offset + header..offset + size]);
+        }
+        offset += size;
+    }
+    None
+}
+
 fn codec_image<'a>(data: &'a [u8], settings: &DecodeSettings) -> Result<Image<'a>> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Image::new(data, settings))) {
         Ok(Ok(image)) => Ok(image),
@@ -869,6 +924,37 @@ mod tests {
         assert!(matches!(
             repair_jp2c_length(&repaired),
             std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    fn jp2_with_colr(enumcs: u32) -> Vec<u8> {
+        let mut colr = vec![1, 0, 0];
+        colr.extend_from_slice(&enumcs.to_be_bytes());
+        let boxed = |kind: &[u8; 4], payload: &[u8]| {
+            let mut out = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+            out.extend_from_slice(kind);
+            out.extend_from_slice(payload);
+            out
+        };
+        let mut data = boxed(b"jP  ", &[0x0D, 0x0A, 0x87, 0x0A]);
+        let jp2h = [boxed(b"ihdr", &[0; 14]), boxed(b"colr", &colr)].concat();
+        data.extend(boxed(b"jp2h", &jp2h));
+        data
+    }
+
+    #[test]
+    fn device_space_conflicting_with_the_jp2_colour_box_is_detected() {
+        let gray = jp2_with_colr(17);
+        assert!(device_space_conflicts(&gray, "DeviceRGB"));
+        assert!(device_space_conflicts(&gray, "DeviceCMYK"));
+        assert!(!device_space_conflicts(&gray, "DeviceGray"));
+        assert!(!device_space_conflicts(&gray, "ICCBased"));
+        assert!(device_space_conflicts(&jp2_with_colr(12), "DeviceGray"));
+        // Unknown enumerated spaces and bare codestreams are accepted.
+        assert!(!device_space_conflicts(&jp2_with_colr(14), "DeviceRGB"));
+        assert!(!device_space_conflicts(
+            &[0xFF, 0x4F, 0xFF, 0x51],
+            "DeviceRGB"
         ));
     }
 

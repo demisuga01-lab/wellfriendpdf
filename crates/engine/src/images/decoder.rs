@@ -2118,6 +2118,11 @@ impl ImageDecoder {
         if !has_pdf_color_space || color_space.is_empty() || image_mask_flag(dict)? {
             return Ok(None);
         }
+        if jpx::device_space_conflicts(data, color_space) {
+            return Err(WellfriendError::UnsupportedFeature(format!(
+                "JPXDecode {label}: /{color_space} contradicts the JPEG 2000 colour specification"
+            )));
+        }
         let Ok(expected_channels) =
             Self::raw_channel_count(color_space, dict, color_context.reader)
         else {
@@ -6494,8 +6499,8 @@ mod tests {
             .zip(&plain.pixels)
             .all(|(inverted, plain)| *inverted == 255 - *plain));
 
-        // A PDF colour space whose component count disagrees with the
-        // codestream keeps the JPX-internal colour path.
+        // A device colour space that contradicts the codestream's sRGB colour
+        // box is refused, as PDFium does not draw such an image.
         let mut gray = PdfDictionary::empty();
         gray.insert("ColorSpace", PdfObject::Name("DeviceGray".to_string()));
         assert!(ImageDecoder::decode_jpx_with_pdf_color_space(
@@ -6509,10 +6514,9 @@ mod tests {
             &limits,
             ImageColorContext::default(),
         )
-        .unwrap()
-        .is_none());
+        .is_err());
 
-        // DeviceCMYK needs four components: not this RGB codestream.
+        // Nor is DeviceCMYK drawn from this sRGB codestream.
         let mut cmyk = PdfDictionary::empty();
         cmyk.insert("ColorSpace", PdfObject::Name("DeviceCMYK".to_string()));
         assert!(ImageDecoder::decode_jpx_with_pdf_color_space(
@@ -6526,8 +6530,7 @@ mod tests {
             &limits,
             ImageColorContext::default(),
         )
-        .unwrap()
-        .is_none());
+        .is_err());
     }
 
     #[test]
