@@ -462,9 +462,12 @@ impl PdfDocument {
         for (number, generation) in page.contents.iter().copied() {
             let object = self.reader.get_object(number, generation)?;
             if object.as_stream().is_none() {
-                return Err(WellfriendError::MalformedPdf(format!(
-                    "page {page_number}: content object {number} {generation} is not a stream"
-                )));
+                // PDFium and Poppler skip a /Contents entry that is not a
+                // stream and draw the rest of the page.
+                log::warn!(
+                    "page {page_number}: content object {number} {generation} is not a stream; skipping it"
+                );
+                continue;
             }
             if wrote_stream {
                 out.push(b'\n');

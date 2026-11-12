@@ -1893,7 +1893,7 @@ impl ImageDecoder {
         }
         let pad = white_pad_byte(is_mask, color_space, raw_channels, dict);
         let decompressed =
-            pad_short_image_data(decompressed, width, height, raw_channels, bpc, pad);
+            fit_packed_image_data(decompressed, width, height, raw_channels, bpc, pad);
 
         if !is_mask && matches!(color_space, "ICCBased" | "Lab" | "Indexed") {
             return super::sample_decode::convert_component_image(
@@ -2028,7 +2028,9 @@ impl ImageDecoder {
                 declared_width,
                 declared_height
             );
-            fit_raw_image_dimensions(raw, declared_width, declared_height)?
+            // 255 is the no-paint sample for both gray images and stencil
+            // masks.
+            fit_raw_image_dimensions(raw, declared_width, declared_height, Some(255))?
         } else {
             raw
         };
@@ -3714,9 +3716,21 @@ pub(crate) fn ensure_decode_budget(width: u32, height: u32, channels: u8) -> Res
     Ok(())
 }
 
-/// Crop or edge-extend an 8-bit interleaved image to `width` x `height`,
-/// keeping its top-left corner fixed.
-pub(crate) fn fit_raw_image_dimensions(raw: RawImage, width: u32, height: u32) -> Result<RawImage> {
+/// How far [`fit_raw_image_dimensions`] repeats edge samples before padding.
+const EDGE_EXTEND_LIMIT: usize = 2;
+
+/// Crop or extend an 8-bit interleaved image to `width` x `height`, keeping
+/// its top-left corner fixed. Missing rows and
+/// columns repeat the edge (codec bitmaps a pixel or two short); with a
+/// `pad` sample, anything more than [`EDGE_EXTEND_LIMIT`] pixels past the
+/// source is filled with it instead, as PDFium fills a JBIG2/CCITT page
+/// region that the codec bitmap does not cover.
+pub(crate) fn fit_raw_image_dimensions(
+    raw: RawImage,
+    width: u32,
+    height: u32,
+    pad: Option<u8>,
+) -> Result<RawImage> {
     if raw.width == width && raw.height == height {
         return Ok(raw);
     }
@@ -3730,10 +3744,15 @@ pub(crate) fn fit_raw_image_dimensions(raw: RawImage, width: u32, height: u32) -
     ensure_decode_budget(width, height, raw.channels)?;
     let (src_w, src_h) = (raw.width as usize, raw.height as usize);
     let mut pixels = Vec::with_capacity(expected_len(width, height, raw.channels));
+    let beyond = |index: usize, len: usize| pad.is_some() && index >= len + EDGE_EXTEND_LIMIT;
     for y in 0..height as usize {
         let sy = y.min(src_h - 1);
         let row = &raw.pixels[sy * src_w * channels..(sy + 1) * src_w * channels];
         for x in 0..width as usize {
+            if beyond(y, src_h) || beyond(x, src_w) {
+                pixels.extend(std::iter::repeat_n(pad.unwrap_or(255), channels));
+                continue;
+            }
             let sx = x.min(src_w - 1);
             pixels.extend_from_slice(&row[sx * channels..(sx + 1) * channels]);
         }
@@ -3879,11 +3898,40 @@ fn fit_decoded_len(
     Ok(())
 }
 
+thread_local! {
+    static SOFT_MASK_DECODE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Marks the image decodes on this thread as soft-mask (/SMask) decodes
+/// while alive. Missing soft-mask samples are zero (fully transparent), as
+/// PDFium fills them, instead of the opaque white that colour images use.
+pub(crate) struct SoftMaskDecodeScope(());
+
+impl SoftMaskDecodeScope {
+    pub(crate) fn enter() -> Self {
+        SOFT_MASK_DECODE_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+        Self(())
+    }
+}
+
+impl Drop for SoftMaskDecodeScope {
+    fn drop(&mut self) {
+        SOFT_MASK_DECODE_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+fn soft_mask_decode_active() -> bool {
+    SOFT_MASK_DECODE_DEPTH.with(|depth| depth.get() > 0)
+}
+
 /// The packed byte that decodes to "no paint" for an image's samples: white
 /// for additive spaces (Poppler fills missing image bytes with 0xFF), no ink
 /// (0) for subtractive spaces, and "not painted" for stencil masks. An
 /// inverted first /Decode range flips it.
 fn white_pad_byte(is_mask: bool, color_space: &str, channels: u8, dict: &PdfDictionary) -> u8 {
+    if soft_mask_decode_active() {
+        return 0x00;
+    }
     let subtractive = !is_mask
         && (matches!(
             color_space,
@@ -3906,9 +3954,11 @@ fn white_pad_byte(is_mask: bool, color_space: &str, channels: u8, dict: &PdfDict
     }
 }
 
-/// Pad short packed image data (any bit depth) to the size its dimensions
-/// require, so truncated or empty streams still draw the rows they have.
-fn pad_short_image_data(
+/// Fit packed image data (any bit depth) to the size its dimensions require:
+/// truncated or empty streams are padded so they still draw the rows they
+/// have, and trailing bytes past the last row are dropped (Poppler and PDFium
+/// read exactly the rows they need).
+fn fit_packed_image_data(
     mut data: Vec<u8>,
     width: u32,
     height: u32,
@@ -3933,6 +3983,12 @@ fn pad_short_image_data(
             data.len()
         );
         data.resize(required, pad);
+    } else if data.len() > required {
+        log::debug!(
+            "image {width}x{height} has {} data bytes, {required} needed; ignoring the tail",
+            data.len()
+        );
+        data.truncate(required);
     }
     data
 }
@@ -4321,9 +4377,13 @@ mod tests {
     fn monochrome_codec_off_by_one_is_cropped_or_extended() {
         // 3x2 codec bitmap for a 2x3 declared image: crop width, extend height.
         let raw = gray(3, 2, vec![10, 20, 30, 40, 50, 60]);
-        let fitted = fit_raw_image_dimensions(raw, 2, 3).unwrap();
+        let fitted = fit_raw_image_dimensions(raw, 2, 3, Some(255)).unwrap();
         assert_eq!((fitted.width, fitted.height), (2, 3));
         assert_eq!(fitted.pixels, vec![10, 20, 40, 50, 40, 50]);
+        // Far past the codec bitmap the no-paint sample fills in.
+        let raw = gray(1, 1, vec![0]);
+        let fitted = fit_raw_image_dimensions(raw, 1, 4, Some(255)).unwrap();
+        assert_eq!(fitted.pixels, vec![0, 0, 0, 255]);
     }
 
     #[test]
@@ -5126,7 +5186,7 @@ mod tests {
     }
 
     #[test]
-    fn indexed_image_rejects_an_undersized_lookup_table() {
+    fn indexed_image_zero_fills_an_undersized_lookup_table() {
         let reader =
             crate::reader::PdfReader::from_bytes(crate::render::shading::tests_minimal_pdf())
                 .unwrap();
@@ -5141,13 +5201,11 @@ mod tests {
             ]),
         );
 
-        let error = ColorSpaceConverter::decode_indexed(&[0, 1], 8, &dict, &reader, 2, 1)
-            .expect_err("undersized Indexed lookup table must fail typed");
-        assert!(matches!(error, WellfriendError::MalformedPdf(_)));
-        assert!(
-            format!("{error}").contains("lookup table has 5 bytes, expected at least 6"),
-            "unexpected Indexed lookup length error: {error}"
-        );
+        // PDFium draws the entries the table holds; missing components are 0.
+        let (pixels, channels) =
+            ColorSpaceConverter::decode_indexed(&[0, 1], 8, &dict, &reader, 2, 1).unwrap();
+        assert_eq!(channels, 3);
+        assert_eq!(pixels, vec![255, 0, 0, 0, 0, 0]);
     }
 
     #[test]
@@ -6567,12 +6625,13 @@ mod tests {
     }
 
     #[test]
-    fn build_raw_image_rejects_overlong_subbyte_rows() {
+    fn build_raw_image_ignores_bytes_past_the_last_row() {
+        // Trailing bytes after the last row are dropped, as Poppler and
+        // PDFium read only the rows they need (bug_1479436, bug_1383708).
         let dict = PdfDictionary::empty();
-        let error =
+        let raw =
             ImageDecoder::build_raw_image_pub(vec![0b1000_0000, 0], 1, 1, 1, "DeviceGray", &dict)
-                .expect_err("overlong sub-byte raw image data must fail typed");
-        assert!(matches!(error, WellfriendError::MalformedPdf(_)));
-        assert!(format!("{error}").contains("sub-byte image data has 2 bytes, expected 1"));
+                .expect("overlong sub-byte raw image data is truncated");
+        assert_eq!(raw.pixels, vec![255]);
     }
 }

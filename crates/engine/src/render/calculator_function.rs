@@ -335,11 +335,14 @@ pub(super) fn initial_stack(inputs: &[f64]) -> Option<Vec<Value>> {
     )
 }
 
+/// The function outputs: the top `count` stack entries, bottom first. As in
+/// PDFium and Poppler, entries left below them are ignored; a stack shorter
+/// than `count` or a non-numeric output is still an error.
 pub(super) fn numeric_outputs(stack: &[Value], count: usize) -> Option<Vec<f64>> {
-    if count == 0 || stack.len() != count {
+    if count == 0 || stack.len() < count {
         return None;
     }
-    stack
+    stack[stack.len() - count..]
         .iter()
         .map(|value| match value {
             Value::Number(n) if n.real().is_finite() => Some(n.real()),

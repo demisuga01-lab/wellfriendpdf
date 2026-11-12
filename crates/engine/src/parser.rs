@@ -17,6 +17,16 @@ pub trait ParserResolver {
 /// while allowing those files to be parsed instead of rejected.
 const MAX_PARSE_DEPTH: usize = 256;
 
+/// What [`PdfParser::skip_bare_keyword_at`] found where an object was
+/// expected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BareKeyword {
+    /// `endobj`, left unconsumed.
+    EndObj,
+    /// Some other non-object token, now consumed.
+    Skipped,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct IndirectObject {
     pub number: u32,
@@ -235,11 +245,36 @@ impl<'a> PdfParser<'a> {
                     return Err(err);
                 }
             };
+            let value_start = self.pos;
             let value = match self.parse_object() {
                 Ok(value) => value,
                 Err(err) => {
-                    self.leave_nesting();
-                    return Err(err);
+                    // A bare keyword in value position (`/Type XObject`,
+                    // `/K j`): PDFium drops the key and goes on; `endobj`
+                    // ends the dictionary.
+                    if self.starts_with_at(value_start, b">>") {
+                        self.pos = value_start;
+                        self.skip_ws_and_comments();
+                        self.pos += 2;
+                        log::warn!("dictionary value for /{key} is missing before >>");
+                        break;
+                    }
+                    match self.skip_bare_keyword_at(value_start) {
+                        Some(BareKeyword::EndObj) => {
+                            log::warn!("dictionary value is missing before endobj");
+                            break;
+                        }
+                        Some(BareKeyword::Skipped) => {
+                            log::warn!(
+                                "dictionary value for /{key} is a bare keyword; dropping it"
+                            );
+                            continue;
+                        }
+                        None => {
+                            self.leave_nesting();
+                            return Err(err);
+                        }
+                    }
                 }
             };
             entries.insert(key, value);
@@ -280,13 +315,33 @@ impl<'a> PdfParser<'a> {
                     self.pos += 1;
                     break;
                 }
-                Some(_) => match self.parse_object() {
-                    Ok(item) => items.push(item),
-                    Err(err) => {
-                        self.leave_nesting();
-                        return Err(err);
+                Some(_) => {
+                    let item_start = self.pos;
+                    match self.parse_object() {
+                        Ok(item) => items.push(item),
+                        Err(err) => {
+                            // PDFium ends an array at the first token that is
+                            // not an object (`[1 0 R p`), consuming it;
+                            // `endobj` and `>>` are left for the enclosing
+                            // object.
+                            if self.starts_with_at(item_start, b">>") {
+                                self.pos = item_start;
+                                log::warn!("array is missing ] before >>");
+                                break;
+                            }
+                            match self.skip_bare_keyword_at(item_start) {
+                                Some(_) => {
+                                    log::warn!("array ends at a bare keyword");
+                                    break;
+                                }
+                                None => {
+                                    self.leave_nesting();
+                                    return Err(err);
+                                }
+                            }
+                        }
                     }
-                },
+                }
                 None => {
                     self.leave_nesting();
                     return Err(WellfriendError::ParseError(
@@ -498,19 +553,33 @@ impl<'a> PdfParser<'a> {
         }
 
         let stream_start = self.pos;
+        // Junk after the `stream` keyword on its line (`stream   "x"`) is
+        // skipped by PDFium, which starts the data on the next line; take
+        // that start when /Length confirms it.
+        let after_eol = stream_start > 0 && matches!(self.data[stream_start - 1], b'\n' | b'\r');
+        let next_line_start = if after_eol {
+            None
+        } else {
+            self.data[stream_start..]
+                .iter()
+                .position(|byte| matches!(byte, b'\r' | b'\n'))
+                .map(|rel| skip_eol(self.data, stream_start + rel))
+        };
         if let Some(length) = self.resolve_stream_length(dict)? {
             let length = usize::try_from(length).map_err(|_| {
                 WellfriendError::MalformedPdf("stream Length is too large".to_string())
             })?;
-            let stream_end = stream_start.checked_add(length).ok_or_else(|| {
-                WellfriendError::MalformedPdf("stream Length overflows".to_string())
-            })?;
-            if stream_end <= self.data.len() {
-                let after_raw = skip_eol(self.data, stream_end);
-                if bytes_at(self.data, after_raw, b"endstream") {
-                    let raw = self.data[stream_start..stream_end].to_vec();
-                    self.pos = after_raw + b"endstream".len();
-                    return Ok(raw);
+            for start in std::iter::once(stream_start).chain(next_line_start) {
+                let stream_end = start.checked_add(length).ok_or_else(|| {
+                    WellfriendError::MalformedPdf("stream Length overflows".to_string())
+                })?;
+                if stream_end <= self.data.len() {
+                    let after_raw = skip_eol(self.data, stream_end);
+                    if endstream_keyword_at(self.data, after_raw) {
+                        let raw = self.data[start..stream_end].to_vec();
+                        self.pos = after_raw + b"endstream".len();
+                        return Ok(raw);
+                    }
                 }
             }
         }
@@ -563,12 +632,40 @@ impl<'a> PdfParser<'a> {
 
     fn scan_stream_until_endstream(&mut self, stream_start: usize) -> Result<Vec<u8>> {
         if stream_start <= self.data.len() {
-            if let Some(rel) = find_marker_accelerated(&self.data[stream_start..], b"endstream") {
+            // PDFium ends a stream whose /Length is unusable at the first
+            // `endstream` or `endobj` that stands as a keyword: `eendstream`
+            // and `(endstream is text)` inside the data do not end it.
+            // `endstream.` and `endstream%` are not keywords either; with no
+            // keyword at all, a bare `endstream` still ends the data.
+            let keyword_endobj = find_keyword(self.data, stream_start, b"endobj");
+            let end = match find_keyword(self.data, stream_start, b"endstream") {
+                Some(end) if keyword_endobj.is_none_or(|endobj| end < endobj) => Some(end),
+                Some(_) => None,
+                None if keyword_endobj.is_none() => {
+                    find_marker_accelerated(&self.data[stream_start..], b"endstream")
+                        .map(|rel| stream_start + rel)
+                }
+                None => None,
+            };
+            if let Some(end) = end {
+                let raw_end = trim_single_eol_before(self.data, stream_start, end);
+                self.pos = end + b"endstream".len();
+                return Ok(self.data[stream_start..raw_end].to_vec());
+            }
+            if let Some(endobj) = keyword_endobj {
+                let raw_end = trim_single_eol_before(self.data, stream_start, endobj);
+                log::warn!("stream is missing endstream; ending it at endobj");
+                self.pos = endobj;
+                return Ok(self.data[stream_start..raw_end].to_vec());
+            }
+            // No `endstream` at all: the data runs to the object's `endobj`,
+            // which is left for the object parser.
+            if let Some(rel) = find_marker_accelerated(&self.data[stream_start..], b"endobj") {
                 let cursor = stream_start + rel;
                 let raw_end = trim_single_eol_before(self.data, stream_start, cursor);
-                let raw = self.data[stream_start..raw_end].to_vec();
-                self.pos = cursor + b"endstream".len();
-                return Ok(raw);
+                log::warn!("stream is missing endstream; ending it at endobj");
+                self.pos = cursor;
+                return Ok(self.data[stream_start..raw_end].to_vec());
             }
         }
         Err(WellfriendError::ParseError(
@@ -696,6 +793,44 @@ impl<'a> PdfParser<'a> {
         bytes_at(self.data, self.pos, bytes)
     }
 
+    fn starts_with_at(&self, pos: usize, bytes: &[u8]) -> bool {
+        let mut probe = PdfParser {
+            data: self.data,
+            pos,
+            resolver: None,
+            depth: 0,
+        };
+        probe.skip_ws_and_comments();
+        probe.starts_with(bytes)
+    }
+
+    /// Recover from an object that failed to parse at `start` when the token
+    /// there cannot begin an object at all (a bare keyword such as `R`,
+    /// `XObject` or `p`, or a stray delimiter). Returns `None` for anything
+    /// else, so real errors (nesting depth, unterminated strings, broken
+    /// numbers) still propagate. `endobj` and `>>` are left unconsumed for
+    /// the enclosing object; any other token is skipped.
+    fn skip_bare_keyword_at(&mut self, start: usize) -> Option<BareKeyword> {
+        self.pos = start;
+        self.skip_ws_and_comments();
+        let byte = self.peek_byte()?;
+        if matches!(
+            byte,
+            b'<' | b'(' | b'/' | b'[' | b'+' | b'-' | b'.' | b'0'..=b'9'
+        ) {
+            return None;
+        }
+        if self.starts_with(b"endobj") {
+            return Some(BareKeyword::EndObj);
+        }
+        let run = self.data[self.pos..]
+            .iter()
+            .take_while(|byte| !is_pdf_whitespace(**byte) && !is_delimiter(**byte))
+            .count();
+        self.pos += run.max(1);
+        Some(BareKeyword::Skipped)
+    }
+
     fn peek_byte(&self) -> Option<u8> {
         self.data.get(self.pos).copied()
     }
@@ -734,6 +869,34 @@ pub(crate) fn stream_object_trailer_end(tail: &[u8]) -> Option<usize> {
     let mut parser = PdfParser::new(tail, after_raw + b"endstream".len()).ok()?;
     parser.skip_ws_and_comments();
     parser.consume_keyword(b"endobj").then_some(parser.pos)
+}
+
+/// `endstream` at `pos`, ended by whitespace, a delimiter or the end of the
+/// data (`endstream.` is a different word).
+pub(crate) fn endstream_keyword_at(data: &[u8], pos: usize) -> bool {
+    bytes_at(data, pos, b"endstream")
+        && data
+            .get(pos + b"endstream".len())
+            .is_none_or(|byte| is_pdf_whitespace(*byte) || is_delimiter(*byte))
+}
+
+/// The first occurrence of `word` at or after `start` that stands as a
+/// keyword the way PDFium's stream-end search requires: whitespace (or
+/// `start`) before it and whitespace (or the end of the data) after it.
+pub(crate) fn find_keyword(data: &[u8], start: usize, word: &[u8]) -> Option<usize> {
+    let mut from = start;
+    while from <= data.len() {
+        let at = from + find_marker_accelerated(&data[from..], word)?;
+        let left = at == start || is_pdf_whitespace(data[at - 1]);
+        let right = data
+            .get(at + word.len())
+            .is_none_or(|byte| is_pdf_whitespace(*byte));
+        if left && right {
+            return Some(at);
+        }
+        from = at + 1;
+    }
+    None
 }
 
 fn skip_eol(data: &[u8], pos: usize) -> usize {
@@ -867,6 +1030,64 @@ mod tests {
             object.object.as_dict().unwrap().get("A"),
             Some(&PdfObject::Integer(1))
         );
+    }
+
+    #[test]
+    fn bare_keyword_values_and_array_items_are_tolerated_like_pdfium() {
+        // `/Type XObject` (a missing slash) drops the key; an array ends at
+        // the first non-object token; `endobj` closes everything still open.
+        let mut parser = PdfParser::new(
+            b"6 0 obj << /Type XObject /Subtype /Form /Kids [1 0 R p /A] /N 2 /R << /S R endobj",
+            0,
+        )
+        .unwrap();
+        let object = parser.parse_indirect_object().unwrap();
+        let dict = object.object.as_dict().unwrap();
+        assert_eq!(dict.get("Type"), None);
+        assert_eq!(dict.get_name("Subtype"), Some("Form"));
+        assert_eq!(
+            dict.get("Kids"),
+            Some(&PdfObject::Array(vec![PdfObject::Reference {
+                number: 1,
+                generation: 0
+            }]))
+        );
+        assert_eq!(dict.get("N"), Some(&PdfObject::Integer(2)));
+        assert!(dict.get("R").unwrap().as_dict().unwrap().get("S").is_none());
+    }
+
+    #[test]
+    fn stream_end_scan_needs_keywords_like_pdfium() {
+        // A wrong /Length: `eendstream`, `endstream.` and `(endstream ...)`
+        // do not end the data (bug_524043); junk after `stream` on its line
+        // is skipped when /Length fits from the next line (bug_543018).
+        for (data, expected) in [
+            (
+                &b"1 0 obj << /Length 2 >> stream\nA\neendstream\nB\nendstream\nendobj"[..],
+                &b"A\neendstream\nB"[..],
+            ),
+            (
+                b"1 0 obj << /Length 2 >> stream\nA\nendstream.\n(endstream x)\nendobj",
+                b"A\nendstream.\n(endstream x)",
+            ),
+            (
+                b"1 0 obj << /Length 4 >> stream  \"junk\"\nBODY\nendstream\nendobj",
+                b"BODY",
+            ),
+        ] {
+            let mut parser = PdfParser::new(data, 0).unwrap();
+            let object = parser.parse_indirect_object().unwrap();
+            let (_, raw) = object.object.as_stream().unwrap();
+            assert_eq!(raw, expected);
+        }
+    }
+
+    #[test]
+    fn stream_without_endstream_ends_at_endobj() {
+        let mut parser = PdfParser::new(b"6 0 obj <<>> stream\n/1 cs\nendobj 7 0 obj", 0).unwrap();
+        let object = parser.parse_indirect_object().unwrap();
+        let (_, raw) = object.object.as_stream().unwrap();
+        assert_eq!(raw, b"/1 cs");
     }
 
     #[test]

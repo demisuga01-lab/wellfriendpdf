@@ -332,6 +332,7 @@ impl ImageLocator {
                     "{label} /BitsPerComponent is not an integer"
                 )))
             }
+            None if super::bilevel_terminal_filter(filters) => Ok(1),
             None => Err(WellfriendError::MalformedPdf(format!(
                 "{label} missing /BitsPerComponent"
             ))),

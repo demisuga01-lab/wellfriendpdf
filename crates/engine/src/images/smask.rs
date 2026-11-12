@@ -96,6 +96,7 @@ impl SmaskLoader {
             inline_data: None,
         };
 
+        let _soft_mask_scope = crate::images::decoder::SoftMaskDecodeScope::enter();
         let reduced_target = (source_window.is_none()
             && (main_raw.width != main_image.width || main_raw.height != main_image.height))
             .then_some((main_raw.width, main_raw.height));
@@ -484,6 +485,22 @@ fn smask_matte_rgb(dict: &PdfDictionary, main_color_space: &str) -> Result<Optio
         ("ICCBased", 4) => "DeviceCMYK",
         (other, _) => other,
     };
+    let device_components = match device_space {
+        "DeviceGray" => Some(1),
+        "DeviceRGB" => Some(3),
+        "DeviceCMYK" => Some(4),
+        _ => None,
+    };
+    if device_components.is_some_and(|expected| expected != comps.len()) {
+        // PDFium only unblends with a /Matte whose size matches the image's
+        // colour components; any other matte is ignored and the soft mask
+        // still applies.
+        log::debug!(
+            "image SMask /Matte has {} components for /{main_color_space}; ignoring it",
+            comps.len()
+        );
+        return Ok(None);
+    }
     let Some(color) = ColorSpaceHandler::try_from_components(device_space, &comps, 1.0) else {
         return Err(WellfriendError::UnsupportedFeature(format!(
             "image SMask /Matte uses unsupported color space /{main_color_space}"
@@ -1010,16 +1027,14 @@ mod tests {
     }
 
     #[test]
-    fn smask_matte_rgb_rejects_incomplete_device_components() {
+    fn smask_matte_rgb_ignores_wrong_size_device_matte() {
         let mut dict = PdfDictionary::empty();
         dict.insert(
             "Matte".to_string(),
             PdfObject::Array(vec![PdfObject::Real(0.1), PdfObject::Real(0.2)]),
         );
 
-        let error =
-            smask_matte_rgb(&dict, "DeviceRGB").expect_err("incomplete DeviceRGB matte must fail");
-        assert!(format!("{error}").contains("image SMask /Matte uses unsupported color space"));
+        assert_eq!(smask_matte_rgb(&dict, "DeviceRGB").unwrap(), None);
     }
 
     #[test]

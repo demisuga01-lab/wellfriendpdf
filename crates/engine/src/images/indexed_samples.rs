@@ -30,13 +30,19 @@ fn indexed(object: &PdfObject, reader: &PdfReader) -> Result<Vec<PdfObject>> {
     Ok(items.to_vec())
 }
 
-fn hival(object: &PdfObject, reader: &PdfReader) -> Result<usize> {
+/// The Indexed `hival`. The image route (`lenient`) clamps an out-of-range
+/// value into 0..=255 as PDFium does (`CPDF_IndexedCS`), so a palette that
+/// declares 256 entries still draws.
+fn hival(object: &PdfObject, reader: &PdfReader, lenient: bool) -> Result<usize> {
     let object = reader.resolve(object.clone())?;
     let value = object
         .as_integer()
         .ok_or_else(|| invalid("Indexed image ColorSpace hival is not an integer"))?;
     if !(0..=255).contains(&value) {
-        return Err(invalid("Indexed image ColorSpace hival is outside 0..=255"));
+        if !lenient {
+            return Err(invalid("Indexed image ColorSpace hival is outside 0..=255"));
+        }
+        return Ok(value.clamp(0, 255) as usize);
     }
     Ok(value as usize)
 }
@@ -84,8 +90,8 @@ impl PreparedPalette {
     ) -> Result<Self> {
         let bound = indexed(object, reader)?;
         let source = indexed(source_space.unwrap_or(object), reader)?;
-        let maximum = hival(&bound[2], reader)?;
-        if hival(&source[2], reader)? != maximum {
+        let maximum = hival(&bound[2], reader, allow_partial_entry_padding)?;
+        if hival(&source[2], reader, allow_partial_entry_padding)? != maximum {
             return Err(invalid("Indexed source/replacement hival mismatch"));
         }
         let target_base = base(&bound[1], reader)?;
@@ -102,6 +108,15 @@ impl PreparedPalette {
         }
         let mut lookup = colorspace::indexed_lookup_bytes(&bound[3], reader).map_err(invalid)?;
         let expected = (maximum + 1) * channels;
+        if lookup.len() < expected && allow_partial_entry_padding {
+            // PDFium draws the entries a short lookup table does hold and
+            // treats the missing ones as zero components.
+            log::debug!(
+                "Indexed lookup table has {} bytes, {expected} needed; zero-filling",
+                lookup.len()
+            );
+            lookup.resize(expected, 0);
+        }
         if lookup.len() < expected {
             return Err(invalid(format!(
                 "Indexed image ColorSpace lookup table has {} bytes, expected at least {expected}",

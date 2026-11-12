@@ -150,12 +150,13 @@ impl DashState {
         // Zero-length intervals are kept: an "on" interval of length zero is
         // a dot (visible with round or projecting caps), and dropping a zero
         // would swap the on/off parity of every following interval.
-        // Negative and non-finite entries are invalid and are discarded.
+        // Non-finite entries are invalid and are discarded. A negative entry
+        // counts as zero, as PDFium does, so it keeps its on/off parity.
         let mut pattern: Vec<f64> = pattern
             .into_iter()
-            .filter(|interval| interval.is_finite() && *interval >= 0.0)
+            .filter(|interval| interval.is_finite())
             .map(|interval| {
-                if interval == 0.0 {
+                if interval <= 0.0 {
                     0.0
                 } else {
                     interval.max(MIN_RENDERABLE_DASH_INTERVAL)
@@ -615,6 +616,27 @@ mod tests {
         assert!(segs[0].2);
         assert!((segs[0].1 - segs[0].0 - 5.0).abs() < 0.001);
         assert!(!segs[1].2);
+    }
+
+    #[test]
+    fn negative_dash_phase_and_intervals_follow_pdfium() {
+        // A negative phase is taken modulo the pattern (bug_660850): -14 on
+        // [12 28] starts 26 into the pattern, 14 units before the next dash.
+        let mut ds = DashState::new(vec![12.0, 28.0], -14.0);
+        let segs = ds.advance(20.0);
+        assert!(!segs[0].2);
+        assert!((segs[0].1 - segs[0].0 - 14.0).abs() < 0.001);
+        assert!(segs[1].2);
+        // A negative interval counts as zero and keeps the on/off parity
+        // (dashed_lines): [6 5 -4 3 2 1] draws 6, gaps 5+3, draws 2.
+        let mut ds = DashState::new(vec![6.0, 5.0, -4.0, 3.0, 2.0, 1.0], 0.0);
+        let on: f64 = ds
+            .advance(17.0)
+            .iter()
+            .filter(|seg| seg.2)
+            .map(|seg| seg.1 - seg.0)
+            .sum();
+        assert!((on - 8.0).abs() < 0.01, "on length {on}");
     }
 
     #[test]

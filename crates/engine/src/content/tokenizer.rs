@@ -161,6 +161,13 @@ impl<'a> ContentTokenizer<'a> {
     }
 
     fn read_number(&mut self, _first: u8) -> ContentToken {
+        // A doubled sign (`--10.12`) reads as one sign, as in Poppler and
+        // PDFium: keep only the last sign character of the run.
+        while matches!(self.peek(), Some(b'+' | b'-'))
+            && matches!(self.data.get(self.pos + 1), Some(b'+' | b'-'))
+        {
+            self.pos += 1;
+        }
         let start = self.pos;
         if matches!(self.peek(), Some(b'+' | b'-')) {
             self.pos += 1;
@@ -527,6 +534,13 @@ impl<R: Read> StreamingContentTokenizer<R> {
     fn read_number(&mut self, _first: u8) -> Result<ContentToken> {
         if self.complete {
             // Scan in place: the same sign/digits/single-dot grammar.
+            // A doubled sign (`--10.12`) reads as one sign, as in Poppler
+            // and PDFium: keep only the last sign character of the run.
+            while matches!(self.window.get(self.pos), Some(b'+' | b'-'))
+                && matches!(self.window.get(self.pos + 1), Some(b'+' | b'-'))
+            {
+                self.pos += 1;
+            }
             let rest = &self.window[self.pos..];
             let mut len = usize::from(matches!(rest.first(), Some(b'+' | b'-')));
             let mut saw_dot = false;
@@ -556,8 +570,12 @@ impl<R: Read> StreamingContentTokenizer<R> {
             return token;
         }
         let mut out = NumberText::default();
-        if matches!(self.peek()?, Some(b'+' | b'-')) {
-            out.push(self.next_byte()?.expect("peek checked"));
+        let mut sign = None;
+        while matches!(self.peek()?, Some(b'+' | b'-')) {
+            sign = self.next_byte()?;
+        }
+        if let Some(sign) = sign {
+            out.push(sign);
         }
         let mut saw_dot = false;
         while let Some(byte) = self.peek()? {
@@ -808,8 +826,16 @@ impl<R: Read> StreamingContentTokenizer<R> {
                 matches!(self.lookahead_get(1), Some(b'0'..=b'9'))
             }
             b'+' | b'-' => {
-                self.ensure_lookahead(2)?;
-                matches!(self.lookahead_get(1), Some(b'0'..=b'9' | b'.'))
+                // A run of signs (`--10.12`) still starts a number.
+                let mut offset = 1;
+                loop {
+                    self.ensure_lookahead(offset + 1)?;
+                    match self.lookahead_get(offset) {
+                        Some(b'+' | b'-') if offset < MAX_SIGN_RUN => offset += 1,
+                        Some(b'0'..=b'9' | b'.') => break true,
+                        _ => break false,
+                    }
+                }
             }
             _ => false,
         })
@@ -983,11 +1009,22 @@ pub fn tokenize_all(data: &[u8]) -> Result<Vec<ContentToken>> {
     ContentTokenizer::new(data).collect()
 }
 
+/// The longest run of leading signs a number token may carry.
+const MAX_SIGN_RUN: usize = 8;
+
 fn is_number_start(data: &[u8], pos: usize) -> bool {
     match data.get(pos).copied() {
         Some(b'0'..=b'9') => true,
         Some(b'.') => matches!(data.get(pos + 1), Some(b'0'..=b'9')),
-        Some(b'+' | b'-') => matches!(data.get(pos + 1), Some(b'0'..=b'9' | b'.')),
+        Some(b'+' | b'-') => {
+            // A run of signs (`--10.12`) still starts a number.
+            let signs = data[pos..]
+                .iter()
+                .take(MAX_SIGN_RUN)
+                .take_while(|byte| matches!(byte, b'+' | b'-'))
+                .count();
+            matches!(data.get(pos + signs), Some(b'0'..=b'9' | b'.'))
+        }
         _ => false,
     }
 }
