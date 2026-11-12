@@ -24,12 +24,20 @@ struct Counting;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+/// Live bytes as glibc malloc chunks: size + 8-byte header rounded up to
+/// 16, at least 32 bytes.
+static LIVE_CHUNKS: AtomicUsize = AtomicUsize::new(0);
+
+fn chunk(size: usize) -> usize {
+    ((size + 8 + 15) & !15).max(32)
+}
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() {
             ALLOCS.fetch_add(1, Ordering::Relaxed);
+            LIVE_CHUNKS.fetch_add(chunk(layout.size()), Ordering::Relaxed);
             let live = LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
             PEAK.fetch_max(live, Ordering::Relaxed);
         }
@@ -39,12 +47,15 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe { System.dealloc(ptr, layout) };
         LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        LIVE_CHUNKS.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         let new = unsafe { System.realloc(ptr, layout, new_size) };
         if !new.is_null() {
             ALLOCS.fetch_add(1, Ordering::Relaxed);
+            LIVE_CHUNKS.fetch_add(chunk(new_size), Ordering::Relaxed);
+            LIVE_CHUNKS.fetch_sub(chunk(layout.size()), Ordering::Relaxed);
             if new_size >= layout.size() {
                 let grow = new_size - layout.size();
                 let live = LIVE.fetch_add(grow, Ordering::Relaxed) + grow;
@@ -66,6 +77,7 @@ struct Totals {
     content_bytes: usize,
     allocs: usize,
     held: usize,
+    held_chunks: usize,
     peak: usize,
     parse_ns: u128,
     list_held: usize,
@@ -79,13 +91,17 @@ fn main() -> Result<()> {
     };
     let engine = ContentEngine::open_bytes(std::fs::read(path)?)?;
     let pages: Vec<usize> = if args.len() > 2 {
-        args[2..].iter().filter_map(|value| value.parse().ok()).collect()
+        args[2..]
+            .iter()
+            .filter_map(|value| value.parse().ok())
+            .collect()
     } else {
         (1..=engine.page_count()?).collect()
     };
     println!("page\tops\tcontent_bytes\tparse_allocs\tops_held_bytes\tparse_peak_bytes\tparse_us\tdisplay_list_held_bytes");
     let mut totals = Totals::default();
     let mut max_held = 0usize;
+    let mut histogram = std::collections::BTreeMap::<(String, usize), usize>::new();
     for page in pages {
         let Ok(content) = engine.document().get_page_content_bytes(page) else {
             continue;
@@ -95,6 +111,7 @@ fn main() -> Result<()> {
         let mut measured = None;
         for _ in 0..3 {
             let base_live = LIVE.load(Ordering::Relaxed);
+            let base_chunks = LIVE_CHUNKS.load(Ordering::Relaxed);
             PEAK.store(base_live, Ordering::Relaxed);
             let base_allocs = ALLOCS.load(Ordering::Relaxed);
             let start = Instant::now();
@@ -103,12 +120,22 @@ fn main() -> Result<()> {
             let allocs = ALLOCS.load(Ordering::Relaxed) - base_allocs;
             let held = LIVE.load(Ordering::Relaxed) - base_live;
             let peak = PEAK.load(Ordering::Relaxed) - base_live;
+            let held_chunks = LIVE_CHUNKS.load(Ordering::Relaxed) - base_chunks;
             let count = ops.as_ref().map(Vec::len).unwrap_or(0);
+            if std::env::var_os("OPS_HISTOGRAM").is_some() {
+                if let Ok(ops) = &ops {
+                    for op in ops {
+                        *histogram
+                            .entry((op.operator.to_string(), op.operands.len()))
+                            .or_insert(0usize) += 1;
+                    }
+                }
+            }
             drop(ops);
             best_ns = best_ns.min(elapsed);
-            measured = Some((count, allocs, held, peak));
+            measured = Some((count, allocs, held, peak, held_chunks));
         }
-        let (count, allocs, held, peak) = measured.unwrap_or_default();
+        let (count, allocs, held, peak, held_chunks) = measured.unwrap_or_default();
         // The engine caches the parsed program while building the list, so
         // the list's own bytes are what dropping it releases.
         let list = engine.build_page_display_list(page, 72);
@@ -124,6 +151,7 @@ fn main() -> Result<()> {
         totals.content_bytes += content.len();
         totals.allocs += allocs;
         totals.held += held;
+        totals.held_chunks += held_chunks;
         totals.peak = totals.peak.max(peak);
         totals.parse_ns += best_ns;
         totals.list_held += list_held;
@@ -139,10 +167,23 @@ fn main() -> Result<()> {
         totals.parse_ns / 1000,
         totals.list_held
     );
+    if !histogram.is_empty() {
+        let mut rows: Vec<_> = histogram.into_iter().collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        for ((operator, operands), count) in rows.into_iter().take(40) {
+            eprintln!("{operator}\t{operands}\t{count}");
+        }
+    }
+    eprintln!(
+        "size_of ContentOperation {} bytes, Operand {} bytes",
+        std::mem::size_of::<wellfriendpdf_engine::ContentOperation>(),
+        std::mem::size_of::<wellfriendpdf_engine::Operand>()
+    );
     if totals.ops > 0 {
         eprintln!(
-            "per op: {:.1} held bytes, {:.2} allocs; max page held {} bytes",
+            "per op: {:.1} held bytes ({:.1} as malloc chunks), {:.2} allocs; max page held {} bytes",
             totals.held as f64 / totals.ops as f64,
+            totals.held_chunks as f64 / totals.ops as f64,
             totals.allocs as f64 / totals.ops as f64,
             max_held
         );
