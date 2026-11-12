@@ -6721,6 +6721,15 @@ struct RenderState<'a> {
     /// Soft-mask groups are drawn without stroke adjustment: Poppler's
     /// transparency-group Splash does not adjust, and PDFium never does.
     stroke_adjust_suppressed: bool,
+    /// Inside a tiling cell (compat): the filled object's fill alpha, which
+    /// Form XObjects drawn directly in the cell are composited with.
+    tile_initial_alpha: Option<f64>,
+    /// Inside a tiling cell (compat): strokes are drawn without stroke
+    /// adjustment.
+    cell_strokes_unadjusted: bool,
+    /// While a Type 3 charproc runs (compat): its text fill alpha when below
+    /// 1, applied once more to the image masks it paints.
+    type3_image_mask_alpha: Option<f64>,
     /// Nesting depth of pattern paints, during which forced colours are
     /// suspended (pattern cells keep their real colours, as in PDFium).
     forced_color_suppression: u32,
@@ -8620,6 +8629,9 @@ impl<'a> RenderState<'a> {
             pattern_text_stroke_pass: false,
             forced_color_suppression: 0,
             stroke_adjust_suppressed: false,
+            tile_initial_alpha: None,
+            cell_strokes_unadjusted: false,
+            type3_image_mask_alpha: None,
             pattern_inherited_alpha: (1.0, 1.0),
             gs_restore_floor: 0,
             type3_blue_zones: Type3BlueState::default(),
@@ -8786,6 +8798,14 @@ impl<'a> RenderState<'a> {
     /// graphics state (stroke adjustment follows the render mode and `/SA`).
     fn path_raster_options(&self) -> VectorRasterOptions {
         self.raster_options_for(self.gs.stroke_adjustment)
+    }
+
+    fn stroke_raster_options_for(&self, stroke_adjustment_requested: bool) -> VectorRasterOptions {
+        let mut options = self.raster_options_for(stroke_adjustment_requested);
+        if self.cell_strokes_unadjusted {
+            options.stroke_adjust = false;
+        }
+        options
     }
 
     fn raster_options_for(&self, stroke_adjustment_requested: bool) -> VectorRasterOptions {
@@ -11679,7 +11699,7 @@ impl<'a> RenderState<'a> {
                 let saved_blend = self.buf.blend_mode;
                 self.buf.blend_mode = state.blend_mode;
                 let path_binary_alpha = self.path_smoothing_disabled();
-                let raster_options = self.raster_options_for(state.stroke_adjustment);
+                let raster_options = self.stroke_raster_options_for(state.stroke_adjustment);
                 if !paint_cached_path_stroke(
                     &mut self.path_stroke_mask_cache,
                     &mut self.buf,
@@ -12732,6 +12752,19 @@ impl<'a> RenderState<'a> {
         self.fill_pixel_color_unforced()
     }
 
+    /// The colour a stencil image mask paints with. Inside a Type 3 glyph
+    /// drawn with fill alpha below 1, PDFium paints image masks with that
+    /// alpha twice (the glyph's fill colour carries it and the image applies
+    /// its graphics-state alpha again; pdfium bug_1746), where paths in the
+    /// glyph get it once.
+    fn image_mask_pixel_color(&mut self) -> PixelColor {
+        let mut color = self.fill_pixel_color_unforced();
+        if let Some(alpha) = self.type3_image_mask_alpha {
+            color[3] = (f64::from(color[3]) * alpha).round().clamp(0.0, 255.0) as u8;
+        }
+        color
+    }
+
     /// The resolved fill colour ignoring any forced colour scheme. Image
     /// masks keep their real colour under a forced scheme (PDFium only
     /// translates path and text colours).
@@ -13753,7 +13786,7 @@ impl<'a> RenderState<'a> {
         let width = self.gs.line_width;
         let dash = self.dash_state();
         let path_binary_alpha = self.path_smoothing_disabled();
-        let raster_options = self.path_raster_options();
+        let raster_options = self.stroke_raster_options_for(self.gs.stroke_adjustment);
         if self.stroke_overprint_preview_enabled() && self.forced_stroke_pixel_color().is_none() {
             if let Some(cmyk) = device_cmyk_components(&self.gs.stroke_color) {
                 let overprint_mode = self.active_overprint_mode();
@@ -14689,6 +14722,9 @@ impl<'a> RenderState<'a> {
             pattern_text_stroke_pass: false,
             forced_color_suppression: 0,
             stroke_adjust_suppressed: true,
+            tile_initial_alpha: None,
+            cell_strokes_unadjusted: false,
+            type3_image_mask_alpha: None,
             pattern_inherited_alpha: (1.0, 1.0),
             gs_restore_floor: 0,
             type3_blue_zones: Type3BlueState::default(),
@@ -15281,7 +15317,7 @@ impl<'a> RenderState<'a> {
             let color = if pattern_stencil {
                 [255, 255, 255, 255]
             } else {
-                self.fill_pixel_color_unforced()
+                self.image_mask_pixel_color()
             };
             let paints_ones = match inline_image_mask_paints_ones(&dict) {
                 Ok(paints_ones) => paints_ones,
@@ -15885,7 +15921,7 @@ impl<'a> RenderState<'a> {
                     let color = if pattern_stencil {
                         [255, 255, 255, 255]
                     } else {
-                        self.fill_pixel_color_unforced()
+                        self.image_mask_pixel_color()
                     };
                     let paints_ones = match image_mask_paints_ones(dict) {
                         Ok(paints_ones) => paints_ones,
@@ -16128,7 +16164,44 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    /// A Form XObject drawn directly in a tiling cell is composited with the
+    /// cell's initial fill alpha, the filled object's /ca, whatever alpha the
+    /// cell has set since (PDFium `CPDF_RenderStatus::ProcessTransparency`
+    /// with the tile's initial states; pdfium bug_2106). Forms nested in it
+    /// start from their own state and are not multiplied again.
     fn handle_do_form(
+        &mut self,
+        name: &str,
+        obj_num: u32,
+        gen_num: u16,
+        resolved_bbox: Option<[f64; 4]>,
+        resolved_matrix: Option<[f64; 6]>,
+    ) {
+        let initial_alpha = self.tile_initial_alpha.take();
+        match initial_alpha {
+            Some(alpha) if alpha < 1.0 => {
+                let (width, height) = (self.buf.width, self.buf.height);
+                let render_mode = self.buf.render_mode();
+                let surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
+                let page_buf = std::mem::replace(&mut self.buf, surface);
+                self.handle_do_form_inner(name, obj_num, gen_num, resolved_bbox, resolved_matrix);
+                let surface = std::mem::replace(&mut self.buf, page_buf);
+                for y in 0..height as i32 {
+                    for x in 0..width as i32 {
+                        let pixel = surface.get_pixel(x, y);
+                        if pixel[3] != 0 {
+                            self.buf.blend_pixel(x, y, pixel, alpha as f32);
+                        }
+                    }
+                }
+                self.recycle_offscreen_buffer(surface);
+            }
+            _ => self.handle_do_form_inner(name, obj_num, gen_num, resolved_bbox, resolved_matrix),
+        }
+        self.tile_initial_alpha = initial_alpha;
+    }
+
+    fn handle_do_form_inner(
         &mut self,
         name: &str,
         obj_num: u32,
@@ -16569,6 +16642,9 @@ impl<'a> RenderState<'a> {
             pattern_text_stroke_pass: false,
             forced_color_suppression: self.forced_color_suppression,
             stroke_adjust_suppressed: self.stroke_adjust_suppressed,
+            tile_initial_alpha: None,
+            cell_strokes_unadjusted: false,
+            type3_image_mask_alpha: None,
             pattern_inherited_alpha: self.pattern_inherited_alpha,
             gs_restore_floor: 0,
             type3_blue_zones: std::mem::take(&mut self.type3_blue_zones),
@@ -17998,6 +18074,18 @@ impl<'a> RenderState<'a> {
         // stroke opacity (/CA) does not carry over (PDFium pixel tests
         // bug_1161, bug_1693, bug_42270577).
         let saved_pattern_alpha = self.pattern_inherited_alpha;
+        // Strokes in pattern cells are not stroke-adjusted, as in PDFium
+        // (pdfium bug_1288_1): adjusting a cell's half-pixel lines turns an
+        // even tint into alternating stripes. Filled rectangles keep their
+        // snapping so neighbouring tiles still meet without seams.
+        let saved_cell_strokes_unadjusted = self.cell_strokes_unadjusted;
+        let saved_tile_initial_alpha = self.tile_initial_alpha;
+        if !self.buf.render_mode().is_high_quality() {
+            self.tile_initial_alpha = Some(saved_gs.fill_alpha.clamp(0.0, 1.0));
+        }
+        if !self.buf.render_mode().is_high_quality() {
+            self.cell_strokes_unadjusted = true;
+        }
         if !program.ops.iter().any(|op| op.operator == "gs") {
             let fill_alpha = saved_gs.fill_alpha.clamp(0.0, 1.0);
             self.pattern_inherited_alpha = (
@@ -18043,6 +18131,8 @@ impl<'a> RenderState<'a> {
 
         // Restore.
         self.pattern_inherited_alpha = saved_pattern_alpha;
+        self.cell_strokes_unadjusted = saved_cell_strokes_unadjusted;
+        self.tile_initial_alpha = saved_tile_initial_alpha;
         self.form_depth = self.form_depth.saturating_sub(1);
         self.gs = saved_gs;
         self.resources = saved_resources;
@@ -18229,7 +18319,7 @@ impl<'a> RenderState<'a> {
         let ctm = self.ctm();
         let flat = flatten_path(&self.path, &ctm, &self.viewport, 0.2);
         let device_t = ctm.concat(&self.viewport.to_transform());
-        let mut options = self.path_raster_options();
+        let mut options = self.stroke_raster_options_for(self.gs.stroke_adjustment);
         // The pattern clip is binary; thin-line paint policies do not apply.
         options.thin_line_mode = crate::render::ThinLineMode::None;
         let outline = device_stroke_outline(
@@ -20769,6 +20859,10 @@ impl<'a> RenderState<'a> {
         let saved_oc_current = self.oc_current_visible;
         let inherited_type3_fill_color = self.fill_pixel_color();
         let inherited_type3_stroke_color = self.stroke_pixel_color();
+        let saved_type3_image_mask_alpha = self.type3_image_mask_alpha;
+        self.type3_image_mask_alpha = (!self.buf.render_mode().is_high_quality()
+            && self.gs.fill_alpha < 1.0)
+            .then_some(self.gs.fill_alpha.clamp(0.0, 1.0));
 
         self.form_depth += 1;
         self.resources = type3_resources.into();
@@ -20833,6 +20927,7 @@ impl<'a> RenderState<'a> {
         }
 
         self.form_depth = self.form_depth.saturating_sub(1);
+        self.type3_image_mask_alpha = saved_type3_image_mask_alpha;
         self.gs = saved_gs;
         self.resources = saved_resources;
         self.base_ctm = saved_base_ctm;
@@ -24420,7 +24515,9 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
             return;
         }
         let path_binary_alpha = self.state.path_smoothing_disabled();
-        let raster_options = self.state.raster_options_for(draw_state.stroke_adjustment);
+        let raster_options = self
+            .state
+            .stroke_raster_options_for(draw_state.stroke_adjustment);
         if !paint_cached_path_stroke(
             &mut self.state.path_stroke_mask_cache,
             &mut self.state.buf,
