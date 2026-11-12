@@ -3,9 +3,9 @@ package io.wellfriendpdf.examples;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import io.wellfriendpdf.Wellfriend;
+import io.wellfriendpdf.WellfriendPdf;
 
-public final class SecureMutationSecureMutation {
+final class SecureMutationSecureMutation {
     public static void main(String[] args) throws Exception {
         if (args.length != 1) {
             throw new IllegalArgumentException("usage: SecureMutationSecureMutation input.pdf");

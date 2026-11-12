@@ -2,9 +2,9 @@ package io.wellfriendpdf.examples;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import io.wellfriendpdf.Wellfriend;
+import io.wellfriendpdf.WellfriendPdf;
 
-public final class FormActionPolicyInteractiveDocx {
+final class FormActionPolicyInteractiveDocx {
     public static void main(String[] args) throws Exception {
         if (args.length != 1) {
             throw new IllegalArgumentException("usage: FormActionPolicyInteractiveDocx input.pdf");

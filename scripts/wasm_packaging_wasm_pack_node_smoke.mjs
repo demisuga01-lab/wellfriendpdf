@@ -140,25 +140,38 @@ try {
     language: "en",
     hyphenation: true,
   });
-  const text_reflowReport = JSON.parse(pdf.text_reflowReportJson());
+  // Geometric reflow must resolve "Hello" to source instructions; minimal.pdf
+  // only draws "Hi", so use the sibling multi_stream.pdf fixture (as the .NET
+  // binding test does) when it is available.
+  let text_reflowPdf = pdf;
+  const text_reflowFixture = resolve(dirname(fixture), "multi_stream.pdf");
+  if (existsSync(text_reflowFixture)) {
+    text_reflowPdf = new wellfriendpdf.WellfriendPdf(new Uint8Array(readFileSync(text_reflowFixture)));
+    result.apis_tested.push("new WellfriendPdf(multi_stream for text reflow)");
+  }
+  const text_reflowReport = JSON.parse(text_reflowPdf.text_reflowReportJson());
   result.text_reflow_schema = text_reflowReport.report?.schema_version;
   result.apis_tested.push("text_reflowReportJson");
-  const text_reflowApply = pdf.text_reflowReflowRegion(text_reflowRequest);
+  const text_reflowApply = text_reflowPdf.text_reflowReflowRegion(text_reflowRequest);
   const text_reflowApplyReport = JSON.parse(text_reflowApply.reportJson());
   result.text_reflow_apply_kind = text_reflowApplyReport.kind;
   result.apis_tested.push("text_reflowReflowRegion");
   const text_reflowValidation = JSON.parse(
-    pdf.text_reflowValidateReflowOutputJson(text_reflowApply.bytes(), text_reflowRequest),
+    text_reflowPdf.text_reflowValidateReflowOutputJson(text_reflowApply.bytes(), text_reflowRequest),
   );
   result.text_reflow_validation_kind = text_reflowValidation.kind;
   result.apis_tested.push("text_reflowValidateReflowOutputJson");
-  const text_reflowUndo = pdf.text_reflowUndoReflow(
+  const text_reflowUndo = text_reflowPdf.text_reflowUndoReflow(
     text_reflowApply.bytes(),
     text_reflowRequest,
   );
   const text_reflowUndoReport = JSON.parse(text_reflowUndo.reportJson());
   result.text_reflow_undo_kind = text_reflowUndoReport.kind;
   result.apis_tested.push("text_reflowUndoReflow");
+  if (text_reflowPdf !== pdf) {
+    text_reflowPdf.close();
+    result.apis_tested.push("close text reflow fixture");
+  }
 
   const codec = JSON.parse(
     wellfriendpdf.WellfriendPdf.codecIsolationReportJson(
