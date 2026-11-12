@@ -828,6 +828,11 @@ public sealed class WellfriendPdfSmokeTests
         Assert.Equal("Shape", root.GetProperty("thin_line_mode").GetString());
         Assert.Equal("Gamma15", root.GetProperty("vector_antialias_gamma").GetString());
         Assert.Equal("Pdfium", root.GetProperty("rect_snapping").GetString());
+        using var profiled = JsonDocument.Parse(contract.WithProfile(RenderContractProfile.PdfiumTest).ToJson());
+        Assert.Equal("PdfiumTest", profiled.RootElement.GetProperty("profile").GetString());
+        Assert.Equal("Off", profiled.RootElement.GetProperty("stroke_adjustment").GetString());
+        Assert.Equal("Pdfium", profiled.RootElement.GetProperty("text_gamma").GetString());
+        Assert.Equal(100, profiled.RootElement.GetProperty("form_highlight").GetProperty("text").GetProperty("a").GetInt32());
         Assert.Equal(20, root.GetProperty("forced_colors").GetProperty("path_stroke").GetProperty("g").GetInt32());
         Assert.True(root.GetProperty("forced_colors").GetProperty("convert_fill_to_stroke").GetBoolean());
         Assert.Equal(80, root.GetProperty("form_highlight").GetProperty("signature").GetProperty("a").GetInt32());

@@ -107,6 +107,22 @@ public sealed record RenderContract
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public RenderContractRectSnapping RectSnapping { get; init; } = RenderContractRectSnapping.Default;
 
+    /// <summary>Stroke adjustment; omitted from the JSON while Default.</summary>
+    [JsonPropertyName("stroke_adjustment")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public RenderContractStrokeAdjustment StrokeAdjustment { get; init; } =
+        RenderContractStrokeAdjustment.Default;
+
+    /// <summary>Glyph coverage gamma; omitted from the JSON while Linear.</summary>
+    [JsonPropertyName("text_gamma")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public RenderContractTextGamma TextGamma { get; init; } = RenderContractTextGamma.Linear;
+
+    /// <summary>Render profile last applied with <see cref="WithProfile"/>; omitted while Default.</summary>
+    [JsonPropertyName("profile")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public RenderContractProfile Profile { get; init; } = RenderContractProfile.Default;
+
     [JsonPropertyName("grayscale")]
     public bool Grayscale { get; init; }
 
@@ -349,6 +365,43 @@ public sealed record RenderContract
         return this with { RectSnapping = RequireDefined(rectSnapping, nameof(rectSnapping)) };
     }
 
+    public RenderContract WithStrokeAdjustment(RenderContractStrokeAdjustment strokeAdjustment)
+    {
+        return this with
+        {
+            StrokeAdjustment = RequireDefined(strokeAdjustment, nameof(strokeAdjustment)),
+        };
+    }
+
+    public RenderContract WithTextGamma(RenderContractTextGamma textGamma)
+    {
+        return this with { TextGamma = RequireDefined(textGamma, nameof(textGamma)) };
+    }
+
+    /// <summary>
+    /// Applies a render profile: Pdfium renders like PDFium (PDFium rectangle snapping, no stroke
+    /// adjustment, PDFium text gamma and image transformer); PdfiumTest adds the form highlight of
+    /// PDFium's pdfium_test harness (RGB 221,228,255 at alpha 100); Default resets those fields.
+    /// A focus field is kept.
+    /// </summary>
+    public RenderContract WithProfile(RenderContractProfile profile)
+    {
+        profile = RequireDefined(profile, nameof(profile));
+        bool pdfium = profile != RenderContractProfile.Default;
+        string? focusField = FormHighlight?.FocusField;
+        RenderContractFormHighlightPolicy? highlight = profile == RenderContractProfile.PdfiumTest
+            ? RenderContractFormHighlightPolicy.All(new RenderContractColor(221, 228, 255, 100), focusField)
+            : focusField is null ? null : new RenderContractFormHighlightPolicy { FocusField = focusField };
+        return this with
+        {
+            Profile = profile,
+            RectSnapping = pdfium ? RenderContractRectSnapping.Pdfium : RenderContractRectSnapping.Default,
+            StrokeAdjustment = pdfium ? RenderContractStrokeAdjustment.Off : RenderContractStrokeAdjustment.Default,
+            TextGamma = pdfium ? RenderContractTextGamma.Pdfium : RenderContractTextGamma.Linear,
+            FormHighlight = highlight,
+        };
+    }
+
     /// <summary>One forced colour for every path and text paint.</summary>
     public RenderContract WithForcedColors(RenderContractColor foreground, bool convertFillToStroke = false)
     {
@@ -479,6 +532,9 @@ public sealed record RenderContract
         ValidateEnum(ThinLineMode, nameof(ThinLineMode));
         ValidateEnum(VectorAntialiasGamma, nameof(VectorAntialiasGamma));
         ValidateEnum(RectSnapping, nameof(RectSnapping));
+        ValidateEnum(StrokeAdjustment, nameof(StrokeAdjustment));
+        ValidateEnum(TextGamma, nameof(TextGamma));
+        ValidateEnum(Profile, nameof(Profile));
         ValidateEnum(ColorScheme, nameof(ColorScheme));
         ValidateEnum(PrintProfile, nameof(PrintProfile));
         ValidateEnum(Halftone, nameof(Halftone));
@@ -754,6 +810,28 @@ public enum RenderContractRectSnapping
 {
     Default,
     Pdfium,
+}
+
+/// <summary>Stroke adjustment: Default (Wellfriend) or Off (never snap strokes to whole pixels, like PDFium).</summary>
+public enum RenderContractStrokeAdjustment
+{
+    Default,
+    Off,
+}
+
+/// <summary>Glyph coverage gamma: Linear or Pdfium (PDFium's text gamma table).</summary>
+public enum RenderContractTextGamma
+{
+    Linear,
+    Pdfium,
+}
+
+/// <summary>Render profile: Default, Pdfium (render like PDFium) or PdfiumTest (plus pdfium_test's form highlight).</summary>
+public enum RenderContractProfile
+{
+    Default,
+    Pdfium,
+    PdfiumTest,
 }
 
 public enum RenderContractAnnotationPolicy

@@ -25,7 +25,8 @@ use wellfriendpdf_engine::render::{
     CompositingPolicy, ContractColor, DeterminismPolicy, DeviceClip, DeviceMatrix, ExactnessPolicy,
     ExecutionMode, ForcedColorScheme, FormHighlightPolicy, FormRenderPolicy, HalftonePolicy,
     OptionalContentStateId, OverprintPolicy, PageBox, PixelFormat, PrintProfile, RectSnapping,
-    RenderContract, RenderingIntent, SmoothingPolicy, ThinLineMode, VectorAntialiasGamma,
+    RenderContract, RenderProfile, RenderingIntent, SmoothingPolicy, StrokeAdjustment,
+    ThinLineMode, VectorAntialiasGamma,
 };
 use wellfriendpdf_engine::{
     ContentEngine, FontSubstitutionLog, RenderContractTelemetryReport, RenderMode,
@@ -87,6 +88,8 @@ struct ContractFields {
     thin_line_mode: Option<String>,
     vector_antialias_gamma: Option<String>,
     rect_snapping: Option<String>,
+    stroke_adjustment: Option<String>,
+    profile: Option<String>,
     forced_colors: Option<String>,
     form_highlight: Option<String>,
     max_pixels: Option<String>,
@@ -527,6 +530,8 @@ async fn read_fields(mut multipart: Multipart) -> ServerResult<ContractFields> {
                 f.vector_antialias_gamma = text!("vector_antialias_gamma")
             }
             Some("rect_snapping") => f.rect_snapping = text!("rect_snapping"),
+            Some("stroke_adjustment") => f.stroke_adjustment = text!("stroke_adjustment"),
+            Some("profile") => f.profile = text!("profile"),
             Some("forced_colors") => f.forced_colors = text!("forced_colors"),
             Some("form_highlight") => f.form_highlight = text!("form_highlight"),
             Some("max_pixels") => f.max_pixels = text!("max_pixels"),
@@ -866,6 +871,15 @@ fn apply_policy_overrides(
     contract: &mut RenderContract,
     fields: &ContractFields,
 ) -> ServerResult<()> {
+    // The profile first, so explicit policy fields override what it sets.
+    if let Some(value) = optional_text(fields.profile.as_deref()) {
+        let profile = RenderProfile::from_name(value).ok_or_else(|| {
+            ServerError::InvalidParameter(format!(
+                "profile must be default, pdfium or pdfium-test; got '{value}'"
+            ))
+        })?;
+        contract.apply_profile(profile);
+    }
     if let Some(value) = optional_text(fields.execution_mode.as_deref()) {
         contract.execution_mode = parse_execution_mode(value)?;
     }
@@ -936,6 +950,17 @@ fn apply_policy_overrides(
     }
     if let Some(value) = optional_text(fields.rect_snapping.as_deref()) {
         contract.rect_snapping = parse_rect_snapping(value)?;
+    }
+    if let Some(value) = optional_text(fields.stroke_adjustment.as_deref()) {
+        contract.stroke_adjustment = match normalized_policy_token(value).as_str() {
+            "default" => StrokeAdjustment::Default,
+            "off" => StrokeAdjustment::Off,
+            _ => {
+                return Err(ServerError::InvalidParameter(format!(
+                    "stroke_adjustment must be Default or Off; got '{value}'"
+                )))
+            }
+        };
     }
     if let Some(value) = optional_text(fields.forced_colors.as_deref()) {
         contract.forced_colors = if is_off_token(value) {

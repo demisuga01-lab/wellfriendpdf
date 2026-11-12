@@ -423,6 +423,29 @@ impl PyRenderContract {
         validate_py_render_contract(contract)
     }
 
+    /// Stroke adjustment: `default` (Wellfriend) or `off` (never snap
+    /// strokes to whole pixels, like PDFium).
+    fn with_stroke_adjustment(&self, stroke_adjustment: &str) -> PyResult<Self> {
+        let mut contract = self.contract.clone();
+        contract.stroke_adjustment =
+            parse_render_contract_enum_py("stroke_adjustment", stroke_adjustment)?;
+        validate_py_render_contract(contract)
+    }
+
+    /// Render profile: `default`, `pdfium` (render like PDFium: rectangle
+    /// snapping, no stroke adjustment, PDFium text gamma and image
+    /// transformer) or `pdfium-test` (`pdfium` plus pdfium_test's form
+    /// highlight). Sets every field the profile bundles.
+    fn with_profile(&self, profile: &str) -> PyResult<Self> {
+        let profile =
+            wellfriendpdf_engine::render::RenderProfile::from_name(profile).ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "unsupported render profile '{profile}'; use default, pdfium or pdfium-test"
+                ))
+            })?;
+        validate_py_render_contract(self.contract.with_profile(profile))
+    }
+
     /// Forced (high-contrast) paint colours. Colours are `(r, g, b)` or
     /// `(r, g, b, a)` tuples; omitted stroke/text colours default to
     /// `path_fill`.

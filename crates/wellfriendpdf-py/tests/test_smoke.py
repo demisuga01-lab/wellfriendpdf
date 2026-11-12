@@ -178,6 +178,13 @@ def test_render_contract_raster_policy_forced_color_and_form_highlight_builders(
     assert value["thin_line_mode"] == "Shape"
     assert value["vector_antialias_gamma"] == "Gamma15"
     assert value["rect_snapping"] == "Pdfium"
+    unadjusted = json.loads(contract.with_stroke_adjustment("off").to_json())
+    assert unadjusted["stroke_adjustment"] == "Off"
+    profiled = json.loads(contract.with_profile("pdfium-test").to_json())
+    assert profiled["profile"] == "PdfiumTest"
+    assert profiled["rect_snapping"] == "Pdfium"
+    assert profiled["stroke_adjustment"] == "Off"
+    assert profiled["form_highlight"]["text"] == {"r": 221, "g": 228, "b": 255, "a": 100}
     assert value["forced_colors"]["path_fill"] == {"r": 0, "g": 0, "b": 0, "a": 255}
     assert value["forced_colors"]["path_stroke"]["g"] == 20
     assert value["forced_colors"]["text_fill"] == value["forced_colors"]["path_fill"]
