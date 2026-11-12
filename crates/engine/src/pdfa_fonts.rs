@@ -947,6 +947,7 @@ fn bundled_substitute(base: &str, flags: i64) -> (&'static str, &'static [u8]) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn face_embeddable(face: &ttf_parser::Face<'_>) -> bool {
     let fs_type = crate::fonts::pdf_embedding::serialized_fs_type(face).unwrap_or(0);
     // Installable (0), preview & print (4) and editable (8) embedding all

@@ -687,4 +687,63 @@ round that added it.
 | Parallel page rendering with one cache per worker | single-threaded per document | single-threaded | yes (`par_bridge`, per-worker cache) | 93 docs 11.8 s vs Poppler 101.8 s, PDFium 26.8 s |
 | SIMD blending and colour conversion | AGG + Skia SIMD | limited | yes (`render-simd` crate) | |
 | Link-time optimisation in release builds | yes | distro-dependent | yes (`lto = "thin"`) | |
-| Tuned memory allocator | PartitionAlloc | system malloc | under evaluation | |
+| Tuned memory allocator | PartitionAlloc | system malloc | opt-in `mimalloc` feature (CLI, C API); default stays glibc with tuned settings | mimalloc: -9.5% CPU but +30-40% peak RSS, no multi-thread wall gain (see "Global allocator") |
+
+## Global allocator (round 12, main 15cd153, 2026-11-12)
+
+PDFium allocates through PartitionAlloc, and Wellfriend uses the system allocator
+(glibc on Linux, which the CLI tunes with `mallopt`). Round 12 measured mimalloc
+0.1.52 (mimalloc v3) and jemalloc (tikv-jemallocator 0.6) as the CLI's global
+allocator. All three builds use the same source and toolchain. Every page of
+`tests/corpus/pdfs` (75 PDFs, 596 page images at 50 dpi) rendered byte-identically
+with each allocator, with the same exit codes.
+
+Single-threaded, using the bench A/B above (91 documents, 157 pages, 150 dpi, one
+pinned core, best of two). The CPU column is the change against 7264092 over
+several A/B runs. The A/A run (system allocator against 7264092) moved by up to 2%.
+
+| Allocator | CPU time | Median peak RSS | Max peak RSS |
+|---|---:|---:|---:|
+| system (glibc, tuned) | 0% (A/A: -1% to +2%) | 37 MB | 172 MB |
+| mimalloc | **-7% to -12%** (4 runs, mean -9.5%) | 51 MB (+38%) | 222-224 MB (+30%) |
+| mimalloc, `MIMALLOC_ALLOW_THP=0` | -3% (3 runs) | 39 MB | 206 MB (+20%) |
+| jemalloc | -2% to -4% (3 runs) | 37-39 MB | 183-185 MB (+7%) |
+
+mimalloc's single-threaded gain comes mostly from committing memory in large
+(transparent huge page) blocks. This is also the source of its higher peak RSS.
+Without THP, or with lazy arena commit (`MIMALLOC_ARENA_EAGER_COMMIT=0`), the RSS
+cost mostly disappears, and so does most of the gain.
+
+Multi-threaded: `atlas_animals` (303 pages, 168 MB), 150 dpi PNG, `/usr/bin/time -v`.
+Runs were interleaved, with 2 to 5 repeats per setting.
+
+| Threads | Allocator | User CPU | System CPU | Peak RSS |
+|---|---|---:|---:|---:|
+| 8 (default) | system | 244-248 s | 2.5-2.9 s | 2.72-2.93 GB |
+| 8 (default) | mimalloc | 244-250 s | 1.5-26 s | 2.40-2.48 GB (-14%) |
+| 8 (default) | jemalloc | 244-248 s | 15.5-16.8 s | 1.89-1.90 GB (-33%) |
+| 4 | system | 180-241 s | 1.3-2.2 s | 1.52-1.59 GB |
+| 4 | mimalloc | 191-212 s | 7.8-12.3 s | 1.33-1.36 GB (-13%) |
+| 4 | jemalloc | 202-206 s | 13.6-13.7 s | 1.03 GB (-34%) |
+| 2 | system (lean glibc mode) | 172-236 s | 11.7-14.7 s | 0.55-0.56 GB |
+| 2 | mimalloc | 204-237 s | 1.1-1.3 s | 0.79-0.86 GB (+43% to +54%) |
+| 2 | jemalloc | 209-237 s | 15.0-16.7 s | 0.57-0.58 GB (+3% to +4%) |
+
+Wall time on 8 threads ranged from 42 to 62 s for every allocator, because the
+shared VPS was running other builds (load 12 to 17). No allocator was measurably
+faster on wall time. User CPU time was also the same within that noise. jemalloc
+spends 13 to 17 s of system time (page purging) on every run, against 1 to 3 s for
+the system allocator on 4 and 8 threads.
+
+Decision: the default stays the system allocator. mimalloc is the only candidate
+with a clear CPU gain, and that gain comes with materially higher peak RSS on the
+small documents it speeds up (+38% median, +30% max). It also gives a 43-54% higher
+peak when the CLI is given two threads, because that is where the CLI's lean glibc
+settings apply. On large multi-threaded renders its lower peak is not matched by a
+faster wall time. jemalloc saves memory on many threads but costs system CPU time,
+and it does not build for MSVC. mimalloc stays available as a non-default
+`mimalloc` cargo feature on `wellfriendpdf-cli` and on `wellfriendpdf-capi`, for
+deployments that prefer CPU time over peak memory. When it is enabled, the CLI
+skips its glibc tunables. The C API feature changes only the library's own Rust
+allocations. Every buffer it hands out is freed through its own `*_free`
+functions, so the host's allocator is never mixed with mimalloc.

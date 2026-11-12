@@ -4426,7 +4426,7 @@ struct CanonicalizeArgs {
 /// A tunable the environment already sets (`MALLOC_MMAP_THRESHOLD_`,
 /// `MALLOC_TRIM_THRESHOLD_`, `MALLOC_TOP_PAD_`, or `GLIBC_TUNABLES`) is left
 /// as the platform chose it.
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc")))]
 fn tune_allocator_for_one_shot_process() {
     const M_TRIM_THRESHOLD: i32 = -1;
     const M_TOP_PAD: i32 = -2;
@@ -4444,7 +4444,7 @@ fn tune_allocator_for_one_shot_process() {
 /// Bound glibc's per-thread heaps to the page workers (plus the CLI thread):
 /// freed memory is reused across workers instead of each arena keeping its
 /// own peak. Called before the worker pool starts.
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc")))]
 fn tune_allocator_for_workers(workers: usize) {
     const M_ARENA_MAX: i32 = -8;
     const M_TRIM_THRESHOLD: i32 = -1;
@@ -4465,13 +4465,13 @@ fn tune_allocator_for_workers(workers: usize) {
 }
 
 /// Worker counts at or below which the allocator keeps memory lean.
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc")))]
 const LEAN_ALLOCATOR_WORKERS: usize = 2;
 
-#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+#[cfg(not(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc"))))]
 fn tune_allocator_for_workers(_workers: usize) {}
 
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc")))]
 fn set_malloc_tunable(param: i32, env: &str, value: i32) {
     extern "C" {
         fn mallopt(param: i32, value: i32) -> i32;
@@ -4491,8 +4491,17 @@ fn set_malloc_tunable(param: i32, env: &str, value: i32) {
     }
 }
 
-#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+#[cfg(not(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc"))))]
 fn tune_allocator_for_one_shot_process() {}
+
+/// Opt-in `mimalloc` feature: mimalloc serves every allocation instead of the
+/// platform allocator, and the glibc tunables above are not applied. Off by
+/// default: on small documents it saves CPU time by committing memory in
+/// larger blocks, which raises their peak RSS; see "Global allocator" in
+/// docs/benchmarks/poppler-pdfium-head-to-head-2026-11.md.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> ExitCode {
     tune_allocator_for_one_shot_process();

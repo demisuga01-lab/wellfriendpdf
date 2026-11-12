@@ -19,6 +19,12 @@ use wellfriendpdf_engine::{
     ParseOptions, RenderDocumentCache, RenderMode, Result as WellfriendResult, TextExtractor,
 };
 
+/// Opt-in `mimalloc` feature: the library's Rust allocations use mimalloc.
+/// Off by default so the host application keeps control of allocation.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod ocr_backend;
 pub mod story_session;
 pub mod xfa_session;
