@@ -1,6 +1,10 @@
 //! Typed PDF Type 4 calculator compiler/evaluator. PDF numeric syntax is not
 //! general PostScript syntax, and conditional blocks are not operand values.
-//! Integer/real arithmetic uses an explicit portable i32 / finite-f64 profile.
+//! Integers are exact i32 values; reals are finite f64 values, except that
+//! magnitudes of 2^24 and more are rounded to single precision. PDFium's
+//! calculator keeps every value as a `float`; below 2^24 a float only differs
+//! from a double in its last digits, but larger values lose whole units, and
+//! programs that subtract large nearly-equal numbers rely on that.
 use super::{MAX_TYPE4_PROGRAM_BYTES, MAX_TYPE4_STACK, MAX_TYPE4_TOKENS};
 use std::sync::Arc;
 
@@ -28,10 +32,17 @@ impl Number {
     }
 
     fn finite(value: f64) -> Result<Self, Error> {
-        value
-            .is_finite()
-            .then_some(Self::Real(value))
-            .ok_or(Error::UndefinedResult)
+        if !value.is_finite() {
+            return Err(Error::UndefinedResult);
+        }
+        let magnitude = value.abs();
+        Ok(Self::Real(
+            if (16_777_216.0..=f64::from(f32::MAX)).contains(&magnitude) {
+                f64::from(value as f32)
+            } else {
+                value
+            },
+        ))
     }
 
     fn convert_integer(self) -> Result<Self, Error> {
@@ -330,8 +341,8 @@ pub(super) fn initial_stack(inputs: &[f64]) -> Option<Vec<Value>> {
     Some(
         inputs
             .iter()
-            .map(|&v| Value::Number(Number::Real(v)))
-            .collect(),
+            .map(|&v| Number::finite(v).ok().map(Value::Number))
+            .collect::<Option<Vec<_>>>()?,
     )
 }
 
