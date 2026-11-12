@@ -475,3 +475,64 @@ end-of-line markers, so no decoder can resynchronise after it. MuPDF's higher
 ink figure with no more identical rows suggests it paints the damaged region
 dark rather than recovering it. This is a single small image, so it is a spot
 check rather than a broad measurement.
+
+### Broader sweep: 24 damaged G4 samples
+
+The same test repeated on 6 Group 4 images (from the pdf.js corpus and from
+PDFium's pixel tests), each with 4 bytes damaged at 20%, 40%, 60% and 80% of
+the stream (ASCIIHex streams get hex-digit swaps so they stay valid). The score
+is the share of rows identical to that engine's own clean render, averaged over
+the 24 samples.
+
+| Engine | Rows recovered |
+|---|---:|
+| Poppler 26.07 | 89.2% |
+| PDFium | 92.2% |
+| MuPDF 1.27 | 88.7% |
+| Wellfriend | **92.2%** |
+
+Wellfriend ties PDFium for the best recovery. None of the test files use
+Group 3 (K >= 0), so G3 resynchronisation was not measured.
+
+## PDFium's own pixel tests (main c2e326b, 2026-11-12)
+
+Every page in PDFium's `testing/resources/pixel` suite that has a default
+`*_expected.pdf.N.png` (230 pages, `.in` templates expanded with PDFium's
+`fixup_pdf_template.py`) was rendered at 72 dpi by Wellfriend and by Poppler's
+`pdftoppm`, and compared with PDFium's expected image (luminance SSIM, 7x7
+box window). This measures how closely each engine reproduces PDFium's
+behaviour, including on PDFium's deliberately malformed regression files.
+
+| | Mean SSIM | Median | Pages < 0.90 | Render failures |
+|---|---:|---:|---:|---:|
+| Wellfriend before (7d8b831) | 0.898 | 0.988 | 35 | 15 |
+| Wellfriend now | **0.973** | **0.994** | **12** | **0** |
+| Poppler 26.07 | 0.931 | 0.989 | 28 | 4 |
+
+Wellfriend is closer to PDFium than Poppler on 58 pages; Poppler is closer on 21.
+No page scored lower than before the fixes. What changed:
+
+- Compatibility rendering falls back to immediate replay when the cached
+  display-list path meets a malformed operator, a missing resource or an
+  unterminated inline image, so the bad object is skipped rather than the page
+  failing (exact/HighQuality modes still refuse).
+- A panic inside the JPEG 2000 decoder crate is caught and turned into an
+  error (bug_1258634).
+- The object parser recovers bare words, cut-off arrays and dictionaries,
+  wrong or missing `endstream`, junk after `stream`, duplicate objects in object
+  streams and doubled minus signs; the xref rebuild finds object headers in the
+  middle of a line. bug_828206 and bug_830221, which Poppler also fails, now render.
+- Images: over-long data is trimmed, missing BitsPerComponent defaults to 1
+  for JBIG2/CCITT, short bilevel images pad white, short soft masks are
+  transparent, malformed /Matte and color-key masks are ignored, out-of-range
+  Indexed palettes draw, and indirect /Filter arrays resolve.
+- Drawing: negative dash phases, calculator-function outputs from the top of
+  the stack, large pattern cells over small fills, pattern opacity, single-point
+  subpaths and zero-area fills drawn as hairlines (as PDFium does).
+
+Known remaining gaps against PDFium: Lab and function-based Indexed shading
+interpolation and folded tensor patches (`shade`, `shade-tensor`), text painted
+with a pattern (bug_1772), non-embedded TrueType Symbol fonts (bug_1442723), a
+Type 3 image-mask glyph painted with a pattern (bug_40721524), truncated JBIG2
+partial decode (bug_867501), and bug_554151, where PDFium fills a nearly empty
+612x104000 image black while Wellfriend fills it white as Poppler does.
