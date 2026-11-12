@@ -76,6 +76,7 @@ fn options<'a>(
             ..Default::default()
         },
         plate: None,
+        lenient_decode: false,
     }
 }
 fn dictionary(space: PdfObject) -> PdfDictionary {

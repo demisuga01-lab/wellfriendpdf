@@ -711,6 +711,12 @@ impl FontResolver {
     }
 }
 
+/// Whether `name` (subset tag allowed) is a standard 14 font or one of the
+/// aliases producers write for them.
+pub(crate) fn is_standard14_alias(name: &str) -> bool {
+    standard14_base_name(name).is_some()
+}
+
 /// The standard 14 font whose built-in metrics apply to `name`, after removing
 /// a subset tag. Besides the 14 names themselves this accepts the aliases PDF
 /// producers commonly write for them (Arial/ArialMT for Helvetica,

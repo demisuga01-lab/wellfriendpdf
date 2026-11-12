@@ -6715,6 +6715,21 @@ struct RenderState<'a> {
     /// Nesting depth of text-showing operators; while non-zero, forced
     /// colours use the text entries of the scheme.
     forced_color_text_depth: u32,
+    /// Set while text is stroked into the coverage mask a stroke pattern is
+    /// painted through.
+    pattern_text_stroke_pass: bool,
+    /// Soft-mask groups are drawn without stroke adjustment: Poppler's
+    /// transparency-group Splash does not adjust, and PDFium never does.
+    stroke_adjust_suppressed: bool,
+    /// Inside a tiling cell (compat): the filled object's fill alpha, which
+    /// Form XObjects drawn directly in the cell are composited with.
+    tile_initial_alpha: Option<f64>,
+    /// Inside a tiling cell (compat): strokes are drawn without stroke
+    /// adjustment.
+    cell_strokes_unadjusted: bool,
+    /// While a Type 3 charproc runs (compat): its text fill alpha when below
+    /// 1, applied once more to the image masks it paints.
+    type3_image_mask_alpha: Option<f64>,
     /// Nesting depth of pattern paints, during which forced colours are
     /// suspended (pattern cells keep their real colours, as in PDFium).
     forced_color_suppression: u32,
@@ -8611,7 +8626,12 @@ impl<'a> RenderState<'a> {
             image_smoothing_policy: SmoothingPolicy::Antialiased,
             forced_color_scheme: None,
             forced_color_text_depth: 0,
+            pattern_text_stroke_pass: false,
             forced_color_suppression: 0,
+            stroke_adjust_suppressed: false,
+            tile_initial_alpha: None,
+            cell_strokes_unadjusted: false,
+            type3_image_mask_alpha: None,
             pattern_inherited_alpha: (1.0, 1.0),
             gs_restore_floor: 0,
             type3_blue_zones: Type3BlueState::default(),
@@ -8691,6 +8711,7 @@ impl<'a> RenderState<'a> {
             options: self.color_transform_options(),
             functions: self.function_resources(),
             plate: self.plate.as_deref(),
+            lenient_decode: !self.buf.render_mode().is_high_quality(),
         }
     }
 
@@ -8776,7 +8797,26 @@ impl<'a> RenderState<'a> {
     /// Vector raster options for a non-glyph path paint under the current
     /// graphics state (stroke adjustment follows the render mode and `/SA`).
     fn path_raster_options(&self) -> VectorRasterOptions {
-        VectorRasterOptions::for_path_paint(self.buf.render_mode(), self.gs.stroke_adjustment)
+        self.raster_options_for(self.gs.stroke_adjustment)
+    }
+
+    fn stroke_raster_options_for(&self, stroke_adjustment_requested: bool) -> VectorRasterOptions {
+        let mut options = self.raster_options_for(stroke_adjustment_requested);
+        if self.cell_strokes_unadjusted {
+            options.stroke_adjust = false;
+        }
+        options
+    }
+
+    fn raster_options_for(&self, stroke_adjustment_requested: bool) -> VectorRasterOptions {
+        let mut options = VectorRasterOptions::for_path_paint(
+            self.buf.render_mode(),
+            stroke_adjustment_requested,
+        );
+        if self.stroke_adjust_suppressed {
+            options.stroke_adjust = false;
+        }
+        options
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -11567,10 +11607,30 @@ impl<'a> RenderState<'a> {
                 let saved_blend = self.buf.blend_mode;
                 self.buf.blend_mode = state.blend_mode;
                 let path_binary_alpha = self.path_smoothing_disabled();
-                let raster_options = VectorRasterOptions::for_path_paint(
-                    self.buf.render_mode(),
-                    state.stroke_adjustment,
-                );
+                let raster_options = self.raster_options_for(state.stroke_adjustment);
+                let zero_area = if state.fill_with_stroke {
+                    None
+                } else {
+                    crate::render::zero_area::compat_zero_area_paint(
+                        &self.buf,
+                        path,
+                        &state.ctm,
+                        &self.viewport,
+                    )
+                };
+                if let Some(crate::render::zero_area::ZeroAreaPaint::Cosmetic(segment)) = zero_area
+                {
+                    crate::render::zero_area::stroke_device_hairlines(
+                        &mut self.buf,
+                        &self.viewport,
+                        &[segment],
+                        state.fill_color,
+                        path_binary_alpha,
+                        &self.cancel,
+                    );
+                    self.buf.blend_mode = saved_blend;
+                    return;
+                }
                 if !paint_cached_path_fill(
                     &mut self.path_fill_mask_cache,
                     &mut self.buf,
@@ -11604,6 +11664,16 @@ impl<'a> RenderState<'a> {
                         &self.cancel,
                     );
                 }
+                if let Some(crate::render::zero_area::ZeroAreaPaint::Lines(subpaths)) = zero_area {
+                    crate::render::zero_area::paint_zero_area_lines(
+                        &mut self.buf,
+                        &self.viewport,
+                        &subpaths,
+                        state.fill_color,
+                        path_binary_alpha,
+                        &self.cancel,
+                    );
+                }
                 self.buf.blend_mode = saved_blend;
             }
             DisplayOp::StrokePath {
@@ -11629,10 +11699,7 @@ impl<'a> RenderState<'a> {
                 let saved_blend = self.buf.blend_mode;
                 self.buf.blend_mode = state.blend_mode;
                 let path_binary_alpha = self.path_smoothing_disabled();
-                let raster_options = VectorRasterOptions::for_path_paint(
-                    self.buf.render_mode(),
-                    state.stroke_adjustment,
-                );
+                let raster_options = self.stroke_raster_options_for(state.stroke_adjustment);
                 if !paint_cached_path_stroke(
                     &mut self.path_stroke_mask_cache,
                     &mut self.buf,
@@ -12685,6 +12752,19 @@ impl<'a> RenderState<'a> {
         self.fill_pixel_color_unforced()
     }
 
+    /// The colour a stencil image mask paints with. Inside a Type 3 glyph
+    /// drawn with fill alpha below 1, PDFium paints image masks with that
+    /// alpha twice (the glyph's fill colour carries it and the image applies
+    /// its graphics-state alpha again; pdfium bug_1746), where paths in the
+    /// glyph get it once.
+    fn image_mask_pixel_color(&mut self) -> PixelColor {
+        let mut color = self.fill_pixel_color_unforced();
+        if let Some(alpha) = self.type3_image_mask_alpha {
+            color[3] = (f64::from(color[3]) * alpha).round().clamp(0.0, 255.0) as u8;
+        }
+        color
+    }
+
     /// The resolved fill colour ignoring any forced colour scheme. Image
     /// masks keep their real colour under a forced scheme (PDFium only
     /// translates path and text colours).
@@ -13706,7 +13786,7 @@ impl<'a> RenderState<'a> {
         let width = self.gs.line_width;
         let dash = self.dash_state();
         let path_binary_alpha = self.path_smoothing_disabled();
-        let raster_options = self.path_raster_options();
+        let raster_options = self.stroke_raster_options_for(self.gs.stroke_adjustment);
         if self.stroke_overprint_preview_enabled() && self.forced_stroke_pixel_color().is_none() {
             if let Some(cmyk) = device_cmyk_components(&self.gs.stroke_color) {
                 let overprint_mode = self.active_overprint_mode();
@@ -13815,6 +13895,27 @@ impl<'a> RenderState<'a> {
             }
         }
         let color = self.fill_pixel_color();
+        // Compat rendering keeps degenerate fills visible the way PDFium
+        // does: a two-point path is a one-pixel line instead of a fill, and
+        // retraced parts of other subpaths are stroked one pixel wide.
+        let zero_area = crate::render::zero_area::compat_zero_area_paint(
+            &self.buf,
+            &self.path,
+            &ctm,
+            &self.viewport,
+        );
+        if let Some(crate::render::zero_area::ZeroAreaPaint::Cosmetic(segment)) = zero_area {
+            crate::render::zero_area::stroke_device_hairlines(
+                &mut self.buf,
+                &self.viewport,
+                &[segment],
+                color,
+                path_binary_alpha,
+                &self.cancel,
+            );
+            self.path.clear();
+            return;
+        }
         if !paint_cached_path_fill(
             &mut self.path_fill_mask_cache,
             &mut self.buf,
@@ -13842,6 +13943,16 @@ impl<'a> RenderState<'a> {
                 &self.cancel,
             );
         }
+        if let Some(crate::render::zero_area::ZeroAreaPaint::Lines(subpaths)) = zero_area {
+            crate::render::zero_area::paint_zero_area_lines(
+                &mut self.buf,
+                &self.viewport,
+                &subpaths,
+                color,
+                path_binary_alpha,
+                &self.cancel,
+            );
+        }
         self.path.clear();
     }
 
@@ -13849,6 +13960,129 @@ impl<'a> RenderState<'a> {
         let pending = self.take_pending_clip_with_path();
         self.fill_stroke_and_clear_unclipped(rule);
         self.apply_clip_after_paint(pending);
+    }
+
+    /// PDFium (`CFX_RenderDevice::DrawFillStrokePath`) draws a fill-and-stroke
+    /// whose stroke is translucent as one knockout pair: where the stroke
+    /// covers, it is composited over the backdrop instead of over the fill,
+    /// so the fill never shows through the stroke.
+    fn fill_stroke_knockout_applies(&self) -> bool {
+        !self.buf.render_mode().is_high_quality()
+            && self.gs.stroke_alpha < 1.0
+            && self.gs.fill_alpha > 0.0
+            && self.gs.blend_mode == BlendMode::Normal
+            && self.buf.smask_mask().is_none()
+            && self.plate.is_none()
+            && self.forced_color_scheme.is_none()
+            && !self.is_pattern_fill()
+            && !self.is_pattern_stroke()
+            && !self.fill_overprint_preview_enabled()
+            && !self.stroke_overprint_preview_enabled()
+    }
+
+    /// The stroke's coverage over its device bounds, and the backdrop there
+    /// before the fill is painted.
+    fn knockout_stroke_coverage(
+        &mut self,
+        ctm: &Transform2D,
+        raster_options: VectorRasterOptions,
+        binary_alpha: bool,
+    ) -> Option<KnockoutStroke> {
+        let (width, height) = (self.buf.width, self.buf.height);
+        let render_mode = self.buf.render_mode();
+        let mut surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
+        let dash = self.dash_state();
+        PathPainter::stroke_path_with_options(
+            &mut surface,
+            &self.path,
+            ctm,
+            &self.viewport,
+            [0, 0, 0, 255],
+            self.gs.line_width,
+            &dash,
+            &self.gs.line_cap,
+            &self.gs.line_join,
+            self.gs.miter_limit,
+            self.gs.path_flatness_tolerance(),
+            binary_alpha,
+            raster_options,
+            &self.cancel,
+        );
+        let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for y in 0..height as i32 {
+            for x in 0..width as i32 {
+                if surface.get_pixel(x, y)[3] != 0 {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x + 1);
+                    y1 = y1.max(y + 1);
+                }
+            }
+        }
+        let knockout = (x0 < x1 && y0 < y1).then(|| {
+            let mut coverage = Vec::with_capacity(((x1 - x0) * (y1 - y0)) as usize);
+            let mut backdrop = Vec::with_capacity(coverage.capacity());
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    coverage.push(surface.get_pixel(x, y)[3]);
+                    backdrop.push(self.buf.get_pixel(x, y));
+                }
+            }
+            KnockoutStroke {
+                x0,
+                y0,
+                width: x1 - x0,
+                coverage,
+                backdrop,
+            }
+        });
+        self.recycle_offscreen_buffer(surface);
+        knockout
+    }
+
+    /// Paint the stroke of a knockout fill-and-stroke: each pixel becomes
+    /// the stroke over the saved backdrop, blended with the filled result by
+    /// the stroke's coverage (AGG's knockout span compositing).
+    fn composite_knockout_stroke(&mut self, knockout: KnockoutStroke, stroke: PixelColor) {
+        let unit = |v: u8| f32::from(v) / 255.0;
+        let alpha = unit(stroke[3]);
+        for (index, (&cover, backdrop)) in
+            knockout.coverage.iter().zip(&knockout.backdrop).enumerate()
+        {
+            if cover == 0 {
+                continue;
+            }
+            let x = knockout.x0 + (index as i32 % knockout.width);
+            let y = knockout.y0 + (index as i32 / knockout.width);
+            let clip = self.buf.clip_mask().map_or(1.0, |clip| clip.opacity(x, y));
+            let weight = unit(cover) * clip;
+            if weight <= 0.0 {
+                continue;
+            }
+            // Stroke over backdrop, premultiplied.
+            let back_alpha = unit(backdrop[3]);
+            let over_alpha = alpha + back_alpha * (1.0 - alpha);
+            let over: [f32; 3] = std::array::from_fn(|c| {
+                unit(stroke[c]) * alpha + unit(backdrop[c]) * back_alpha * (1.0 - alpha)
+            });
+            let current = self.buf.get_pixel(x, y);
+            let current_alpha = unit(current[3]);
+            let out_alpha = current_alpha * (1.0 - weight) + over_alpha * weight;
+            let mut out = [0u8; 4];
+            for c in 0..3 {
+                let premultiplied =
+                    unit(current[c]) * current_alpha * (1.0 - weight) + over[c] * weight;
+                out[c] = if out_alpha > 0.0 {
+                    (premultiplied / out_alpha * 255.0)
+                        .round()
+                        .clamp(0.0, 255.0) as u8
+                } else {
+                    0
+                };
+            }
+            out[3] = (out_alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+            self.buf.set_pixel(x, y, out);
+        }
     }
 
     fn fill_stroke_and_clear_unclipped(&mut self, rule: FillRule) {
@@ -13861,8 +14095,14 @@ impl<'a> RenderState<'a> {
         let ctm = self.ctm();
         let path_binary_alpha = self.path_smoothing_disabled();
         let raster_options = self.path_raster_options();
+        let stroke_raster_options = self.stroke_raster_options_for(self.gs.stroke_adjustment);
         let fill_color_state = self.gs.fill_color.clone();
         let stroke_color_state = self.gs.stroke_color.clone();
+        let knockout = if self.fill_stroke_knockout_applies() {
+            self.knockout_stroke_coverage(&ctm, stroke_raster_options, path_binary_alpha)
+        } else {
+            None
+        };
         self.record_plate_contribution(&fill_color_state, self.gs.fill_alpha as f32, "fill");
         if self.is_pattern_fill() {
             if let Some(pattern_name) = self.gs.fill_pattern_name.clone() {
@@ -13961,6 +14201,11 @@ impl<'a> RenderState<'a> {
             return;
         }
         let stroke = self.stroke_pixel_color();
+        if let Some(knockout) = knockout {
+            self.composite_knockout_stroke(knockout, stroke);
+            self.path.clear();
+            return;
+        }
         let width = self.gs.line_width;
         let dash = self.dash_state();
         if self.stroke_overprint_preview_enabled() && self.forced_stroke_pixel_color().is_none() {
@@ -13981,7 +14226,7 @@ impl<'a> RenderState<'a> {
                     self.gs.miter_limit,
                     self.gs.path_flatness_tolerance(),
                     path_binary_alpha,
-                    raster_options,
+                    stroke_raster_options,
                 );
                 self.path.clear();
                 return;
@@ -14001,7 +14246,7 @@ impl<'a> RenderState<'a> {
             self.gs.miter_limit,
             self.gs.path_flatness_tolerance(),
             path_binary_alpha,
-            raster_options,
+            stroke_raster_options,
         ) {
             PathPainter::stroke_path_with_options(
                 &mut self.buf,
@@ -14016,7 +14261,7 @@ impl<'a> RenderState<'a> {
                 self.gs.miter_limit,
                 self.gs.path_flatness_tolerance(),
                 path_binary_alpha,
-                raster_options,
+                stroke_raster_options,
                 &self.cancel,
             );
         }
@@ -14608,7 +14853,12 @@ impl<'a> RenderState<'a> {
             // SMask /G with a normal colour mode).
             forced_color_scheme: None,
             forced_color_text_depth: 0,
+            pattern_text_stroke_pass: false,
             forced_color_suppression: 0,
+            stroke_adjust_suppressed: true,
+            tile_initial_alpha: None,
+            cell_strokes_unadjusted: false,
+            type3_image_mask_alpha: None,
             pattern_inherited_alpha: (1.0, 1.0),
             gs_restore_floor: 0,
             type3_blue_zones: Type3BlueState::default(),
@@ -15201,7 +15451,7 @@ impl<'a> RenderState<'a> {
             let color = if pattern_stencil {
                 [255, 255, 255, 255]
             } else {
-                self.fill_pixel_color_unforced()
+                self.image_mask_pixel_color()
             };
             let paints_ones = match inline_image_mask_paints_ones(&dict) {
                 Ok(paints_ones) => paints_ones,
@@ -15805,7 +16055,7 @@ impl<'a> RenderState<'a> {
                     let color = if pattern_stencil {
                         [255, 255, 255, 255]
                     } else {
-                        self.fill_pixel_color_unforced()
+                        self.image_mask_pixel_color()
                     };
                     let paints_ones = match image_mask_paints_ones(dict) {
                         Ok(paints_ones) => paints_ones,
@@ -16048,7 +16298,44 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    /// A Form XObject drawn directly in a tiling cell is composited with the
+    /// cell's initial fill alpha, the filled object's /ca, whatever alpha the
+    /// cell has set since (PDFium `CPDF_RenderStatus::ProcessTransparency`
+    /// with the tile's initial states; pdfium bug_2106). Forms nested in it
+    /// start from their own state and are not multiplied again.
     fn handle_do_form(
+        &mut self,
+        name: &str,
+        obj_num: u32,
+        gen_num: u16,
+        resolved_bbox: Option<[f64; 4]>,
+        resolved_matrix: Option<[f64; 6]>,
+    ) {
+        let initial_alpha = self.tile_initial_alpha.take();
+        match initial_alpha {
+            Some(alpha) if alpha < 1.0 => {
+                let (width, height) = (self.buf.width, self.buf.height);
+                let render_mode = self.buf.render_mode();
+                let surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
+                let page_buf = std::mem::replace(&mut self.buf, surface);
+                self.handle_do_form_inner(name, obj_num, gen_num, resolved_bbox, resolved_matrix);
+                let surface = std::mem::replace(&mut self.buf, page_buf);
+                for y in 0..height as i32 {
+                    for x in 0..width as i32 {
+                        let pixel = surface.get_pixel(x, y);
+                        if pixel[3] != 0 {
+                            self.buf.blend_pixel(x, y, pixel, alpha as f32);
+                        }
+                    }
+                }
+                self.recycle_offscreen_buffer(surface);
+            }
+            _ => self.handle_do_form_inner(name, obj_num, gen_num, resolved_bbox, resolved_matrix),
+        }
+        self.tile_initial_alpha = initial_alpha;
+    }
+
+    fn handle_do_form_inner(
         &mut self,
         name: &str,
         obj_num: u32,
@@ -16486,7 +16773,12 @@ impl<'a> RenderState<'a> {
             image_smoothing_policy: self.image_smoothing_policy,
             forced_color_scheme: self.forced_color_scheme,
             forced_color_text_depth: self.forced_color_text_depth,
+            pattern_text_stroke_pass: false,
             forced_color_suppression: self.forced_color_suppression,
+            stroke_adjust_suppressed: self.stroke_adjust_suppressed,
+            tile_initial_alpha: None,
+            cell_strokes_unadjusted: false,
+            type3_image_mask_alpha: None,
             pattern_inherited_alpha: self.pattern_inherited_alpha,
             gs_restore_floor: 0,
             type3_blue_zones: std::mem::take(&mut self.type3_blue_zones),
@@ -17146,6 +17438,7 @@ impl<'a> RenderState<'a> {
         let shading_functions = Arc::clone(&self.function_cache);
         let shading_plate = self.plate.clone();
         let shading_options = ShadingRenderOptions::new(self.gs.shading_smoothness_tolerance())
+            .with_pdfium_rasterization(!self.buf.render_mode().is_high_quality())
             .with_plate(shading_plate.as_deref())
             .with_color_context(Some(&source_color_space), self.color_transform_options())
             .with_memory_budget(&shading_memory)
@@ -17915,6 +18208,18 @@ impl<'a> RenderState<'a> {
         // stroke opacity (/CA) does not carry over (PDFium pixel tests
         // bug_1161, bug_1693, bug_42270577).
         let saved_pattern_alpha = self.pattern_inherited_alpha;
+        // Strokes in pattern cells are not stroke-adjusted, as in PDFium
+        // (pdfium bug_1288_1): adjusting a cell's half-pixel lines turns an
+        // even tint into alternating stripes. Filled rectangles keep their
+        // snapping so neighbouring tiles still meet without seams.
+        let saved_cell_strokes_unadjusted = self.cell_strokes_unadjusted;
+        let saved_tile_initial_alpha = self.tile_initial_alpha;
+        if !self.buf.render_mode().is_high_quality() {
+            self.tile_initial_alpha = Some(saved_gs.fill_alpha.clamp(0.0, 1.0));
+        }
+        if !self.buf.render_mode().is_high_quality() {
+            self.cell_strokes_unadjusted = true;
+        }
         if !program.ops.iter().any(|op| op.operator == "gs") {
             let fill_alpha = saved_gs.fill_alpha.clamp(0.0, 1.0);
             self.pattern_inherited_alpha = (
@@ -17960,6 +18265,8 @@ impl<'a> RenderState<'a> {
 
         // Restore.
         self.pattern_inherited_alpha = saved_pattern_alpha;
+        self.cell_strokes_unadjusted = saved_cell_strokes_unadjusted;
+        self.tile_initial_alpha = saved_tile_initial_alpha;
         self.form_depth = self.form_depth.saturating_sub(1);
         self.gs = saved_gs;
         self.resources = saved_resources;
@@ -18036,6 +18343,7 @@ impl<'a> RenderState<'a> {
         let shading_functions = Arc::clone(&self.function_cache);
         let shading_plate = self.plate.clone();
         let shading_options = ShadingRenderOptions::new(self.gs.shading_smoothness_tolerance())
+            .with_pdfium_rasterization(!self.buf.render_mode().is_high_quality())
             .with_plate(shading_plate.as_deref())
             .with_color_context(Some(&source_color_space), self.color_transform_options())
             .with_memory_budget(&shading_memory)
@@ -18145,7 +18453,7 @@ impl<'a> RenderState<'a> {
         let ctm = self.ctm();
         let flat = flatten_path(&self.path, &ctm, &self.viewport, 0.2);
         let device_t = ctm.concat(&self.viewport.to_transform());
-        let mut options = self.path_raster_options();
+        let mut options = self.stroke_raster_options_for(self.gs.stroke_adjustment);
         // The pattern clip is binary; thin-line paint policies do not apply.
         options.thin_line_mode = crate::render::ThinLineMode::None;
         let outline = device_stroke_outline(
@@ -18231,11 +18539,78 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    fn active_text_font_is_type3(&mut self) -> bool {
+        let font_name = self.gs.text.font_name.clone();
+        let (font_dict, _) = self.current_text_font_resource(&font_name);
+        font_dict.is_some_and(|dict| detect_font_subtype(&dict) == FontSubtype::Type3)
+    }
+
+    /// Text whose stroke is a pattern: the glyph strokes are drawn into a
+    /// coverage mask and the stroke pattern is painted through it, after any
+    /// fill (render modes 2 and 6).
+    fn process_pattern_stroked_text_string(&mut self, bytes: &[u8]) {
+        let mode = self.gs.text.rendering_mode;
+        let start_tm = self.gs.text.tm;
+        if matches!(mode, 2 | 6) {
+            self.gs.text.rendering_mode = if mode == 6 { 4 } else { 0 };
+            self.process_text_string(bytes, true);
+            self.gs.text.tm = start_tm;
+        }
+        let (width, height) = (self.buf.width, self.buf.height);
+        let render_mode = self.buf.render_mode();
+        let surface = self.take_transparent_offscreen_buffer(width, height, render_mode);
+        let page_buf = std::mem::replace(&mut self.buf, surface);
+        let saved_space = std::mem::replace(
+            &mut self.gs.stroke_color_space,
+            crate::content::state::ColorSpace::DeviceGray,
+        );
+        let saved_color = std::mem::replace(
+            &mut self.gs.stroke_color,
+            crate::content::state::Color::black(),
+        );
+        let saved_alpha = std::mem::replace(&mut self.gs.stroke_alpha, 1.0);
+        let saved_blend = std::mem::take(&mut self.gs.blend_mode);
+        let saved_overprint = std::mem::replace(&mut self.gs.stroke_overprint, false);
+        self.gs.text.rendering_mode = if mode == 5 { 5 } else { 1 };
+        self.pattern_text_stroke_pass = true;
+        self.process_text_string(bytes, true);
+        self.pattern_text_stroke_pass = false;
+        self.gs.text.rendering_mode = mode;
+        self.gs.stroke_color_space = saved_space;
+        self.gs.stroke_color = saved_color;
+        self.gs.stroke_alpha = saved_alpha;
+        self.gs.blend_mode = saved_blend;
+        self.gs.stroke_overprint = saved_overprint;
+        let surface = std::mem::replace(&mut self.buf, page_buf);
+        let alpha = surface
+            .to_rgba_bytes()
+            .chunks_exact(4)
+            .map(|pixel| pixel[3])
+            .collect::<Vec<_>>();
+        self.recycle_offscreen_buffer(surface);
+        self.paint_pattern_through_device_mask(
+            ClipMask::from_alpha_bytes(width, height, alpha),
+            true,
+        );
+    }
+
     /// Paint the current fill pattern through a device-space coverage mask
     /// (glyph outlines or a stencil image), intersected with the current
     /// clip.
-    fn paint_fill_pattern_through_device_mask(&mut self, mut mask: ClipMask) {
-        let Some(pattern_name) = self.gs.fill_pattern_name.clone() else {
+    fn paint_fill_pattern_through_device_mask(&mut self, mask: ClipMask) {
+        self.paint_pattern_through_device_mask(mask, false);
+    }
+
+    /// Paint the current fill (or stroke) pattern through a device-space
+    /// coverage mask, intersected with the current clip.
+    fn paint_pattern_through_device_mask(&mut self, mut mask: ClipMask, stroke: bool) {
+        let kind = if stroke { "stroke" } else { "fill" };
+        let pattern_name = if stroke {
+            self.gs.stroke_pattern_name.clone()
+        } else {
+            self.gs.fill_pattern_name.clone()
+        };
+        let Some(pattern_name) = pattern_name else {
             return;
         };
         if let Some(existing) = self.buf.clip_mask() {
@@ -18244,11 +18619,16 @@ impl<'a> RenderState<'a> {
         let Some((x0, y0, x1, y1)) = mask.visible_bounds() else {
             return;
         };
-        let pattern_obj = match self.current_fill_pattern_object(&pattern_name) {
+        let pattern_obj = if stroke {
+            self.current_stroke_pattern_object(&pattern_name)
+        } else {
+            self.current_fill_pattern_object(&pattern_name)
+        };
+        let pattern_obj = match pattern_obj {
             Some(obj) => obj,
             None => {
                 self.record_fatal_render_error(format!(
-                    "pattern fill resource /{pattern_name} is missing"
+                    "pattern {kind} resource /{pattern_name} is missing"
                 ));
                 return;
             }
@@ -18256,7 +18636,7 @@ impl<'a> RenderState<'a> {
         let reader = self.engine.document().reader();
         let Some(pattern_dict) = resolve_to_dict(&pattern_obj, reader) else {
             self.record_fatal_render_error(format!(
-                "pattern fill resource /{pattern_name} did not resolve to a dictionary"
+                "pattern {kind} resource /{pattern_name} did not resolve to a dictionary"
             ));
             return;
         };
@@ -18268,7 +18648,7 @@ impl<'a> RenderState<'a> {
                     return;
                 }
             };
-        let oc_label = format!("pattern fill resource /{pattern_name}");
+        let oc_label = format!("pattern {kind} resource /{pattern_name}");
         if !self.object_optional_content_visible_or_record(pattern_dict.get("OC"), &oc_label) {
             return;
         }
@@ -18279,20 +18659,21 @@ impl<'a> RenderState<'a> {
                     subpaths: vec![vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)]],
                     closed: vec![true],
                 };
-                self.paint_tiling_pattern_with_device_clip(&pattern_obj, mask, &bounds, false);
+                self.paint_tiling_pattern_with_device_clip(&pattern_obj, mask, &bounds, stroke);
             }
             Some(2) => {
-                self.paint_shading_pattern_with_device_clip(
-                    &pattern_dict,
-                    mask,
-                    self.gs.fill_alpha as f32,
-                );
+                let alpha = if stroke {
+                    self.gs.stroke_alpha
+                } else {
+                    self.gs.fill_alpha
+                };
+                self.paint_shading_pattern_with_device_clip(&pattern_dict, mask, alpha as f32);
             }
             Some(other) => self.record_fatal_render_error(format!(
-                "pattern fill resource /{pattern_name} has unsupported PatternType {other}"
+                "pattern {kind} resource /{pattern_name} has unsupported PatternType {other}"
             )),
             None => self.record_fatal_render_error(format!(
-                "pattern fill resource /{pattern_name} missing required /PatternType"
+                "pattern {kind} resource /{pattern_name} missing required /PatternType"
             )),
         }
     }
@@ -18337,8 +18718,23 @@ impl<'a> RenderState<'a> {
     }
 
     fn process_text_string_inner(&mut self, bytes: &[u8], paint: bool) {
-        if paint && matches!(self.gs.text.rendering_mode, 0 | 2 | 4 | 6) && self.is_pattern_fill() {
+        // Type 3 glyph procedures paint with the current colour themselves, so
+        // a pattern reaches their fills and image masks directly.
+        if paint
+            && matches!(self.gs.text.rendering_mode, 0 | 2 | 4 | 6)
+            && self.is_pattern_fill()
+            && !self.active_text_font_is_type3()
+        {
             self.process_pattern_filled_text_string(bytes);
+            return;
+        }
+        if paint
+            && !self.pattern_text_stroke_pass
+            && matches!(self.gs.text.rendering_mode, 1 | 2 | 5 | 6)
+            && self.is_pattern_stroke()
+            && !self.active_text_font_is_type3()
+        {
+            self.process_pattern_stroked_text_string(bytes);
             return;
         }
         let font_name = self.gs.text.font_name.clone();
@@ -18416,6 +18812,14 @@ impl<'a> RenderState<'a> {
             glyph_lookup: crate::render::glyph_outline::SimpleGlyphLookup::default(),
             tricky: false,
         });
+
+        // Like PDFium (`ShouldApplyGlyphSpacingHeuristic`), substitute glyphs
+        // are fitted to the PDF widths only for fonts that are not a standard
+        // font or one of its aliases (Arial, TimesNewRoman,Bold, ...).
+        let standard_font_name = font_dict
+            .as_ref()
+            .and_then(|dict| dict.get_name("BaseFont"))
+            .is_some_and(crate::fonts::resolver::is_standard14_alias);
 
         if let Some(refusal) = exact_font_refusal {
             if decoded.iter().any(|glyph| {
@@ -18560,9 +18964,11 @@ impl<'a> RenderState<'a> {
                             offset_y: glyph.vertical_origin.map(|(_, vy)| vy).unwrap_or(0.0),
                             fill_color,
                             stroke_color,
-                            substitute_pdf_width: glyph
-                                .width
-                                .filter(|_| prepared_font.is_substitute && !glyph.is_vertical),
+                            substitute_pdf_width: glyph.width.filter(|_| {
+                                prepared_font.is_substitute
+                                    && !glyph.is_vertical
+                                    && !standard_font_name
+                            }),
                             fallback_pdf_width: glyph.width.filter(|_| !glyph.is_vertical),
                             vertical: glyph.is_vertical,
                             fallback_language: prepared_font.fallback_language,
@@ -19332,7 +19738,11 @@ impl<'a> RenderState<'a> {
             synthetic,
             all_cap: substitute_style.is_some_and(|style| style.all_cap),
             glyph_lookup: font_dict
-                .map(|font_dict| simple_glyph_lookup(font_dict, reader))
+                .map(|font_dict| {
+                    let mut lookup = simple_glyph_lookup(font_dict, reader);
+                    lookup.embedded &= !is_substitute;
+                    lookup
+                })
                 .unwrap_or_default(),
             tricky: crate::render::tricky_hinting::is_tricky_font(bytes),
         };
@@ -20583,6 +20993,10 @@ impl<'a> RenderState<'a> {
         let saved_oc_current = self.oc_current_visible;
         let inherited_type3_fill_color = self.fill_pixel_color();
         let inherited_type3_stroke_color = self.stroke_pixel_color();
+        let saved_type3_image_mask_alpha = self.type3_image_mask_alpha;
+        self.type3_image_mask_alpha = (!self.buf.render_mode().is_high_quality()
+            && self.gs.fill_alpha < 1.0)
+            .then_some(self.gs.fill_alpha.clamp(0.0, 1.0));
 
         self.form_depth += 1;
         self.resources = type3_resources.into();
@@ -20647,6 +21061,7 @@ impl<'a> RenderState<'a> {
         }
 
         self.form_depth = self.form_depth.saturating_sub(1);
+        self.type3_image_mask_alpha = saved_type3_image_mask_alpha;
         self.gs = saved_gs;
         self.resources = saved_resources;
         self.base_ctm = saved_base_ctm;
@@ -21781,9 +22196,17 @@ impl<'a> RenderState<'a> {
             }
         }
         // Non-embedded Symbol and ZapfDingbats are drawn with PDFium's own
-        // faces, ahead of installed or bundled stand-ins, as PDFium does.
-        let truetype = font_dict
-            .is_some_and(|font_dict| detect_font_subtype(font_dict) == FontSubtype::TrueType);
+        // faces, ahead of installed or bundled stand-ins, as PDFium does. A
+        // TrueType Symbol reaches the Symbol face only through the symbolic
+        // charset (PDFium's FindSubstFace without an installed Symbol font).
+        let truetype = font_dict.is_some_and(|font_dict| {
+            detect_font_subtype(font_dict) == FontSubtype::TrueType
+                && !resolve_descriptor(font_dict, self.engine.document().reader())
+                    .and_then(|descriptor| descriptor.get("Flags").and_then(PdfObject::as_number))
+                    .is_some_and(|flags| {
+                        (flags as i64) & crate::fonts::substitute_style::FLAG_SYMBOLIC != 0
+                    })
+        });
         if let Some(font_match) =
             crate::fonts::provider::pdfium_standard_symbol_match(fallback_name, truetype)
         {
@@ -21957,6 +22380,16 @@ struct GlyphRenderRequest<'a> {
     tricky: bool,
 }
 
+/// A translucent stroke's coverage and the backdrop under it, saved before
+/// the fill of a knockout fill-and-stroke is painted.
+struct KnockoutStroke {
+    x0: i32,
+    y0: i32,
+    width: i32,
+    coverage: Vec<u8>,
+    backdrop: Vec<PixelColor>,
+}
+
 /// The TrueType glyph lookup rules for a simple font (PDFium's
 /// `CPDF_TrueTypeFont::LoadGlyphMap`): symbolic when the descriptor says
 /// Symbolic and not Nonsymbolic and the encoding is not a plain WinAnsi or
@@ -21969,7 +22402,9 @@ fn simple_glyph_lookup(
     if subtype == FontSubtype::Type0 || subtype == FontSubtype::Type3 {
         return crate::render::glyph_outline::SimpleGlyphLookup::default();
     }
-    let flags = resolve_descriptor(font_dict, reader)
+    let descriptor = resolve_descriptor(font_dict, reader);
+    let flags = descriptor
+        .as_ref()
         .and_then(|descriptor| descriptor.get("Flags").and_then(PdfObject::as_number))
         .map_or(0, |flags| flags as i64);
     let symbolic_flags = flags & crate::fonts::substitute_style::FLAG_SYMBOLIC != 0
@@ -21978,9 +22413,22 @@ fn simple_glyph_lookup(
         font_dict.get_name("Encoding"),
         Some("WinAnsiEncoding" | "MacRomanEncoding")
     );
+    // A non-embedded Symbol font draws from the standard Symbol face through
+    // the Symbol encoding (PDFium selects kAdobeSymbol for the substitute and
+    // looks glyphs up by Unicode), never by raw code in a substitute's cmap.
+    let embedded = descriptor.as_ref().is_some_and(|descriptor| {
+        ["FontFile", "FontFile2", "FontFile3"]
+            .iter()
+            .any(|key| descriptor.contains_key(key))
+    });
+    let standard_symbol = font_dict.get_name("BaseFont").is_some_and(|name| {
+        let name = name.rsplit('+').next().unwrap_or(name);
+        matches!(name, "Symbol" | "SymbolMT")
+    });
     crate::render::glyph_outline::SimpleGlyphLookup {
-        symbolic: symbolic_flags && !plain_latin_encoding,
+        symbolic: symbolic_flags && !plain_latin_encoding && (embedded || !standard_symbol),
         truetype: subtype == FontSubtype::TrueType,
+        embedded: embedded && subtype == FontSubtype::TrueType,
     }
 }
 
@@ -23788,6 +24236,10 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                         return;
                     }
                     self.state.set_active_stroke_pattern(n, pattern.clone());
+                    crate::content::state::pattern_name_selects_pattern_space(
+                        &mut self.state.gs.stroke_color_space,
+                        &mut self.state.gs.stroke_color,
+                    );
                 }
                 if !components.is_empty() {
                     self.state.gs.stroke_color = Color {
@@ -23806,6 +24258,10 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                         return;
                     }
                     self.state.set_active_fill_pattern(n, pattern.clone());
+                    crate::content::state::pattern_name_selects_pattern_space(
+                        &mut self.state.gs.fill_color_space,
+                        &mut self.state.gs.fill_color,
+                    );
                 }
                 if !components.is_empty() {
                     self.state.gs.fill_color = Color {
@@ -24114,10 +24570,29 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
             return;
         }
         let path_binary_alpha = self.state.path_smoothing_disabled();
-        let raster_options = VectorRasterOptions::for_path_paint(
-            self.state.buf.render_mode(),
-            draw_state.stroke_adjustment,
-        );
+        let raster_options = self.state.raster_options_for(draw_state.stroke_adjustment);
+        let zero_area = if draw_state.fill_with_stroke {
+            None
+        } else {
+            crate::render::zero_area::compat_zero_area_paint(
+                &self.state.buf,
+                path,
+                &ctm,
+                self.viewport_ref,
+            )
+        };
+        if let Some(crate::render::zero_area::ZeroAreaPaint::Cosmetic(segment)) = zero_area {
+            crate::render::zero_area::stroke_device_hairlines(
+                &mut self.state.buf,
+                self.viewport_ref,
+                &[segment],
+                fill_color,
+                path_binary_alpha,
+                &self.state.cancel,
+            );
+            self.state.buf.blend_mode = saved_blend;
+            return;
+        }
         if !paint_cached_path_fill(
             &mut self.state.path_fill_mask_cache,
             &mut self.state.buf,
@@ -24142,6 +24617,16 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 draw_state.flatness,
                 path_binary_alpha,
                 raster_options,
+                &self.state.cancel,
+            );
+        }
+        if let Some(crate::render::zero_area::ZeroAreaPaint::Lines(subpaths)) = zero_area {
+            crate::render::zero_area::paint_zero_area_lines(
+                &mut self.state.buf,
+                self.viewport_ref,
+                &subpaths,
+                fill_color,
+                path_binary_alpha,
                 &self.state.cancel,
             );
         }
@@ -24174,10 +24659,9 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
             return;
         }
         let path_binary_alpha = self.state.path_smoothing_disabled();
-        let raster_options = VectorRasterOptions::for_path_paint(
-            self.state.buf.render_mode(),
-            draw_state.stroke_adjustment,
-        );
+        let raster_options = self
+            .state
+            .stroke_raster_options_for(draw_state.stroke_adjustment);
         if !paint_cached_path_stroke(
             &mut self.state.path_stroke_mask_cache,
             &mut self.state.buf,
@@ -32334,6 +32818,7 @@ mod tests {
     include!("pdfium_render_parity_tests.rs");
     include!("shading_parameter_render_tests.rs");
     include!("function_cache_render_tests.rs");
+    include!("pdfium_gap_render_tests.rs");
 
     fn fixture(path: &str) -> String {
         format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), path)

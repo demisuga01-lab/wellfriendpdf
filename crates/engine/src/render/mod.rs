@@ -39,6 +39,7 @@ pub mod transform;
 pub(crate) mod vector_quality;
 pub mod vector_fallback;
 pub(crate) mod vector_resource_scope;
+pub(crate) mod zero_area;
 
 pub use buffer::{
     pixel_buffer_allocation_stats, pixel_compositor_backend,

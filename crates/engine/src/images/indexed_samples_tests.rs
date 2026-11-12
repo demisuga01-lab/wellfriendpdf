@@ -290,7 +290,7 @@ fn explicit_reversed_decode_is_shared_by_packed_and_normalized_routes() {
 }
 
 #[test]
-fn fractional_decode_rounds_half_up_and_outside_values_clip_to_hival() {
+fn fractional_decode_rounds_half_up_low_values_clip_and_high_values_are_black() {
     let reader = reader();
     let half = dict(rgb_palette(), Some(&[0.5, 0.5]));
     assert_eq!(
@@ -304,7 +304,8 @@ fn fractional_decode_rounds_half_up_and_outside_values_clip_to_hival() {
         convert_normalized(&[0, 255], 8, &outside, &reader, 2, 1, options())
             .unwrap()
             .0,
-        vec![255, 0, 0, 0, 0, 255]
+        // Below 0 clips to the first entry; above hival is black, as in PDFium.
+        vec![255, 0, 0, 0, 0, 0]
     );
 }
 

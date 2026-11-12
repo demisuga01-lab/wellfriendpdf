@@ -86,7 +86,8 @@ mod shading_parameter_rendering {
                 .insert("S".into(), PdfObject::Dictionary(shading()));
             execute(&mut state, b"/S sh", packed);
             let pixel = state.buf.get_pixel(5, 5);
-            assert!((pixel[0] as i32 - 140).abs() <= 1);
+            // Compat pages sample shadings at pixel corners, as PDFium does.
+            assert!((pixel[0] as i32 - 127).abs() <= 1, "{pixel:?}");
             assert_eq!(pixel[0], pixel[1]);
             assert_eq!(pixel[1], pixel[2]);
         }
@@ -134,9 +135,9 @@ mod shading_parameter_rendering {
                     .insert("Cubic".into(), PdfObject::Dictionary(shading));
                 execute(&mut state, b"/Cubic sh", packed);
                 let (pixel, expected) = if kind == 1 {
-                    (state.buf.get_pixel(4, 5), 81)
+                    (state.buf.get_pixel(4, 5), 66)
                 } else {
-                    (state.buf.get_pixel(5, 5), 143)
+                    (state.buf.get_pixel(5, 5), 86)
                 };
                 assert!(
                     (pixel[0] as i32 - expected).abs() <= 1,
@@ -244,7 +245,8 @@ mod shading_parameter_rendering {
                     .insert("P".into(), PdfObject::Dictionary(pattern));
                 execute(&mut state, program, packed);
                 let pixel = state.buf.get_pixel(5, 5);
-                assert!((pixel[0] as i32 - 140).abs() <= 1);
+                // Compat pages sample shadings at pixel corners, as PDFium does.
+                assert!((pixel[0] as i32 - 127).abs() <= 1, "{pixel:?}");
             }
         }
     }

@@ -317,8 +317,8 @@ impl FontProvider for RegisteredFontProvider {
 /// PDFium's own face for a non-embedded `Symbol` (or `SymbolMT`) or
 /// `ZapfDingbats` font: the bare CFF Foxit faces PDFium bundles, so these
 /// glyphs keep PDFium's exact shapes instead of DejaVu stand-ins. Like
-/// PDFium, a TrueType font named Symbol is not redirected (it is usually a
-/// Windows Symbol font keyed by a (3,0) cmap). Style suffixes after a comma
+/// PDFium, a non-symbolic TrueType font named Symbol (`truetype`) is not
+/// redirected; a symbolic one is. Style suffixes after a comma
 /// (`Symbol,Bold`) are ignored.
 pub(crate) fn pdfium_standard_symbol_match(base_font: &str, truetype: bool) -> Option<FontMatch> {
     let name = normalized_font_name(base_font);

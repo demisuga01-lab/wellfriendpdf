@@ -363,6 +363,9 @@ pub struct DrawState {
     pub line_join: LineJoin,
     pub miter_limit: f64,
     pub dash: DashState,
+    /// The fill half of a fill-and-stroke operator. PDFium keeps degenerate
+    /// fills visible only for fill-only paths (see `zero_area`).
+    pub fill_with_stroke: bool,
     pub flatness: f64,
 }
 
@@ -1516,6 +1519,28 @@ impl RenderDevice for CpuRenderDevice {
         }
         let options =
             VectorRasterOptions::for_path_paint(self.buf.render_mode(), state.stroke_adjustment);
+        let zero_area = if state.fill_with_stroke {
+            None
+        } else {
+            crate::render::zero_area::compat_zero_area_paint(
+                &self.buf,
+                path,
+                &state.ctm,
+                &self.viewport,
+            )
+        };
+        if let Some(crate::render::zero_area::ZeroAreaPaint::Cosmetic(segment)) = zero_area {
+            crate::render::zero_area::stroke_device_hairlines(
+                &mut self.buf,
+                &self.viewport,
+                &[segment],
+                state.fill_color,
+                false,
+                &CancelToken::new(),
+            );
+            self.buf.blend_mode = saved_blend;
+            return;
+        }
         if !cpu_paint_cached_path_fill(
             &mut self.path_fill_mask_cache,
             &mut self.buf,
@@ -1545,6 +1570,16 @@ impl RenderDevice for CpuRenderDevice {
                 false,
                 options,
                 &cancel,
+            );
+        }
+        if let Some(crate::render::zero_area::ZeroAreaPaint::Lines(subpaths)) = zero_area {
+            crate::render::zero_area::paint_zero_area_lines(
+                &mut self.buf,
+                &self.viewport,
+                &subpaths,
+                state.fill_color,
+                false,
+                &CancelToken::new(),
             );
         }
         self.buf.blend_mode = saved_blend;
@@ -2859,34 +2894,12 @@ impl<'a> DisplayListBuilder<'a> {
             self.stats.path_segments += path.segments.len();
             self.stats.paths += 1;
             self.stats.fills += 1;
-            let zero_area_lines = zero_area_fill_lines(&path);
             self.ops.push(DisplayOp::FillPath {
                 path,
                 state: self.draw_state(),
                 rule,
                 bounds: self.path_bounds_for_fill(),
             });
-            if let Some(lines) = zero_area_lines {
-                // PDFium draws the parts of a filled path that enclose no
-                // area as thin hairlines: the fill colour at a quarter of
-                // its opacity (`CFX_RenderDevice::DrawPathWithBlend`).
-                let mut state = self.draw_state();
-                state.stroke_color = state.fill_color;
-                state.stroke_color[3] /= 4;
-                state.stroke_color_explicit = state.fill_color_explicit;
-                state.stroke_cmyk = state.fill_cmyk;
-                state.stroke_overprint = state.fill_overprint;
-                state.line_width = 0.0;
-                state.dash = DashState::solid();
-                state.line_cap = LineCap::Butt;
-                let bounds = self.path_bounds_for_stroke(&state);
-                self.stats.strokes += 1;
-                self.ops.push(DisplayOp::StrokePath {
-                    path: lines,
-                    state,
-                    bounds,
-                });
-            }
         }
         self.path.clear();
         self.clear_path_ops();
@@ -2900,7 +2913,10 @@ impl<'a> DisplayListBuilder<'a> {
     }
 
     fn fill_stroke_and_clear_unclipped(&mut self, paint_op: &ContentOperation, rule: FillRule) {
-        if self.active_soft_mask || self.uses_pattern_or_named_space() {
+        // A translucent stroke over a fill is painted as a knockout pair by
+        // the immediate renderer in compat mode.
+        let knockout_pair = self.gs.stroke_alpha < 1.0 && self.gs.fill_alpha > 0.0;
+        if self.active_soft_mask || self.uses_pattern_or_named_space() || knockout_pair {
             self.push_stateful_path_run(paint_op);
             self.path.clear();
             self.clear_path_ops();
@@ -2914,7 +2930,10 @@ impl<'a> DisplayListBuilder<'a> {
             self.stats.fills += 1;
             self.ops.push(DisplayOp::FillPath {
                 path: path.clone(),
-                state: state.clone(),
+                state: DrawState {
+                    fill_with_stroke: true,
+                    ..state.clone()
+                },
                 rule,
                 bounds: self.path_bounds_for_fill(),
             });
@@ -3093,6 +3112,7 @@ impl<'a> DisplayListBuilder<'a> {
                 DashState::new(self.gs.dash.pattern.clone(), self.gs.dash.phase)
             },
             flatness: self.gs.path_flatness_tolerance(),
+            fill_with_stroke: false,
         }
     }
 
@@ -3280,44 +3300,6 @@ impl<'a> DisplayListBuilder<'a> {
         let ctm = Transform2D::from(matrix).concat(&self.ctm());
         RenderBounds::from_bbox(bbox, &ctm, &self.viewport, 1.0)
     }
-}
-
-/// The subpaths of a filled path that are a single segment (`m l`, or
-/// `m l l` back to the start) and so enclose no area. PDFium
-/// (`CFX_Path::GetZeroAreaPath`) strokes them as hairlines when it fills.
-fn zero_area_fill_lines(path: &Path) -> Option<Path> {
-    use crate::render::path::PathSegment;
-    let segments = &path.segments;
-    let mut lines = Path::new();
-    let mut index = 0;
-    while index < segments.len() {
-        let PathSegment::MoveTo(x, y) = &segments[index] else {
-            index += 1;
-            continue;
-        };
-        let mut points = vec![(*x, *y)];
-        let mut straight = true;
-        index += 1;
-        while index < segments.len() && !matches!(segments[index], PathSegment::MoveTo(..)) {
-            match &segments[index] {
-                PathSegment::LineTo(x, y) => points.push((*x, *y)),
-                PathSegment::ClosePath => {}
-                PathSegment::CubicTo { .. } => straight = false,
-                PathSegment::MoveTo(..) => {}
-            }
-            index += 1;
-        }
-        let line = match points.as_slice() {
-            [a, b] if straight && a != b => Some((*a, *b)),
-            [a, b, c] if straight && a != b && a == c => Some((*a, *b)),
-            _ => None,
-        };
-        if let Some((a, b)) = line {
-            lines.move_to(a.0, a.1);
-            lines.line_to(b.0, b.1);
-        }
-    }
-    (!lines.is_empty()).then_some(lines)
 }
 
 fn resolve_simple_color(color: &Color, alpha: f32) -> PixelColor {
@@ -3579,36 +3561,6 @@ mod tests {
         device.restore();
         assert!(Arc::ptr_eq(&device.current_clip, &first_node));
         assert!(device.buf.clip_mask().is_some());
-    }
-
-    #[test]
-    fn zero_area_fill_subpaths_add_a_thin_hairline() {
-        // bug_1639_1: lines filled with `f` show as quarter-opacity hairlines.
-        let ops = vec![
-            op("rg", vec![num(0.0), num(0.0), num(1.0)]),
-            op("m", vec![num(2.0), num(2.0)]),
-            op("l", vec![num(18.0), num(2.0)]),
-            op("m", vec![num(2.0), num(5.0)]),
-            op("l", vec![num(18.0), num(5.0)]),
-            op("l", vec![num(18.0), num(18.0)]),
-            op("f", vec![]),
-        ];
-        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
-        let list = build_display_list(&ops, viewport, &PageResources::default());
-        let strokes: Vec<_> = list
-            .ops
-            .iter()
-            .filter_map(|op| match op {
-                DisplayOp::StrokePath { path, state, .. } => Some((path, state)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(strokes.len(), 1);
-        let (path, state) = strokes[0];
-        assert_eq!(path.segments.len(), 2, "only the single-segment subpath");
-        assert_eq!(state.line_width, 0.0);
-        assert_eq!(state.stroke_color[..3], state.fill_color[..3]);
-        assert_eq!(state.stroke_color[3], state.fill_color[3] / 4);
     }
 
     #[test]

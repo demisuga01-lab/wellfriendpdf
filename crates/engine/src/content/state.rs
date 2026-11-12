@@ -1381,6 +1381,10 @@ impl GraphicsState {
         // components, if any, still update the colour.
         if let Some(name) = trailing_pattern_name(op) {
             self.stroke_pattern_name = Some(name);
+            pattern_name_selects_pattern_space(
+                &mut self.stroke_color_space,
+                &mut self.stroke_color,
+            );
         }
         let comps = numeric_components(op);
         if !comps.is_empty() {
@@ -1394,6 +1398,7 @@ impl GraphicsState {
     fn op_fill_color_components(&mut self, op: &ContentOperation) {
         if let Some(name) = trailing_pattern_name(op) {
             self.fill_pattern_name = Some(name);
+            pattern_name_selects_pattern_space(&mut self.fill_color_space, &mut self.fill_color);
         }
         let comps = numeric_components(op);
         if !comps.is_empty() {
@@ -1540,6 +1545,22 @@ fn numeric_components(op: &ContentOperation) -> Vec<f64> {
 
 /// Return the pattern name from a `scn`/`SCN` operator if its last operand is a
 /// name (the pattern resource name).
+/// `scn`/`SCN` naming a pattern while a device colour space is current paint
+/// with that pattern, as in PDFium (`Handle_SetColorPS_Fill`), which selects
+/// the pattern whatever the current space.
+pub(crate) fn pattern_name_selects_pattern_space(space: &mut ColorSpace, color: &mut Color) {
+    if matches!(
+        space,
+        ColorSpace::DeviceGray | ColorSpace::DeviceRGB | ColorSpace::DeviceCMYK
+    ) {
+        *space = ColorSpace::Named("Pattern".to_string());
+        *color = Color {
+            space: space.clone(),
+            components: Vec::new(),
+        };
+    }
+}
+
 fn trailing_pattern_name(op: &ContentOperation) -> Option<String> {
     op.operands
         .last()
@@ -2568,5 +2589,17 @@ mod tests {
                 BlendMode::Multiply.blend_channel(src[i], dst[i])
             ));
         }
+    }
+
+    #[test]
+    fn scn_with_a_pattern_name_selects_the_pattern_space() {
+        let mut gs = GraphicsState::new();
+        gs.process(&op("SCN", [Operand::Name("P1".to_string())]));
+        assert_eq!(
+            gs.stroke_color_space,
+            ColorSpace::Named("Pattern".to_string())
+        );
+        assert_eq!(gs.stroke_color.space, gs.stroke_color_space);
+        assert_eq!(gs.stroke_pattern_name.as_deref(), Some("P1"));
     }
 }

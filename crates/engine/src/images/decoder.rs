@@ -151,6 +151,10 @@ pub(crate) struct ImageColorOptions<'a> {
     /// Native CMYK/DeviceN plate pass: decoded colour images come out as
     /// inverted plate ink (see [`crate::render::plate`]) instead of RGB.
     pub plate: Option<&'a crate::render::plate::PlateTarget>,
+    /// Read a malformed /Decode array the way PDFium does (missing or
+    /// non-numeric entries are 0, extra entries are ignored) instead of
+    /// refusing the image. Compatibility rendering sets this.
+    pub lenient_decode: bool,
 }
 
 impl From<ColorTransformOptions> for ImageColorOptions<'_> {
@@ -159,6 +163,7 @@ impl From<ColorTransformOptions> for ImageColorOptions<'_> {
             options,
             functions: Default::default(),
             plate: None,
+            lenient_decode: false,
         }
     }
 }
@@ -570,10 +575,27 @@ impl ImageDecoder {
             channels,
             effective_image.bits_per_component,
         );
+        // A short stream keeps the window rows it reaches (a cut row is
+        // completed with zero samples); the build step then treats the rows
+        // past the data as missing, as PDFium does.
+        let (raw, source_height, window) = if color_options.lenient_decode {
+            window_rows_of_short_stream(
+                raw,
+                effective_image.width,
+                effective_image.height,
+                channels,
+                effective_image.bits_per_component,
+                window,
+            )
+        } else {
+            (raw, effective_image.height, (window, window))
+        };
+        let full_window = window.1;
+        let window = window.0;
         let (cropped, selected_channels) = crop_raw_window_with_component_selection(
             &raw,
             effective_image.width,
-            effective_image.height,
+            source_height,
             channels,
             effective_image.bits_per_component,
             window,
@@ -583,20 +605,21 @@ impl ImageDecoder {
         if component_selection.components().is_some() {
             return Self::build_raw_component_image(
                 cropped,
-                window.width,
-                window.height,
+                full_window.width,
+                full_window.height,
                 channels,
                 selected_channels,
                 effective_image.bits_per_component,
                 &effective_image.color_space,
                 &effective_dict,
                 component_selection,
+                color_options.lenient_decode,
             );
         }
         Self::build_raw_image(
             cropped,
-            window.width,
-            window.height,
+            full_window.width,
+            full_window.height,
             effective_image.bits_per_component,
             &effective_image.color_space,
             &effective_dict,
@@ -762,7 +785,7 @@ impl ImageDecoder {
                 "JBIG2Decode" => {
                     Self::ensure_monochrome_terminal_color_space(last_filter, color_space)?;
                     return Self::finish_monochrome_decoded_image(
-                        jbig2::decode(&decompressed, None)?,
+                        jbig2::decode_with_page_size(&decompressed, None, Some((width, height)))?,
                         width,
                         height,
                         "inline image",
@@ -969,7 +992,7 @@ impl ImageDecoder {
                     "JBIG2Decode" => {
                         Self::ensure_monochrome_terminal_color_space(filter, color_space)?;
                         Self::finish_monochrome_decoded_image(
-                            jbig2::decode(&data, None)?,
+                            jbig2::decode_with_page_size(&data, None, Some((width, height)))?,
                             width,
                             height,
                             "inline image",
@@ -1094,6 +1117,7 @@ impl ImageDecoder {
                 color_space,
                 &effective_dict,
                 component_selection,
+                color_options.lenient_decode,
             );
         }
         Self::build_raw_image(
@@ -1670,6 +1694,7 @@ impl ImageDecoder {
         color_space: &str,
         dict: &PdfDictionary,
         component_selection: RawImageComponentSelection,
+        lenient_decode: bool,
     ) -> Result<RawImage> {
         ensure_decode_budget(width, height, selected_channels.max(1))?;
         if width == 0 || height == 0 {
@@ -1704,7 +1729,7 @@ impl ImageDecoder {
                 source_channels,
                 selected_channels,
                 &component_selection,
-                dict,
+                &lenient_decode_dict(dict, source_channels, lenient_decode),
             )?;
         }
 
@@ -1796,7 +1821,11 @@ impl ImageDecoder {
                 let decode_params = image_decode_params(dict, Some(reader), filter)?;
                 let globals = jbig2_globals(decode_params.as_ref(), reader, limits)?;
                 Self::finish_monochrome_decoded_image(
-                    jbig2::decode(data, globals.as_deref())?,
+                    jbig2::decode_with_page_size(
+                        data,
+                        globals.as_deref(),
+                        Some((image.width, image.height)),
+                    )?,
                     image.width,
                     image.height,
                     &format!("image {}", image.xobject_name),
@@ -1855,7 +1884,80 @@ impl ImageDecoder {
         Ok(data)
     }
 
+    /// Build a raw image from decoded samples. Like PDFium (`CPDF_DIB::
+    /// GetScanline`), a row cut short is completed with zero samples, and a
+    /// row the stream does not reach at all is an all-zero scanline of the
+    /// decoded bitmap: zero samples (through the palette, /Decode included)
+    /// for images of at most 8 bits per pixel, black for deeper ones.
+    /// Stencil masks, soft masks and plate passes keep their no-paint padding.
     fn build_raw_image(
+        mut decompressed: Vec<u8>,
+        width: u32,
+        height: u32,
+        bpc: u8,
+        color_space: &str,
+        dict: &PdfDictionary,
+        color_context: ImageColorContext<'_>,
+    ) -> Result<RawImage> {
+        let is_mask = matches!(
+            dict.get("ImageMask").or_else(|| dict.get("IM")),
+            Some(PdfObject::Boolean(true))
+        );
+        let channels = Self::raw_channel_count(color_space, dict, color_context.reader).ok();
+        let palette_bitmap =
+            channels.is_some_and(|channels| u32::from(channels) * u32::from(bpc) <= 8);
+        let row_bytes = channels
+            .and_then(|channels| {
+                (width as usize)
+                    .checked_mul(usize::from(channels))?
+                    .checked_mul(usize::from(bpc))
+                    .map(|bits| bits.div_ceil(8))
+            })
+            .filter(|bytes| *bytes > 0 && matches!(bpc, 1 | 2 | 4 | 8 | 16));
+        let missing_from_row = match row_bytes {
+            Some(row_bytes)
+                if !is_mask
+                    && !soft_mask_decode_active()
+                    && color_context.options.plate.is_none()
+                    && decompressed.len() < row_bytes.saturating_mul(height as usize) =>
+            {
+                let rows = if palette_bitmap {
+                    height as usize
+                } else {
+                    decompressed.len().div_ceil(row_bytes)
+                };
+                decompressed.resize(rows * row_bytes, 0);
+                (rows < height as usize).then_some(rows)
+            }
+            _ => None,
+        };
+        let mut raw = Self::build_raw_image_samples(
+            decompressed,
+            width,
+            height,
+            bpc,
+            color_space,
+            dict,
+            color_context,
+        )?;
+        if let Some(first) = missing_from_row {
+            let channels = usize::from(raw.channels);
+            let start = first
+                .saturating_mul(width as usize)
+                .saturating_mul(channels)
+                .min(raw.pixels.len());
+            if matches!(channels, 1 | 3) {
+                raw.pixels[start..].fill(0);
+            } else if channels == 4 {
+                for pixel in raw.pixels[start..].chunks_exact_mut(4) {
+                    pixel.copy_from_slice(&[0, 0, 0, 255]);
+                }
+            }
+        }
+        Ok(raw)
+    }
+
+    fn build_raw_image_samples(
         decompressed: Vec<u8>,
         width: u32,
         height: u32,
@@ -1933,7 +2035,11 @@ impl ImageDecoder {
         }
 
         if decode_array_applies_before_color_conversion(color_space) {
-            Self::apply_decode_array(&mut normalised, raw_channels, dict)?;
+            Self::apply_decode_array(
+                &mut normalised,
+                raw_channels,
+                &lenient_decode_dict(dict, raw_channels, color_context.options.lenient_decode),
+            )?;
         }
 
         if let Some(plate) = color_context.options.plate {
@@ -2078,7 +2184,11 @@ impl ImageDecoder {
             ensure_decode_budget(width, height, channels)?;
             let expected_size = expected_len(width, height, channels);
             fit_decoded_len(&mut pixels, width, height, channels, expected_size, 0)?;
-            Self::apply_decode_array(&mut pixels, channels, dict)?;
+            Self::apply_decode_array(
+                &mut pixels,
+                channels,
+                &lenient_decode_dict(dict, channels, color_context.options.lenient_decode),
+            )?;
             return Ok(RawImage {
                 width,
                 height,
@@ -2117,6 +2227,11 @@ impl ImageDecoder {
             .is_some_and(|space| !matches!(space, PdfObject::Null));
         if !has_pdf_color_space || color_space.is_empty() || image_mask_flag(dict)? {
             return Ok(None);
+        }
+        if jpx::device_space_conflicts(data, color_space) {
+            return Err(WellfriendError::UnsupportedFeature(format!(
+                "JPXDecode {label}: /{color_space} contradicts the JPEG 2000 colour specification"
+            )));
         }
         let Ok(expected_channels) =
             Self::raw_channel_count(color_space, dict, color_context.reader)
@@ -2837,6 +2952,41 @@ fn image_mask_flag(dict: &PdfDictionary) -> Result<bool> {
     }
 }
 
+/// `dict` with its /Decode array read the way PDFium's `GetFloatAt` reads it
+/// when `lenient`: exactly `2 * channels` entries, missing or non-numeric
+/// ones being 0. Well-formed arrays (and strict rendering) keep `dict`.
+fn lenient_decode_dict(
+    dict: &PdfDictionary,
+    channels: u8,
+    lenient: bool,
+) -> std::borrow::Cow<'_, PdfDictionary> {
+    let Some(items) = dict.get("Decode").and_then(PdfObject::as_array) else {
+        return std::borrow::Cow::Borrowed(dict);
+    };
+    let expected = usize::from(channels.max(1)) * 2;
+    let well_formed = items.len() == expected
+        && items
+            .iter()
+            .all(|item| item.as_number().is_some_and(f64::is_finite));
+    if !lenient || well_formed {
+        return std::borrow::Cow::Borrowed(dict);
+    }
+    let values = (0..expected)
+        .map(|index| {
+            PdfObject::Real(
+                items
+                    .get(index)
+                    .and_then(PdfObject::as_number)
+                    .filter(|value| value.is_finite())
+                    .unwrap_or(0.0),
+            )
+        })
+        .collect();
+    let mut fixed = dict.clone();
+    fixed.insert("Decode", PdfObject::Array(values));
+    std::borrow::Cow::Owned(fixed)
+}
+
 fn apply_decode_array_for_component_selection(
     pixels: &mut [u8],
     source_channels: u8,
@@ -3027,6 +3177,45 @@ fn validate_raw_component_selection(components: &[u8], source_channels: u8) -> R
 }
 
 #[allow(clippy::too_many_arguments)]
+/// For a raw stream shorter than its image, the window rows it reaches as a
+/// standalone image: `(rows, rows' height, (window within them, requested
+/// window))`. The last reached row is completed with zero samples; a window
+/// the data never reaches is empty. Complete streams are returned as is.
+fn window_rows_of_short_stream(
+    raw: Vec<u8>,
+    width: u32,
+    height: u32,
+    channels: u8,
+    bpc: u8,
+    window: RawImageDecodeWindow,
+) -> (Vec<u8>, u32, (RawImageDecodeWindow, RawImageDecodeWindow)) {
+    let row_bytes = (width as usize)
+        .saturating_mul(usize::from(channels.max(1)))
+        .saturating_mul(usize::from(bpc))
+        .div_ceil(8);
+    if row_bytes == 0 || raw.len() >= row_bytes.saturating_mul(height as usize) {
+        return (raw, height, (window, window));
+    }
+    let reached = raw.len().div_ceil(row_bytes) as u32;
+    let first = window.y.min(reached);
+    let last = window.y.saturating_add(window.height).min(reached);
+    let mut rows = raw
+        .get(first as usize * row_bytes..)
+        .unwrap_or_default()
+        .iter()
+        .take((last - first) as usize * row_bytes)
+        .copied()
+        .collect::<Vec<u8>>();
+    rows.resize((last - first) as usize * row_bytes, 0);
+    let inner = RawImageDecodeWindow {
+        x: window.x,
+        y: 0,
+        width: window.width,
+        height: last - first,
+    };
+    (rows, last - first, (inner, window))
+}
+
 fn crop_raw_window_with_component_selection(
     raw: &[u8],
     width: u32,
@@ -5507,12 +5696,12 @@ mod tests {
 
     #[test]
     fn build_raw_image_fits_mismatched_buffers() {
-        // Like Poppler: a short stream is filled with white, trailing bytes
-        // are ignored.
+        // Like PDFium: a row cut short is completed with zero samples,
+        // trailing bytes are ignored.
         let dict = PdfDictionary::empty();
         let short = ImageDecoder::build_raw_image_pub(vec![7], 2, 1, 8, "DeviceRGB", &dict)
-            .expect("short RGB image data is white-filled");
-        assert_eq!(short.pixels, vec![7, 255, 255, 255, 255, 255]);
+            .expect("short RGB image data is zero-filled");
+        assert_eq!(short.pixels, vec![7, 0, 0, 0, 0, 0]);
 
         let long =
             ImageDecoder::build_raw_image_pub(vec![1, 2, 3, 4], 1, 1, 8, "DeviceGray", &dict)
@@ -5521,50 +5710,54 @@ mod tests {
     }
 
     #[test]
-    fn short_image_data_is_padded_white_at_every_bit_depth() {
+    fn short_image_data_is_completed_like_pdfium_at_every_bit_depth() {
         let dict = PdfDictionary::empty();
         let gray8 = ImageDecoder::build_raw_image_pub(vec![10], 2, 1, 8, "DeviceGray", &dict)
             .expect("short 8-bit data");
-        assert_eq!(gray8.pixels, vec![10, 255]);
+        assert_eq!(gray8.pixels, vec![10, 0]);
 
-        // 4x2 1-bit: first row black, second row missing.
-        let gray1 = ImageDecoder::build_raw_image_pub(vec![0], 4, 2, 1, "DeviceGray", &dict)
+        // 4x2 1-bit, first row white: the missing second row is black.
+        let gray1 = ImageDecoder::build_raw_image_pub(vec![0xF0], 4, 2, 1, "DeviceGray", &dict)
             .expect("short 1-bit data");
-        assert_eq!(gray1.pixels, vec![0, 0, 0, 0, 255, 255, 255, 255]);
+        assert_eq!(gray1.pixels, vec![255, 255, 255, 255, 0, 0, 0, 0]);
 
-        let gray2 = ImageDecoder::build_raw_image_pub(vec![0], 4, 2, 2, "DeviceGray", &dict)
+        let gray2 = ImageDecoder::build_raw_image_pub(vec![0xFF], 4, 2, 2, "DeviceGray", &dict)
             .expect("short 2-bit data");
-        assert_eq!(gray2.pixels, vec![0, 0, 0, 0, 255, 255, 255, 255]);
+        assert_eq!(gray2.pixels, vec![255, 255, 255, 255, 0, 0, 0, 0]);
 
         let gray4 = ImageDecoder::build_raw_image_pub(vec![0x0F], 2, 2, 4, "DeviceGray", &dict)
             .expect("short 4-bit data");
-        assert_eq!(gray4.pixels, vec![0, 255, 255, 255]);
+        assert_eq!(gray4.pixels, vec![0, 255, 0, 0]);
 
         let gray16 =
             ImageDecoder::build_raw_image_pub(vec![0x12, 0x34], 2, 1, 16, "DeviceGray", &dict)
                 .expect("short 16-bit data");
-        assert_eq!(gray16.pixels, vec![0x12, 255]);
+        assert_eq!(gray16.pixels, vec![0x12, 0]);
     }
 
     #[test]
-    fn empty_or_short_subtractive_and_mask_data_pads_with_no_paint() {
+    fn missing_rows_are_black_and_stencil_masks_pad_with_no_paint() {
+        // PDFium draws rows the stream does not reach as zero samples, black
+        // for these spaces.
         let dict = PdfDictionary::empty();
         let empty_gray =
             ImageDecoder::build_raw_image_pub(Vec::new(), 2, 1, 8, "DeviceGray", &dict)
-                .expect("empty data draws white");
-        assert_eq!(empty_gray.pixels, vec![255, 255]);
+                .expect("empty data draws black");
+        assert_eq!(empty_gray.pixels, vec![0, 0]);
 
         let cmyk = ImageDecoder::build_raw_image_pub(Vec::new(), 1, 1, 8, "DeviceCMYK", &dict)
-            .expect("empty CMYK data draws white");
-        assert_eq!(cmyk.pixels, vec![255, 255, 255]);
+            .expect("empty CMYK data draws black");
+        assert_eq!(cmyk.pixels, vec![0, 0, 0]);
 
         let mut inverted = PdfDictionary::empty();
         inverted.insert(
             "Decode",
             PdfObject::Array(vec![PdfObject::Integer(1), PdfObject::Integer(0)]),
         );
+        // Up to 8 bits per pixel the missing samples are zero, so an
+        // inverted /Decode makes them white.
         let gray = ImageDecoder::build_raw_image_pub(Vec::new(), 1, 1, 8, "DeviceGray", &inverted)
-            .expect("inverted Decode still pads white");
+            .expect("inverted Decode decodes zero samples");
         assert_eq!(gray.pixels, vec![255]);
 
         let mut mask = PdfDictionary::empty();
@@ -6494,8 +6687,8 @@ mod tests {
             .zip(&plain.pixels)
             .all(|(inverted, plain)| *inverted == 255 - *plain));
 
-        // A PDF colour space whose component count disagrees with the
-        // codestream keeps the JPX-internal colour path.
+        // A device colour space that contradicts the codestream's sRGB colour
+        // box is refused, as PDFium does not draw such an image.
         let mut gray = PdfDictionary::empty();
         gray.insert("ColorSpace", PdfObject::Name("DeviceGray".to_string()));
         assert!(ImageDecoder::decode_jpx_with_pdf_color_space(
@@ -6509,10 +6702,9 @@ mod tests {
             &limits,
             ImageColorContext::default(),
         )
-        .unwrap()
-        .is_none());
+        .is_err());
 
-        // DeviceCMYK needs four components: not this RGB codestream.
+        // Nor is DeviceCMYK drawn from this sRGB codestream.
         let mut cmyk = PdfDictionary::empty();
         cmyk.insert("ColorSpace", PdfObject::Name("DeviceCMYK".to_string()));
         assert!(ImageDecoder::decode_jpx_with_pdf_color_space(
@@ -6526,8 +6718,7 @@ mod tests {
             &limits,
             ImageColorContext::default(),
         )
-        .unwrap()
-        .is_none());
+        .is_err());
     }
 
     #[test]

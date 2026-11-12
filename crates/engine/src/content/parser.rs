@@ -244,9 +244,37 @@ impl ContentParser {
     }
 }
 
-/// Whether [`normalize_compatibility_operations`] would rewrite an operation.
+/// An inline image whose data runs to the end of the content without an `EI`
+/// is not drawn: PDFium (`Handle_BeginImage`) skips to `EI` and drops the
+/// image when the stream ends first. The tokenizer emits the image's `EI`
+/// after the data, so trailing data means the terminator is missing.
+fn drop_unterminated_inline_image(operations: &mut Vec<ContentOperation>) {
+    if !ends_with_unterminated_inline_image(operations) {
+        return;
+    }
+    log::warn!("inline image data has no EI terminator; the image is not drawn");
+    operations.pop();
+    for operator in ["ID", "BI"] {
+        if operations
+            .last()
+            .is_some_and(|operation| operation.operator == operator)
+        {
+            operations.pop();
+        }
+    }
+}
+
+fn ends_with_unterminated_inline_image(operations: &[ContentOperation]) -> bool {
+    operations
+        .last()
+        .is_some_and(|operation| operation.operator == "inline_image_data")
+}
+
+/// Whether [`normalize_compatibility_operations`] would rewrite the
+/// operations.
 pub(crate) fn compatibility_normalization_needed(operations: &[ContentOperation]) -> bool {
     operations.iter().any(needs_compatibility_normalization)
+        || ends_with_unterminated_inline_image(operations)
 }
 
 /// Operand count of operators whose arity is fixed. Variable-arity colour
@@ -290,8 +318,9 @@ fn needs_compatibility_normalization(operation: &ContentOperation) -> bool {
     true
 }
 
-pub(crate) fn normalize_compatibility_operations(operations: &mut [ContentOperation]) {
-    for operation in operations {
+pub(crate) fn normalize_compatibility_operations(operations: &mut Vec<ContentOperation>) {
+    drop_unterminated_inline_image(operations);
+    for operation in operations.iter_mut() {
         if needs_compatibility_normalization(operation) {
             let len = operation.operands.len();
             let keep = fixed_operand_count(&operation.operator).unwrap_or(len);
@@ -539,6 +568,24 @@ fn pdf_object_to_operand(object: &PdfObject) -> Option<Operand> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compat_parse_drops_an_inline_image_without_ei() {
+        let terminated =
+            ContentParser::parse_compat(b"q BI /W 1 /H 1 /BPC 8 /CS /G ID \x7f EI Q").unwrap();
+        assert!(terminated
+            .iter()
+            .any(|op| op.operator == "inline_image_data"));
+        let unterminated =
+            ContentParser::parse_compat(b"q BI /W 1 /H 1 /BPC 8 /CS /G ID 7f> Q q").unwrap();
+        assert_eq!(
+            unterminated
+                .iter()
+                .map(|op| op.operator.as_str())
+                .collect::<Vec<_>>(),
+            ["q"]
+        );
+    }
 
     #[test]
     fn parses_basic_text_operations() {

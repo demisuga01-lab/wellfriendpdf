@@ -33,6 +33,9 @@ default-members = [
 # decryption fixes vendored here.
 [patch.crates-io]
 lopdf = { path = "vendor/lopdf-unlock" }
+# JBIG2 decoding with PDFium's tolerance for adaptive-template pixels that
+# point at not-yet-decoded positions (see vendor/hayro-jbig2/README.md).
+hayro-jbig2 = { path = "vendor/hayro-jbig2" }
 
 # Release builds use thin link-time optimisation across crates: the renderer
 # calls through crate boundaries (engine, render-simd, codecs) on hot paths.

@@ -21,12 +21,38 @@ const MAX_PARTIAL_DECODE_ATTEMPTS: usize = 24;
 /// using a damaged symbol dictionary, say) are left out with it, and a
 /// truncated tail that cannot be delimited is dropped.
 pub fn decode(data: &[u8], globals: Option<&[u8]>) -> Result<RawImage> {
+    decode_with_page_size(data, globals, None)
+}
+
+/// [`decode`] for a PDF image of `page_size` (width, height). When the
+/// stream does not decode as a whole and its segments declare data lengths
+/// shorter than their contents need, the segments are walked the way PDFium
+/// walks them (see [`pdfium_segment_walk`]) before damaged segments are left
+/// out.
+pub fn decode_with_page_size(
+    data: &[u8],
+    globals: Option<&[u8]>,
+    page_size: Option<(u32, u32)>,
+) -> Result<RawImage> {
     let error = match decode_complete(data, globals) {
         Ok(image) => return Ok(image),
         Err(error) => error,
     };
     if is_fatal(&error) {
         return Err(error);
+    }
+    if let Some(walked) = page_size.and_then(|size| pdfium_segment_walk(data, size)) {
+        let segments = embedded_segments(&walked);
+        let decoded = match decode_complete(&walked, globals) {
+            Ok(image) => Some(image),
+            Err(error) if is_fatal(&error) => return Err(error),
+            Err(_) => decode_without_damaged_segments(&walked, globals, &segments)?
+                .map(|partial| partial.image),
+        };
+        if let Some(image) = decoded {
+            log::warn!("{error}; decoded the JBIG2 stream with PDFium's segment walk");
+            return Ok(image);
+        }
     }
     let segments = embedded_segments(data);
     match decode_without_damaged_segments(data, globals, &segments)? {
@@ -218,6 +244,105 @@ fn embedded_segments(data: &[u8]) -> Vec<SegmentSpan> {
     segments
 }
 
+/// Segment type, header end and declared data length (`None` for the
+/// unknown-length marker) of the segment header at `start`.
+fn segment_header(data: &[u8], start: usize) -> Option<(u8, usize, Option<u32>)> {
+    let be_u32 = |at: usize| -> Option<u32> {
+        let bytes = data.get(at..at.checked_add(4)?)?;
+        Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    };
+    let segment_number = be_u32(start)?;
+    let flags = *data.get(start + 4)?;
+    let page_association_bytes = if flags & 0x40 != 0 { 4 } else { 1 };
+    let mut pos = start + 5;
+    let count_byte = *data.get(pos)?;
+    let referred_count = match count_byte >> 5 {
+        7 => {
+            let count = (be_u32(pos)? & 0x1FFF_FFFF) as usize;
+            pos += 4 + (count + 1).div_ceil(8);
+            count
+        }
+        5 | 6 => return None,
+        count => {
+            pos += 1;
+            usize::from(count)
+        }
+    };
+    let referred_size = if segment_number <= 256 {
+        1
+    } else if segment_number <= 65_536 {
+        2
+    } else {
+        4
+    };
+    pos = pos
+        .checked_add(referred_count.checked_mul(referred_size)?)?
+        .checked_add(page_association_bytes)?;
+    let data_length = be_u32(pos)?;
+    let header_end = pos.checked_add(4)?;
+    (header_end <= data.len()).then_some((
+        flags & 0x3F,
+        header_end,
+        (data_length != u32::MAX).then_some(data_length),
+    ))
+}
+
+/// PDFium's segment walk (`CJBig2_Context::DecodeSequential`): a segment's
+/// parser reads its data from the stream as far as it needs, and the next
+/// header is then read at the *declared* end of the segment, even when the
+/// declared length is shorter than what the parser read. Returns the stream
+/// rewritten with consistent lengths when that happens (a page information
+/// segment keeps its 19 bytes, sized to the PDF image as PDFium decodes into
+/// the image buffer; an immediate region segment keeps everything to the end
+/// of the stream, which its decoder reads on), or `None` when every segment
+/// is self-consistent. The walk stops at the first header that does not
+/// parse; PDFium keeps what was decoded before it.
+fn pdfium_segment_walk(data: &[u8], (width, height): (u32, u32)) -> Option<Vec<u8>> {
+    const PAGE_INFORMATION: u8 = 48;
+    const PAGE_INFORMATION_LEN: usize = 19;
+    const REGION_HEADER_LEN: usize = 18;
+    let mut walked = Vec::with_capacity(data.len() * 2);
+    let mut rewritten = false;
+    let mut pos = 0usize;
+    // Bounded: every step advances past at least one segment header.
+    while pos < data.len() {
+        let Some((kind, header_end, declared)) = segment_header(data, pos) else {
+            break;
+        };
+        let Some(declared) = declared.map(|length| length as usize) else {
+            break;
+        };
+        let available = data.len() - header_end;
+        let immediate_region = matches!(kind, 6 | 7 | 22 | 23 | 38 | 39 | 42 | 43);
+        let needed = match kind {
+            PAGE_INFORMATION if declared < PAGE_INFORMATION_LEN => PAGE_INFORMATION_LEN,
+            _ if immediate_region && declared < REGION_HEADER_LEN => available,
+            _ => declared,
+        };
+        if needed > available {
+            break;
+        }
+        let mut header = data[pos..header_end].to_vec();
+        if needed != declared {
+            rewritten = true;
+            let length_at = header.len() - 4;
+            header[length_at..].copy_from_slice(&(needed as u32).to_be_bytes());
+        }
+        walked.extend_from_slice(&header);
+        let body_start = walked.len();
+        walked.extend_from_slice(&data[header_end..header_end + needed]);
+        if kind == PAGE_INFORMATION && needed != declared {
+            walked[body_start..body_start + 4].copy_from_slice(&width.to_be_bytes());
+            walked[body_start + 4..body_start + 8].copy_from_slice(&height.to_be_bytes());
+        }
+        if matches!(kind, 49 | 51) {
+            break;
+        }
+        pos = header_end + declared;
+    }
+    rewritten.then_some(walked)
+}
+
 fn parse_segment_span(data: &[u8], start: usize) -> Option<SegmentSpan> {
     let be_u32 = |at: usize| -> Option<u32> {
         let bytes = data.get(at..at.checked_add(4)?)?;
@@ -327,6 +452,31 @@ impl hayro_jbig2::Decoder for GrayscaleSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_length_segments_are_walked_like_pdfium() {
+        // pdfium bug_867501: a page information segment and an immediate
+        // generic region that both declare zero data bytes; PDFium reads their
+        // contents from the following bytes and re-reads those as headers.
+        let stream: Vec<u8> = [
+            &[0, 0, 0, 0, 0x30, 0, 0, 0, 0, 0, 0][..],
+            &[0, 0, 0, 0, 0x26, 0, 0, 0, 0, 0, 0][..],
+            &[0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0][..],
+            &[0; 35][..],
+            &[0x0A][..],
+        ]
+        .concat();
+        let walked = pdfium_segment_walk(&stream, (1, 3)).expect("lengths rewritten");
+        // Page information: 19 bytes, sized 1x3.
+        assert_eq!(&walked[7..11], &19u32.to_be_bytes());
+        assert_eq!(&walked[11..19], &[0, 0, 0, 1, 0, 0, 0, 3]);
+        let image = decode_with_page_size(&stream, None, Some((1, 3))).expect("decodes");
+        assert_eq!((image.width, image.height), (1, 3));
+        assert_eq!(image.pixels, vec![255, 0, 255]);
+        // Consistent streams are left alone.
+        let consistent = [page_information(1, 1), black_row_region(1, 0, &[])].concat();
+        assert!(pdfium_segment_walk(&consistent, (1, 1)).is_none());
+    }
 
     #[test]
     fn malformed_embedded_stream_returns_error() {

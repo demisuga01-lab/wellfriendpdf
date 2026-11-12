@@ -89,7 +89,8 @@ fn integer_arithmetic_retains_types_and_promotes_only_on_overflow() {
         ("{ 2 3 sub }", int(-1)),
         ("{ 2 3 mul }", int(6)),
         ("{ 2147483647 1 add }", real(2147483648.0)),
-        ("{ -2147483648 1 sub }", real(-2147483649.0)),
+        // Promoted to a real of PDFium's single precision.
+        ("{ -2147483648 1 sub }", real(-2147483648.0)),
         ("{ 1073741824 2 mul }", real(2147483648.0)),
         ("{ 2 3.0 add }", real(5.0)),
         ("{ 2.0 3 sub }", real(-1.0)),
@@ -150,7 +151,8 @@ fn rounding_uses_positive_ties_and_preserves_numeric_type() {
     }
     assert_eq!(
         one("{ 4503599627370497.0 round }"),
-        real(4503599627370497.0)
+        // The literal is a single-precision real, as in PDFium.
+        real(4503599627370496.0)
     );
     assert_eq!(one("{ -4.8 truncate }"), real(-4.0));
     assert_eq!(one("{ -4.8 ceiling }"), real(-4.0));
@@ -160,11 +162,12 @@ fn rounding_uses_positive_ties_and_preserves_numeric_type() {
 #[test]
 fn explicit_conversions_check_type_and_integer_range() {
     assert_eq!(one("{ -47.8 cvi }"), int(-47));
-    assert_eq!(one("{ 2147483647.99 cvi }"), int(i32::MAX));
+    // Reals of 2^24 and more are single precision, as in PDFium.
+    assert_eq!(one("{ 2147483520.5 cvi }"), int(2_147_483_520));
     assert_eq!(one("{ -2147483648.99 cvi }"), int(i32::MIN));
     assert_eq!(one("{ 12 cvr }"), real(12.0));
     assert_eq!(one("{ 12.5 cvr }"), real(12.5));
-    for program in ["{ 2147483648.0 cvi }", "{ -2147483649.0 cvi }"] {
+    for program in ["{ 2147483648.0 cvi }", "{ -2147483904.0 cvi }"] {
         assert_eq!(run(program), Err(Error::RangeCheck));
     }
     assert_eq!(run("{ true cvr }"), Err(Error::TypeCheck));
