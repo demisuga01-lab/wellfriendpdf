@@ -16,10 +16,18 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 wellfriendpdf-engine = { version = "0.1.0", path = "../engine" }
 serde = "1"
 serde_json = "1"
+mimalloc = { version = "0.1", optional = true, default-features = false }
 
 [features]
 default = []
 native-cmm-lcms2 = ["wellfriendpdf-engine/native-cmm-lcms2"]
+# Route the library's own Rust allocations through mimalloc. Off by default:
+# a library should not pick the allocator for its host. Only memory this
+# library allocates is affected (the host's malloc is untouched), and every
+# buffer it returns is released through its own *_free functions, so mixing
+# allocators across the ABI is safe. Do not enable it when linking the
+# staticlib or rlib into a Rust program that sets its own #[global_allocator].
+mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
 libc = "0.2"

@@ -556,6 +556,21 @@ that dependency is available:
 cargo build -p wellfriendpdf-cli --features native-cmm-lcms2 --release --jobs 2
 ```
 
+**Memory allocator** is the platform's by default (the CLI tunes glibc's on
+Linux). The CLI and the C API library can opt into mimalloc, which needs a C
+compiler at build time. The C API keeps it off by default so the host
+application stays in control of allocation:
+
+```powershell
+cargo build -p wellfriendpdf-cli --features mimalloc --release --jobs 2
+cargo build -p wellfriendpdf-capi --features mimalloc --release --jobs 2
+```
+
+mimalloc is a trade-off, not a free win. Small documents use about 9.5% less CPU
+time but reach a higher peak RSS. Large renders on 4 to 8 threads peak lower,
+and their wall time shows no measurable change. See "Global allocator" in
+[docs/benchmarks/poppler-pdfium-head-to-head-2026-11.md](docs/benchmarks/poppler-pdfium-head-to-head-2026-11.md).
+
 ---
 
 ## The safety model, briefly
