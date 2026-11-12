@@ -6531,6 +6531,8 @@ struct RenderState<'a> {
     /// Immutable original page scope, distinct from nested program scopes and
     /// from already-selected (object-bound) graphics-state resources.
     page_resources: Arc<PageResources>,
+    /// Page-constant cache-key inputs, shared with nested group states.
+    pass_memo: Arc<crate::render::render_pass_memo::RenderPassMemo>,
     initial_rendering_intent: String,
     clip_stack: Vec<Arc<ClipNode>>,
     smask_stack: Vec<Option<AlphaMask>>,
@@ -8488,6 +8490,7 @@ impl<'a> RenderState<'a> {
             buf,
             viewport,
             page_resources: Arc::clone(&resources),
+            pass_memo: Arc::default(),
             resources: SharedPageResources::from(Arc::clone(&resources)),
             gs,
             initial_rendering_intent,
@@ -11278,12 +11281,27 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    /// Fingerprint of the immutable page resource scope, hashed once per
+    /// render pass.
+    fn page_resources_fingerprint(&self) -> u64 {
+        self.pass_memo
+            .page_resources_fingerprint(|| page_resources_fingerprint(&self.page_resources))
+    }
+
     fn current_retained_plan_contract(&self) -> Option<RenderContract> {
-        let page = self.engine.get_page(self.page_number).ok()?;
-        let page_identity = self.engine.canonical_document().page_identity_for(&page);
+        let page_identity = self.pass_memo.page_identity(|| {
+            let page = self.engine.get_page(self.page_number).ok()?;
+            Some(
+                self.engine
+                    .canonical_document()
+                    .page_identity_for(&page)
+                    .object
+                    .id,
+            )
+        })?;
         let mut contract = RenderContract::for_viewport(
             self.engine.canonical_document().revision(),
-            page_identity.object.id,
+            page_identity,
             self.page_number,
             &self.viewport,
             RenderTile::full(self.viewport.width_px, self.viewport.height_px),
@@ -11324,7 +11342,7 @@ impl<'a> RenderState<'a> {
         );
         let cache_key = format!(
             "{cache_key}:page-resources:{:016x}",
-            page_resources_fingerprint(&self.page_resources)
+            self.page_resources_fingerprint()
         );
         if let Some(cached) = self.annotation_appearance_program_cache.get(&cache_key) {
             touch_program_cache_key(
@@ -14475,6 +14493,7 @@ impl<'a> RenderState<'a> {
             viewport: mask_viewport.clone(),
             resources: g_resources.into(),
             page_resources: Arc::clone(&self.page_resources),
+            pass_memo: Arc::clone(&self.pass_memo),
             gs: mask_gs,
             initial_rendering_intent: self.initial_rendering_intent.clone(),
             clip_stack: Vec::new(),
@@ -14775,7 +14794,7 @@ impl<'a> RenderState<'a> {
             self.resource_budget.max_cache_bytes,
             self.optional_content.visibility_fingerprint(),
             self.inherited_paint_context_fingerprint(),
-            page_resources_fingerprint(&self.page_resources)
+            self.page_resources_fingerprint()
         )
     }
 
@@ -16355,6 +16374,7 @@ impl<'a> RenderState<'a> {
             viewport: group_viewport.clone(),
             resources: group_resources,
             page_resources: Arc::clone(&self.page_resources),
+            pass_memo: Arc::clone(&self.pass_memo),
             gs: group_gs,
             initial_rendering_intent: self.initial_rendering_intent.clone(),
             clip_stack: Vec::new(),
@@ -20839,7 +20859,7 @@ impl<'a> RenderState<'a> {
             self.type3_charproc_cache_key_for_render(font_name, font_dict, glyph_name),
             self.page_number,
             page_resources_fingerprint(&resources),
-            page_resources_fingerprint(&self.page_resources),
+            self.page_resources_fingerprint(),
             self.render_contract_fingerprint,
             self.optional_content.visibility_fingerprint(),
             self.viewport,
@@ -27059,11 +27079,8 @@ fn annotation_appearance_program_cache_key(
     let source = annotation_source_cache_key(annot_obj, annot_index);
     let raw_hash = fingerprint_bytes64(raw_bytes);
     let mut dict_hash = 0xcbf29ce484222325u64;
-    hash_pdf_object(
-        &mut dict_hash,
-        &PdfObject::Dictionary(appearance_dict.clone()),
-        0,
-    );
+    // Same hash as the dictionary wrapped in a `PdfObject`, without cloning it.
+    hash_pdf_dictionary(&mut dict_hash, appearance_dict, 1);
     format!(
         "annotation-appearance:{source}:raw:{raw_hash:016x}:dict:{dict_hash:016x}:rect:{}:page:{page_number}:contract:{contract_fingerprint}",
         rect_cache_key(rect)

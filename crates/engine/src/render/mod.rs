@@ -32,6 +32,7 @@ pub mod quality;
 pub(crate) mod rect_snap;
 #[cfg(test)]
 mod rect_snap_render_tests;
+pub(crate) mod render_pass_memo;
 pub mod shading;
 pub mod svg;
 pub(crate) mod synthetic_outline;
