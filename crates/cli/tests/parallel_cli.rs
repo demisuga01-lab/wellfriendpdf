@@ -77,6 +77,45 @@ fn conversions_are_identical_for_any_thread_count() {
     }
 }
 
+/// One worker renders the pages on the CLI thread, more workers on page
+/// threads; the pages must not depend on which.
+#[test]
+fn render_pages_are_identical_for_any_thread_count() {
+    let pdf = fixture("tracemonkey.pdf");
+    let pdf = pdf.to_str().unwrap();
+    let mut renders = Vec::new();
+    for threads in ["1", "3"] {
+        let out = tmp(&format!("render-{threads}.zip"));
+        run(&[
+            "--threads",
+            threads,
+            "render",
+            pdf,
+            "-o",
+            out.to_str().unwrap(),
+            "--format",
+            "png",
+            "--dpi",
+            "30",
+            "--pages",
+            "1-5",
+        ]);
+        let mut archive =
+            zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).expect("render ZIP");
+        let mut pages = Vec::new();
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+            pages.push((entry.name().to_string(), sha256_hex(&bytes)));
+        }
+        let _ = std::fs::remove_file(&out);
+        assert_eq!(pages.len(), 5, "{threads} threads: {pages:?}");
+        renders.push(pages);
+    }
+    assert_eq!(renders[0], renders[1]);
+}
+
 #[test]
 fn office_converters_take_a_page_range() {
     let pdf = fixture("tracemonkey.pdf");
