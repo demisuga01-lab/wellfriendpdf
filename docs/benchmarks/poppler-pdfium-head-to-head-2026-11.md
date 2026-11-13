@@ -852,3 +852,42 @@ times are high for both):
 
 1 bpc DeviceGray images still decode to one byte per pixel; the general image
 painter reads 8-bit samples.
+
+## Peak memory (round 16, 2026-11-13)
+
+How PDFium and Poppler keep memory low, and what Wellfriend now does the same way:
+
+| Technique | PDFium / Poppler | Wellfriend (round 16) |
+|---|---|---|
+| Read the file on demand | `IFX_SeekableReadStream` with a small read buffer / `FileStream` | already reads with `pread` on demand (verified with heaptrack; no whole-file copy) |
+| Keep decoded images only for the page that uses them | `CPDF_PageImageCache` per page | one-shot renders drop decoded images, scaled images and form programs no later page reuses |
+| Keep 1-bit masks packed | 1 bpp `CFX_DIBitmap` | round 15: masks cached at 1 bit per pixel |
+| No extra full-page copies | render straight into the final bitmap | PNG rows filtered and compressed straight into the output buffer; large soft-masked images widened in place |
+| Small fixed process cost | small binaries, lazy tables | packed relative relocations (3.8 MB less for the loader), hot functions grouped at link time, lean glibc settings from the start, one-worker renders on the CLI thread |
+
+93 documents, 150 dpi, one pinned core, same session (`r15b` = previous release):
+
+| Tool | Wall (s) | CPU (s) | Peak RSS max (MB) | Peak RSS median (MB) |
+|---|---:|---:|---:|---:|
+| Wellfriend r15 | 12.2 | 9.24 | 170.9 | 36.3 |
+| **Wellfriend r16** | **12.3** | 9.69 | **96.7** | **27.2** |
+| PDFium | 26.1 | 25.07 | 96.8 | 39.3 |
+| Poppler 26.07 | 102.6 | 101.30 | 63.8 | 27.7 |
+| MuPDF 1.27 | 15.8 | 14.61 | 92.2 | 22.6 |
+
+Wellfriend's worst-case peak is now at PDFium's level and its median is below
+both PDFium's and Poppler's, while staying the fastest of the four. CPU time
+rose about 5% (9.24 -> 9.69 s) against r15 in this run. `freeculture.pdf`, the
+worst document before, falls from 166 MB to about 97 MB.
+
+Output: every page of `tests/corpus/pdfs` at 50 dpi and the 424-page 150 dpi
+set hashes identically to r15 at 1 and 4 threads, except `flate.pdf`, whose
+change is round 15's intended missing-font fallback (the r15 benchmark binary
+predates that commit).
+
+clap's deferred subcommand building was tried and dropped: subcommands that
+have their own `--mode` clash with the global `--mode` when deferred.
+
+Python binding panic sweep (every extraction method, 10 min per book) over the
+19 remaining `realpdf200` books: 246 ok, 56 skipped (not applicable), 1
+timeout, 0 panics.
