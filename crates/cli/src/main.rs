@@ -13000,7 +13000,7 @@ fn parse_stamp_position(
 
 fn parse_rgb_color(value: &str) -> Result<wellfriendpdf_engine::RgbColor, Box<dyn Error>> {
     let hex = value.strip_prefix('#').unwrap_or(value);
-    if hex.len() != 6 {
+    if hex.len() != 6 || !hex.is_ascii() {
         return Err(format!("color '{value}' must be #RRGGBB").into());
     }
     let r = u8::from_str_radix(&hex[0..2], 16)?;

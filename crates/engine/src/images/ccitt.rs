@@ -76,6 +76,44 @@ pub fn decode_window(
     Ok(sink.finish())
 }
 
+/// [`decode`] into a packed bilevel image (one bit per pixel, a set bit for
+/// white; see [`RawImage::is_packed_bilevel`]) instead of one byte per
+/// pixel. The pixels are those of [`decode`], an eighth of the memory: a
+/// 9,000 x 12,000 scanned stencil is 13.5 MB instead of 108 MB.
+pub fn decode_packed(data: &[u8], params: CcittDecodeParams) -> Result<RawImage> {
+    let window = CcittDecodeWindow {
+        x: 0,
+        y: 0,
+        width: params.columns,
+        height: params.rows,
+    };
+    if params.columns == 0 || params.rows == 0 {
+        return Ok(PackedSink::empty(window));
+    }
+    let settings = ccitt_settings(params)?;
+    crate::images::decoder::ensure_decode_budget(params.columns, params.rows, 1)?;
+    let mut sink = PackedSink::new(params.columns, params.rows, window);
+    decode_with_settings(data, settings, &mut sink);
+    Ok(sink.finish("CCITTFaxDecode"))
+}
+
+/// [`decode_window`] into a packed bilevel image (see [`decode_packed`]).
+pub fn decode_window_packed(
+    data: &[u8],
+    params: CcittDecodeParams,
+    window: CcittDecodeWindow,
+) -> Result<RawImage> {
+    validate_window(params, window)?;
+    if window.width == 0 || window.height == 0 {
+        return Ok(PackedSink::empty(window));
+    }
+    crate::images::decoder::ensure_decode_budget(window.width, window.height, 1)?;
+    let settings = ccitt_settings(params)?;
+    let mut sink = PackedSink::new(params.columns, params.rows, window);
+    decode_with_settings(data, settings, &mut sink);
+    Ok(sink.finish("CCITTFaxDecode window"))
+}
+
 fn validate_window(params: CcittDecodeParams, window: CcittDecodeWindow) -> Result<()> {
     let end_x = window.x.checked_add(window.width).ok_or_else(|| {
         WellfriendError::MalformedPdf("CCITTFaxDecode source window x range overflows".to_string())
@@ -496,6 +534,125 @@ impl hayro_ccitt::Decoder for WindowedGrayscaleSink {
     fn next_line(&mut self) {}
 }
 
+/// The packed counterpart of [`GrayscaleSink`] and [`WindowedGrayscaleSink`]:
+/// it reads the decoder's pixels as one stream of `image_width` pixels per
+/// row exactly as they do (the decoder's `next_line` is not needed), keeps
+/// the `window` rectangle at one bit per pixel and starts white, so pixels the
+/// stream never reaches stay white as those sinks pad them.
+struct PackedSink {
+    image_width: usize,
+    image_height: usize,
+    window: CcittDecodeWindow,
+    row_bytes: usize,
+    /// Position of the next decoded pixel in the full image.
+    row: usize,
+    column: usize,
+    /// Window pixels the stream has reached.
+    covered: usize,
+    pixels: Vec<u8>,
+}
+
+impl PackedSink {
+    fn new(image_width: u32, image_height: u32, window: CcittDecodeWindow) -> Self {
+        let row_bytes = (window.width as usize).div_ceil(8);
+        Self {
+            image_width: image_width as usize,
+            image_height: image_height as usize,
+            window,
+            row_bytes,
+            row: 0,
+            column: 0,
+            covered: 0,
+            pixels: vec![0xFF; row_bytes * window.height as usize],
+        }
+    }
+
+    fn empty(window: CcittDecodeWindow) -> RawImage {
+        RawImage {
+            width: window.width,
+            height: window.height,
+            channels: 1,
+            bits_per_sample: 1,
+            pixels: Vec::new(),
+        }
+    }
+
+    fn finish(self, label: &str) -> RawImage {
+        let expected = self.window.width as usize * self.window.height as usize;
+        if self.covered < expected {
+            log::warn!(
+                "{label} decoded {} of {expected} pixels; padding the rest white",
+                self.covered
+            );
+        }
+        RawImage {
+            width: self.window.width,
+            height: self.window.height,
+            channels: 1,
+            bits_per_sample: 1,
+            pixels: self.pixels,
+        }
+    }
+
+    fn push(&mut self, white: bool, count: usize) {
+        let x0 = self.window.x as usize;
+        let x1 = x0 + self.window.width as usize;
+        let y0 = self.window.y as usize;
+        let y1 = y0 + self.window.height as usize;
+        let mut remaining = count;
+        while remaining > 0 && self.row < self.image_height {
+            let take = remaining.min(self.image_width - self.column);
+            if self.row >= y0 && self.row < y1 {
+                let start = self.column.max(x0);
+                let end = (self.column + take).min(x1);
+                if start < end {
+                    self.covered += end - start;
+                    if !white {
+                        let offset = (self.row - y0) * self.row_bytes;
+                        clear_bits(
+                            &mut self.pixels[offset..offset + self.row_bytes],
+                            start - x0,
+                            end - x0,
+                        );
+                    }
+                }
+            }
+            self.column += take;
+            if self.column == self.image_width {
+                self.column = 0;
+                self.row += 1;
+            }
+            remaining -= take;
+        }
+    }
+}
+
+/// Clear bits `start..end` of a most-significant-bit-first row.
+fn clear_bits(row: &mut [u8], start: usize, end: usize) {
+    let (first, last) = (start >> 3, (end - 1) >> 3);
+    let head = 0xFFu8 >> (start & 7);
+    let tail = 0xFFu8 << (7 - ((end - 1) & 7));
+    if first == last {
+        row[first] &= !(head & tail);
+        return;
+    }
+    row[first] &= !head;
+    row[first + 1..last].fill(0);
+    row[last] &= !tail;
+}
+
+impl hayro_ccitt::Decoder for PackedSink {
+    fn push_pixel(&mut self, white: bool) {
+        self.push(white, 1);
+    }
+
+    fn push_pixel_chunk(&mut self, white: bool, chunk_count: u32) {
+        self.push(white, chunk_count as usize * 8);
+    }
+
+    fn next_line(&mut self) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -764,6 +921,104 @@ mod tests {
         // Row 2 starts at the next byte: white run 8 (10011).
         let image = decode(&pack_bits("10011 000 10011"), options).unwrap();
         assert_eq!(image.pixels, vec![255; 16]);
+    }
+
+    #[test]
+    fn packed_decodes_hold_the_grayscale_pixels() {
+        let damaged = "0111 0000000000000000";
+        let mut black_is_1 = params(0, 8, 1);
+        black_is_1.black_is_1 = true;
+        let mut aligned = params(0, 8, 2);
+        aligned.encoded_byte_align = true;
+        let cases = [
+            (pack_bits("0111 10 1000"), params(0, 8, 1)),
+            (pack_bits("0111 10 1000"), black_is_1),
+            // Truncated: rows two and three are padded white.
+            (pack_bits("0111 10 1000"), params(0, 8, 3)),
+            (pack_bits("0111 10 1000"), params(0, 13, 2)),
+            (
+                pack_bits(&format!(
+                    "{EOL} {damaged} {EOL} {ROW_A} {EOL} {damaged} {EOL} {ROW_A}"
+                )),
+                with_eols(params(0, 8, 4)),
+            ),
+            (pack_bits("1 10011 0 1"), params(2, 8, 2)),
+            (pack_bits("1 1"), params(-1, 8, 2)),
+            (pack_bits("10011 000 10011"), aligned),
+            (
+                pack_bits("0111 10 1000 0111 10 1000 0111 10 1000"),
+                params(0, 8, 3),
+            ),
+        ];
+        for (data, params) in &cases {
+            let gray = decode(data, *params).unwrap();
+            let packed = decode_packed(data, *params).unwrap();
+            assert!(packed.is_packed_bilevel());
+            assert_eq!((packed.width, packed.height), (gray.width, gray.height));
+            assert_eq!(packed.pixels.len(), packed.byte_count());
+            assert_eq!(packed.unpack_bilevel().pixels, gray.pixels, "{params:?}");
+            for window in [
+                CcittDecodeWindow {
+                    x: 1,
+                    y: 0,
+                    width: 5,
+                    height: params.rows,
+                },
+                CcittDecodeWindow {
+                    x: 0,
+                    y: params.rows - 1,
+                    width: params.columns,
+                    height: 1,
+                },
+                CcittDecodeWindow {
+                    x: params.columns - 1,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                },
+            ] {
+                let gray = decode_window(data, *params, window).unwrap();
+                let packed = decode_window_packed(data, *params, window).unwrap();
+                assert_eq!(
+                    packed.unpack_bilevel().pixels,
+                    gray.pixels,
+                    "{params:?} {window:?}"
+                );
+            }
+        }
+        let empty = decode_packed(&[], params(0, 0, 4)).unwrap();
+        assert!(empty.pixels.is_empty() && empty.is_packed_bilevel());
+        assert!(decode_window_packed(
+            &pack_bits("10011"),
+            params(0, 8, 1),
+            CcittDecodeWindow {
+                x: 7,
+                y: 0,
+                width: 2,
+                height: 1,
+            },
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn clear_bits_clears_exactly_the_range() {
+        for width in 1..=24usize {
+            for start in 0..width {
+                for end in start + 1..=width {
+                    let mut row = vec![0xFF; width.div_ceil(8)];
+                    clear_bits(&mut row, start, end);
+                    for x in 0..row.len() * 8 {
+                        let set = row[x >> 3] & (0x80 >> (x & 7)) != 0;
+                        assert_eq!(
+                            set,
+                            !(start..end).contains(&x),
+                            "{width} {start}..{end} {x}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

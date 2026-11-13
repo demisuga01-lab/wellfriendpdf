@@ -255,7 +255,11 @@ fn parse_textual_date(s: &str) -> Option<String> {
 }
 
 fn month_from_name(t: &str) -> Option<i64> {
-    let m = match &t[..t.len().min(3)] {
+    // The first three characters, not bytes: a token taken from PDF text can
+    // start with a multi-byte character ("–3", "été"), and slicing it at
+    // byte 3 would split that character.
+    let prefix = t.char_indices().nth(3).map_or(t, |(end, _)| &t[..end]);
+    let m = match prefix {
         "jan" => 1,
         "feb" => 2,
         "mar" => 3,
@@ -576,6 +580,29 @@ mod tests {
         // Not dates:
         assert_eq!(parse_date("hello"), None);
         assert_eq!(parse_date("13/13/2024"), None); // invalid month
+    }
+
+    #[test]
+    fn textual_dates_with_multibyte_tokens_do_not_panic() {
+        // freeculture.pdf: "1 a–3" put a token starting with "a–" (the dash
+        // is three bytes) through the month lookup, which sliced it at byte 3.
+        assert_eq!(parse_date("1 a–3 2004"), None);
+        assert_eq!(month_from_name("a–3"), None);
+        assert_eq!(month_from_name("é"), None);
+        assert_eq!(month_from_name("ﬁ"), None);
+        assert_eq!(month_from_name("déc"), None);
+        assert_eq!(month_from_name("ma"), None);
+        assert_eq!(month_from_name("mar–"), Some(3));
+        assert_eq!(
+            parse_date("15 décembre 2024 – 3 août").as_deref(),
+            None,
+            "non-ASCII month names are not recognised, but must not panic"
+        );
+        assert_eq!(parse_date("Mar– 5 2024").as_deref(), Some("2024-03-05"));
+        for text in ["–", "– – –", "1 2 –––", "日本 3 2024", "a\u{301}bc 1 2020"] {
+            let _ = parse_date(text);
+            let _ = normalize(text, ValueHint::Date);
+        }
     }
 
     #[test]

@@ -575,6 +575,19 @@ fn validate_text_exact_finite_numbers(
     None
 }
 
+/// The font dictionary a `Tf` selects: the resource, or for a name the
+/// resources do not define, the stock Helvetica (WinAnsiEncoding) that PDFium
+/// draws such text with (`CPDF_StreamContentParser::FindFont`). Poppler warns
+/// "Unknown font tag" and drops the text; text extraction substitutes the
+/// same font (`crate::text::collector::missing_font_substitute`).
+fn resolved_or_substitute_font(resources: &PageResources, name: &str) -> PdfDictionary {
+    if let Some(dict) = resources.fonts.get(name) {
+        return dict.clone();
+    }
+    log::warn!("font resource /{name} is missing; drawing its text with Helvetica");
+    crate::text::collector::missing_font_substitute()
+}
+
 fn validate_text_font(op: &ContentOperation) -> Option<String> {
     if op.operands.len() != 2 {
         return text_operand_error(op, "font selection expects a name and finite size");
@@ -1297,7 +1310,7 @@ impl GraphicsStateDescriptor {
             "ET" => Self::EndText,
             "Tf" => {
                 let name = op.name(0).unwrap_or("").to_string();
-                let dict = resources.and_then(|resources| resources.fonts.get(&name).cloned());
+                let dict = resources.map(|resources| resolved_or_substitute_font(resources, &name));
                 Self::SetFont {
                     name,
                     size: op.number(1).unwrap_or(12.0),
@@ -2154,12 +2167,7 @@ impl PackedDisplayList {
             RetainedTextOp::BeginText => GraphicsStateDescriptor::BeginText,
             RetainedTextOp::EndText => GraphicsStateDescriptor::EndText,
             RetainedTextOp::SetFont { name, size } => {
-                let dict = resources.and_then(|resources| resources.fonts.get(name).cloned());
-                if resources.is_some() && dict.is_none() {
-                    return NativeDescriptor::CompileRefusal(
-                        PackedCompileRefusal::MissingFontResource { name: name.clone() },
-                    );
-                }
+                let dict = resources.map(|resources| resolved_or_substitute_font(resources, name));
                 GraphicsStateDescriptor::SetFont {
                     name: name.clone(),
                     size: *size,
@@ -5924,15 +5932,6 @@ mod tests {
                 },
             ),
             (
-                ContentOperation::new(
-                    "Tf",
-                    vec![Operand::Name("FMissing".to_string()), Operand::Real(12.0)],
-                ),
-                PackedCompileRefusal::MissingFontResource {
-                    name: "FMissing".to_string(),
-                },
-            ),
-            (
                 ContentOperation::new("CS", vec![Operand::Name("CsMissing".to_string())]),
                 PackedCompileRefusal::MissingColorSpaceResource {
                     name: "CsMissing".to_string(),
@@ -6016,34 +6015,71 @@ mod tests {
     }
 
     #[test]
-    fn packed_retained_text_refuses_missing_font_when_resource_table_is_available() {
+    fn missing_font_resource_selects_the_helvetica_substitute() {
+        // PDFium draws text in a font the resources do not define with its
+        // stock Helvetica; the plan selects the same stand-in instead of
+        // refusing the Tf (and then every show after it).
         let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
         let resources = PageResources::default();
-        let list = manual_xobject_display_list(
-            viewport,
-            DisplayOp::NativeTextOp {
-                text: RetainedTextOp::SetFont {
-                    name: "FMissing".to_string(),
-                    size: 12.0,
-                },
-                approx_bytes: 0,
-                bounds: None,
-            },
+        let substitute = crate::text::collector::missing_font_substitute();
+        let op = ContentOperation::new(
+            "Tf",
+            vec![Operand::Name("FMissing".to_string()), Operand::Real(12.0)],
         );
-        let packed = PackedDisplayList::compile_with_resources(list, Some(&resources));
-        let desc = packed
-            .descriptor(0)
-            .expect("manual retained text op should produce descriptor");
+        let state = GraphicsStateDescriptor::compile_with_resources(&op, Some(&resources));
         assert!(matches!(
-            desc,
-            NativeDescriptor::CompileRefusal(PackedCompileRefusal::MissingFontResource { name })
-                if name == "FMissing"
+            &state,
+            GraphicsStateDescriptor::SetFont { name, dict: Some(dict), .. }
+                if name == "FMissing" && dict == &substitute
+        ));
+        // Without a resource table nothing is resolved.
+        assert!(matches!(
+            GraphicsStateDescriptor::compile_with_resources(&op, None),
+            GraphicsStateDescriptor::SetFont { dict: None, .. }
         ));
 
+        let list = manual_display_list(
+            viewport,
+            vec![
+                DisplayOp::NativeTextOp {
+                    text: RetainedTextOp::BeginText,
+                    approx_bytes: 0,
+                    bounds: None,
+                },
+                DisplayOp::NativeTextOp {
+                    text: RetainedTextOp::SetFont {
+                        name: "FMissing".to_string(),
+                        size: 12.0,
+                    },
+                    approx_bytes: 0,
+                    bounds: None,
+                },
+                DisplayOp::NativeTextOp {
+                    text: RetainedTextOp::Show(b"Hi".to_vec()),
+                    approx_bytes: 0,
+                    bounds: None,
+                },
+                DisplayOp::NativeTextOp {
+                    text: RetainedTextOp::EndText,
+                    approx_bytes: 0,
+                    bounds: None,
+                },
+            ],
+        );
+        let packed = PackedDisplayList::compile_with_resources(list, Some(&resources));
+        assert!(packed.descriptors.iter().any(|desc| matches!(
+            desc,
+            NativeDescriptor::State(GraphicsStateDescriptor::SetFont { name, dict: Some(dict), .. })
+                if name == "FMissing" && dict == &substitute
+        )));
+        assert!(!packed
+            .descriptors
+            .iter()
+            .any(|desc| matches!(desc, NativeDescriptor::CompileRefusal(_))));
         let mut rec = RecordingDispatcher::new();
         packed.execute_plan(&mut rec).expect("execute plan");
-        assert_eq!(rec.compile_refusal_count, 1);
-        assert_eq!(rec.state_count, 0);
+        assert_eq!(rec.compile_refusal_count, 0);
+        assert_eq!(rec.text_count, 1);
     }
 
     #[test]

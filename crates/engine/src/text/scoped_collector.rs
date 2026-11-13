@@ -85,6 +85,11 @@ pub struct TextTraversalLimits {
     pub max_graphics_depth: usize,
     pub max_chunks: usize,
     pub max_text_bytes: usize,
+    /// Extract text set in a font the resources in scope do not define with a
+    /// standard Helvetica stand-in and a warning, as PDFium does (Poppler
+    /// warns "Unknown font tag"), instead of failing the page. On by default;
+    /// off makes such a `Tf` an error.
+    pub substitute_missing_fonts: bool,
 }
 
 impl Default for TextTraversalLimits {
@@ -105,6 +110,7 @@ impl Default for TextTraversalLimits {
             max_graphics_depth: 256,
             max_chunks: 1_000_000,
             max_text_bytes: 64 * 1024 * 1024,
+            substitute_missing_fonts: true,
         }
     }
 }
@@ -597,7 +603,11 @@ impl Walk<'_> {
                 let name = op
                     .name(0)
                     .ok_or_else(|| malformed("invalid Tf font name"))?;
-                if !collector.resources.fonts.contains_key(name) {
+                // With substitution on, the collector sets this text in its
+                // Helvetica stand-in (see `TextCollector::ensure_font_loaded`).
+                if !collector.resources.fonts.contains_key(name)
+                    && !self.limits.substitute_missing_fonts
+                {
                     return Err(malformed(format!("missing font /{name} in current scope")));
                 }
             }

@@ -13,6 +13,20 @@ pub use scoped::{
     ScopedTextChunk, TextAppearanceInvocation, TextFormInvocation, TextTraversalLimits,
 };
 
+/// The font dictionary text extraction uses for a `Tf` font name that the
+/// resources in scope do not define: PDFium's stock font for that case
+/// (`CPDF_Font::GetStockFont(doc, "Helvetica")`), a standard Type 1
+/// Helvetica with WinAnsiEncoding.
+pub(crate) fn missing_font_substitute() -> crate::object::PdfDictionary {
+    use crate::object::{PdfDictionary, PdfObject};
+    let mut dict = PdfDictionary::empty();
+    dict.insert("Type", PdfObject::Name("Font".to_string()));
+    dict.insert("Subtype", PdfObject::Name("Type1".to_string()));
+    dict.insert("BaseFont", PdfObject::Name("Helvetica".to_string()));
+    dict.insert("Encoding", PdfObject::Name("WinAnsiEncoding".to_string()));
+    dict
+}
+
 #[derive(Debug, Clone)]
 pub struct TextChunk {
     pub text: String,
@@ -388,9 +402,22 @@ impl<'a> TextCollector<'a> {
             return;
         }
         let Some(font_dict) = self.resources.fonts.get(font_name).cloned() else {
+            let Some(reader) = self.reader else {
+                log::warn!(
+                    "TextCollector: font '{}' not found in page resources",
+                    font_name
+                );
+                return;
+            };
+            // PDFium draws and extracts such text with its stock Helvetica
+            // (`CPDF_StreamContentParser::FindFont`); Poppler warns
+            // "Unknown font tag". Keep the text with the same stand-in.
             log::warn!(
-                "TextCollector: font '{}' not found in page resources",
-                font_name
+                "TextCollector: font /{font_name} is not defined in the resources; using Helvetica with WinAnsiEncoding"
+            );
+            self.font_resolvers.insert(
+                font_name.to_string(),
+                Arc::new(FontResolver::new(&missing_font_substitute(), reader)),
             );
             return;
         };

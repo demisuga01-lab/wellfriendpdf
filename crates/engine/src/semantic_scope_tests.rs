@@ -700,13 +700,21 @@ fn appearance_resource_fallback_uses_page_not_preceding_appearance() {
         "/Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources << >>",
         "BT /F1 10 Tf (B) Tj ET",
     );
-    assert!(open(objects)
+    // The appearance's own empty resources never bind the page's /F1: strict
+    // extraction refuses the font, the default keeps the text in the
+    // Helvetica stand-in.
+    let engine = open(objects);
+    assert!(engine
         .collect_page_scoped_text_chunks_including_appearances(
             1,
-            &crate::text::TextTraversalLimits::default(),
+            &crate::text::TextTraversalLimits {
+                substitute_missing_fonts: false,
+                ..Default::default()
+            },
             &crate::cancel::CancelToken::none()
         )
         .is_err());
+    assert_eq!(appearance_chunks(&engine)[1].chunk.text, "B");
 }
 
 #[test]

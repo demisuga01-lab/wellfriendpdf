@@ -60,7 +60,16 @@ TEXT_PROFILES = ("layout-faithful", "tables-focused", "rag-chunks")
 
 
 def check_file(wellfriendpdf_bin: Path, pdf: Path) -> tuple[bool, str]:
-    doc = wellfriendpdf.open(pdf)
+    try:
+        doc = wellfriendpdf.open(pdf)
+    except wellfriendpdf.WellfriendError as error:
+        # A file the engine cannot open is in parity when the CLI refuses it
+        # too (corpus files include deliberately broken PDFs).
+        try:
+            run_cli(wellfriendpdf_bin, ["extract-text", str(pdf)])
+        except subprocess.CalledProcessError:
+            return True, f"{pdf.name} (refused by both: {error})"
+        return False, f"{pdf.name}: binding cannot open a file the CLI reads ({error})"
 
     for profile in TEXT_PROFILES:
         py_text = norm_text(doc.extract_text(profile=profile))

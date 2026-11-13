@@ -1355,6 +1355,13 @@ fn parse_svg_color(value: &str, foreground: PixelColor) -> Result<Option<PixelCo
 }
 
 fn parse_hex_color(hex: &str) -> Result<PixelColor> {
+    // The digits are sliced by byte below; a non-ASCII character in the
+    // font's SVG (`#é1`) would otherwise split a character and panic.
+    if !hex.is_ascii() {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "SVG-in-OpenType color parse failed: #{hex} is not hexadecimal"
+        )));
+    }
     match hex.len() {
         3 => {
             let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).map_err(svg_color_err)?;
@@ -2293,6 +2300,22 @@ mod instance_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn svg_hex_colours_with_non_ascii_characters_are_errors_not_panics() {
+        let black = rgba(0, 0, 0, 255);
+        for value in ["#é1", "#1é", "#ab–", "#–", "#ééé"] {
+            assert!(parse_svg_color(value, black).is_err(), "{value}");
+        }
+        assert_eq!(
+            parse_svg_color("#f00", black).unwrap(),
+            Some(rgba(255, 0, 0, 255))
+        );
+        assert_eq!(
+            parse_svg_color("#00ff00", black).unwrap(),
+            Some(rgba(0, 255, 0, 255))
+        );
+    }
 
     fn raster_image<'a>(
         format: RasterImageFormat,

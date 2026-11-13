@@ -1,5 +1,6 @@
 //! Source regressions only. Added without executing PDFs, builds or tests.
 use super::*;
+use crate::cancel::CancelToken;
 use crate::engine::ContentEngine;
 
 fn stream(dict: &str, content: &str) -> Vec<u8> {
@@ -86,10 +87,51 @@ fn explicit_resources_replace_and_null_uses_page_not_caller() {
             "A"
         );
     }
+    // Explicit resources without the font never bind the caller's /F1. With
+    // substitution off that is an error; by default the text is kept in the
+    // Helvetica stand-in PDFium uses, not in the caller's font.
+    let strict = TextTraversalLimits {
+        substitute_missing_fonts: false,
+        ..Default::default()
+    };
     for resources in ["/Resources <<>>", "/Resources 42"] {
         let engine = fixture("/Outer Do", "/Next Do", LOCAL, TEXT, resources);
-        assert!(engine.collect_page_scoped_text_chunks(1).is_err());
+        assert!(engine
+            .collect_page_scoped_text_chunks_with_limits(1, &strict, &CancelToken::none())
+            .is_err());
     }
+    let engine = fixture("/Outer Do", "/Next Do", LOCAL, TEXT, "/Resources <<>>");
+    let chunks = engine.collect_page_scoped_text_chunks(1).unwrap();
+    assert_eq!(logical(&chunks), "A");
+    assert_ne!(
+        chunks[0].chunk.width, 5.0,
+        "not measured with the caller's /F1"
+    );
+}
+
+#[test]
+fn missing_font_resource_is_extracted_with_the_helvetica_substitute() {
+    // No /F9 anywhere: PDFium extracts the text with its stock Helvetica
+    // (WinAnsiEncoding); Poppler warns "Unknown font tag". Strict extraction
+    // still refuses it.
+    let engine = fixture("BT /F9 10 Tf (Hi) Tj ET", "", "", "", "");
+    let chunks = engine.collect_page_scoped_text_chunks(1).unwrap();
+    assert_eq!(logical(&chunks), "Hi");
+    // Helvetica advances: H 722, i 222 (per 1000 em) at 10 pt.
+    assert!(
+        (chunks[0].chunk.width - 9.44).abs() < 1e-6,
+        "{}",
+        chunks[0].chunk.width
+    );
+    assert_eq!(engine.get_page_text(1).unwrap().trim(), "Hi");
+    let strict = TextTraversalLimits {
+        substitute_missing_fonts: false,
+        ..Default::default()
+    };
+    let error = engine
+        .collect_page_scoped_text_chunks_with_limits(1, &strict, &CancelToken::none())
+        .unwrap_err();
+    assert!(format!("{error}").contains("missing font /F9"), "{error}");
 }
 
 #[test]
