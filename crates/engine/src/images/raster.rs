@@ -358,6 +358,147 @@ fn png_write(
     Ok(out)
 }
 
+/// The 12-byte `IEND` chunk every PNG ends with.
+const PNG_IEND_CHUNK: [u8; 12] = [0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82];
+
+/// `png_write` for 8-bit images at [`PngEffort::Fast`], byte for byte, without
+/// its two whole-image copies: the png crate compresses into one buffer and
+/// then copies the result into the output. Here the rows are filtered and
+/// compressed straight into the output, behind the header the png crate
+/// writes. The steps match png 0.17's `write_image_data` for
+/// `Compression::Fast`: each row Sub-filtered (the default filter) and fed
+/// to `fdeflate::Compressor` as `[filter type, filtered row]`, stored blocks
+/// instead when they are smaller, and one `IDAT` chunk. Returns `None` for
+/// input it does not handle (the caller then uses `png_write`).
+fn png_write_fast_8bit(
+    width: u32,
+    height: u32,
+    color: png::ColorType,
+    data: &[u8],
+    metadata: &RasterMetadata,
+) -> Option<Result<Vec<u8>>> {
+    let channels = match color {
+        png::ColorType::Grayscale => 1usize,
+        png::ColorType::GrayscaleAlpha => 2,
+        png::ColorType::Rgb => 3,
+        png::ColorType::Rgba => 4,
+        _ => return None,
+    };
+    let row_len = (width as usize).checked_mul(channels)?;
+    let rows = height as usize;
+    if row_len == 0 || rows == 0 || row_len.checked_mul(rows)? != data.len() {
+        return None;
+    }
+    let raw_len = (row_len + 1).checked_mul(rows)?;
+    let encode_error =
+        |e: std::io::Error| WellfriendError::MalformedPdf(format!("PNG encode error: {e}"));
+
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, width, height);
+        encoder.set_color(color);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.set_compression(png_compression(PngEffort::Fast));
+        if let Some((x, y)) = metadata.dpi {
+            let (xppu, yppu) = (dots_per_meter(x), dots_per_meter(y));
+            if xppu > 0 && yppu > 0 {
+                encoder.set_pixel_dims(Some(png::PixelDimensions {
+                    xppu,
+                    yppu,
+                    unit: png::Unit::Meter,
+                }));
+            }
+        }
+        if metadata.icc_profile.is_none() && metadata.srgb {
+            encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+        }
+        let mut writer = match encoder.write_header() {
+            Ok(writer) => writer,
+            Err(e) => {
+                return Some(Err(WellfriendError::MalformedPdf(format!(
+                    "PNG header error: {e}"
+                ))))
+            }
+        };
+        if let Some(profile) = metadata.icc_profile.as_deref() {
+            if let Err(e) = writer.write_chunk(png::chunk::iCCP, &iccp_chunk_payload(profile)) {
+                return Some(Err(WellfriendError::MalformedPdf(format!(
+                    "PNG iCCP error: {e}"
+                ))));
+            }
+        }
+        // Ends the header with `IEND`, which is cut off again below.
+        if writer.finish().is_err() {
+            return None;
+        }
+    }
+    if !out.ends_with(&PNG_IEND_CHUNK) {
+        return None;
+    }
+    out.truncate(out.len() - PNG_IEND_CHUNK.len());
+    let chunk_start = out.len();
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    out.extend_from_slice(b"IDAT");
+    let data_start = out.len();
+
+    let mut filtered = vec![0u8; row_len + 1];
+    let compressed = (|| -> std::io::Result<()> {
+        let mut compressor = fdeflate::Compressor::new(&mut out)?;
+        for row in data.chunks_exact(row_len) {
+            png_sub_filter_row(channels, row, &mut filtered);
+            compressor.write_data(&filtered)?;
+        }
+        compressor.finish()?;
+        Ok(())
+    })();
+    if let Err(e) = compressed {
+        return Some(Err(encode_error(e)));
+    }
+    if out.len() - data_start > fdeflate::StoredOnlyCompressor::<()>::compressed_size(raw_len) {
+        // As png does: stored (unfiltered) rows when compressing did not help.
+        out.truncate(data_start);
+        let stored = (|| -> std::io::Result<()> {
+            let mut cursor = std::io::Cursor::new(&mut out);
+            cursor.set_position(data_start as u64);
+            let mut compressor = fdeflate::StoredOnlyCompressor::new(cursor)?;
+            for row in data.chunks_exact(row_len) {
+                compressor.write_data(&[0])?;
+                compressor.write_data(row)?;
+            }
+            compressor.finish()?;
+            Ok(())
+        })();
+        if let Err(e) = stored {
+            return Some(Err(encode_error(e)));
+        }
+    }
+    let idat_len = out.len() - data_start;
+    // png splits larger streams into several IDAT chunks.
+    let idat_len = u32::try_from(idat_len)
+        .ok()
+        .filter(|len| *len <= u32::MAX >> 1)?;
+    out[chunk_start..chunk_start + 4].copy_from_slice(&idat_len.to_be_bytes());
+    let crc = crc32fast::hash(&out[chunk_start + 4..]);
+    out.extend_from_slice(&crc.to_be_bytes());
+    out.extend_from_slice(&PNG_IEND_CHUNK);
+    Some(Ok(out))
+}
+
+/// png's Sub filter: `out[0]` is the filter type (1), then each byte minus
+/// the byte one pixel to its left (the first pixel unchanged).
+fn png_sub_filter_row(bytes_per_pixel: usize, row: &[u8], out: &mut [u8]) {
+    out[0] = 1;
+    let out = &mut out[1..];
+    out[..bytes_per_pixel].copy_from_slice(&row[..bytes_per_pixel]);
+    for ((out, &cur), &left) in out[bytes_per_pixel..]
+        .iter_mut()
+        .zip(&row[bytes_per_pixel..])
+        .zip(row)
+    {
+        *out = cur.wrapping_sub(left);
+    }
+}
+
 /// `iCCP` payload: profile name, NUL, compression method 0, zlib data.
 fn iccp_chunk_payload(profile: &[u8]) -> Vec<u8> {
     let mut payload = b"ICC Profile\0\0".to_vec();
@@ -379,6 +520,13 @@ pub fn encode_png(
         3 => png::ColorType::Rgb,
         _ => png::ColorType::Rgba,
     };
+    if effort == PngEffort::Fast {
+        if let Some(encoded) =
+            png_write_fast_8bit(image.width, image.height, color, &image.pixels, metadata)
+        {
+            return encoded;
+        }
+    }
     png_write(
         image.width,
         image.height,
@@ -507,6 +655,81 @@ mod tests {
             pos += 12 + len;
         }
         None
+    }
+
+    /// The direct fast encoder must write exactly what the png crate writes:
+    /// every channel layout, odd widths, compressible pages, incompressible
+    /// noise (stored blocks) and every metadata chunk.
+    #[test]
+    fn png_fast_encoder_is_byte_identical_to_png_crate() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 24) as u8
+        };
+        let metadatas = [
+            RasterMetadata::default(),
+            RasterMetadata {
+                dpi: Some((150.0, 150.0)),
+                ..Default::default()
+            },
+            RasterMetadata {
+                srgb: true,
+                ..Default::default()
+            },
+            RasterMetadata {
+                icc_profile: Some((0..300u32).map(|v| (v * 7) as u8).collect()),
+                srgb: true,
+                dpi: Some((72.0, 96.0)),
+            },
+        ];
+        for channels in 1u8..=4 {
+            for &(width, height) in &[(1u32, 1u32), (3, 2), (17, 9), (257, 33)] {
+                let len = (width * height) as usize * channels as usize;
+                let smooth: Vec<u8> = (0..len).map(|i| (i / 7 % 251) as u8).collect();
+                let random: Vec<u8> = (0..len).map(|_| noise()).collect();
+                for pixels in [smooth, random] {
+                    let image = RawImage {
+                        width,
+                        height,
+                        channels,
+                        bits_per_sample: 8,
+                        pixels,
+                    };
+                    let color = match channels {
+                        1 => png::ColorType::Grayscale,
+                        2 => png::ColorType::GrayscaleAlpha,
+                        3 => png::ColorType::Rgb,
+                        _ => png::ColorType::Rgba,
+                    };
+                    for metadata in &metadatas {
+                        let reference = png_write(
+                            width,
+                            height,
+                            color,
+                            png::BitDepth::Eight,
+                            &image.pixels,
+                            metadata,
+                            PngEffort::Fast,
+                        )
+                        .unwrap();
+                        let direct =
+                            png_write_fast_8bit(width, height, color, &image.pixels, metadata)
+                                .expect("fast path handles 8-bit images")
+                                .unwrap();
+                        assert_eq!(direct, reference, "{channels} ch {width}x{height}");
+                        assert_eq!(
+                            encode_png(&image, metadata, PngEffort::Fast).unwrap(),
+                            reference
+                        );
+                    }
+                }
+            }
+        }
+        // Wrong buffer sizes fall back to the png crate's error.
+        assert!(png_write_fast_8bit(2, 2, png::ColorType::Rgb, &[0; 11], &metadatas[0]).is_none());
     }
 
     #[test]

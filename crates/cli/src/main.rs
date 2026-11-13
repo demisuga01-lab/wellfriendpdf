@@ -4421,31 +4421,28 @@ struct CanonicalizeArgs {
     password: Option<String>,
 }
 
-/// A one-shot CLI process allocates and frees large image and page buffers.
-/// glibc serves each one above 128 KiB with a fresh `mmap` and unmaps it on
-/// free, so every new buffer page-faults again; keeping them in the heap
-/// lets later buffers reuse already-faulted pages (about a third fewer page
-/// faults on scanned pages). The process exits soon after, so the retained
-/// memory is not a concern. Once the worker count is known,
-/// `tune_allocator_for_workers` replaces these with lean settings, because
-/// with several workers each arena keeps its own retained peak.
+/// Keep glibc's heap near the live data: buffers above 1 MiB are mapped and
+/// returned on free, freed heap above 64 MiB is trimmed, and the heap grows
+/// without padding. Set in `main` before the CLI thread starts, so its
+/// allocator arena is created with these settings: the earlier one-shot
+/// settings (64 MiB top pad, 32 MiB mmap threshold) applied until the worker
+/// count was known and cost about 1.3 MB of resident memory on a one-page
+/// render. The one-shot retention would also let every worker's arena keep
+/// its own high-water mark: on atlas_animals (303 scanned pages, 150 dpi,
+/// 8 workers) that was about 0.9 GB of freed memory still resident (1.83 GB
+/// peak RSS against 0.95 GB), for about 1 s less system time.
 ///
 /// A tunable the environment already sets (`MALLOC_MMAP_THRESHOLD_`,
 /// `MALLOC_TRIM_THRESHOLD_`, `MALLOC_TOP_PAD_`, or `GLIBC_TUNABLES`) is left
 /// as the platform chose it.
 #[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc")))]
-fn tune_allocator_for_one_shot_process() {
+fn tune_allocator_for_process() {
     const M_TRIM_THRESHOLD: i32 = -1;
     const M_TOP_PAD: i32 = -2;
     const M_MMAP_THRESHOLD: i32 = -3;
-    // 32 MiB is the largest mmap threshold glibc accepts on 64-bit targets.
-    set_malloc_tunable(M_MMAP_THRESHOLD, "MALLOC_MMAP_THRESHOLD_", 32 * 1024 * 1024);
-    set_malloc_tunable(
-        M_TRIM_THRESHOLD,
-        "MALLOC_TRIM_THRESHOLD_",
-        1024 * 1024 * 1024,
-    );
-    set_malloc_tunable(M_TOP_PAD, "MALLOC_TOP_PAD_", 64 * 1024 * 1024);
+    set_malloc_tunable(M_MMAP_THRESHOLD, "MALLOC_MMAP_THRESHOLD_", 1024 * 1024);
+    set_malloc_tunable(M_TRIM_THRESHOLD, "MALLOC_TRIM_THRESHOLD_", 64 * 1024 * 1024);
+    set_malloc_tunable(M_TOP_PAD, "MALLOC_TOP_PAD_", 0);
 }
 
 /// Bound glibc's per-thread heaps to the page workers (plus the CLI thread):
@@ -4454,20 +4451,8 @@ fn tune_allocator_for_one_shot_process() {
 #[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc")))]
 fn tune_allocator_for_workers(workers: usize) {
     const M_ARENA_MAX: i32 = -8;
-    const M_TRIM_THRESHOLD: i32 = -1;
-    const M_TOP_PAD: i32 = -2;
-    const M_MMAP_THRESHOLD: i32 = -3;
     let arenas = i32::try_from(workers.saturating_add(1)).unwrap_or(i32::MAX);
     set_malloc_tunable(M_ARENA_MAX, "MALLOC_ARENA_MAX", arenas);
-    // Keep memory near the live data: large buffers are mapped and returned
-    // on free, and freed heap above 64 MiB is trimmed. The one-shot
-    // retention above would let every worker's arena keep its own high-water
-    // mark: on atlas_animals (303 scanned pages, 150 dpi, 8 workers) that
-    // was about 0.9 GB of freed memory still resident (1.83 GB peak RSS
-    // against 0.95 GB), for about 1 s less system time.
-    set_malloc_tunable(M_MMAP_THRESHOLD, "MALLOC_MMAP_THRESHOLD_", 1024 * 1024);
-    set_malloc_tunable(M_TRIM_THRESHOLD, "MALLOC_TRIM_THRESHOLD_", 64 * 1024 * 1024);
-    set_malloc_tunable(M_TOP_PAD, "MALLOC_TOP_PAD_", 0);
 }
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc"))))]
@@ -4494,7 +4479,7 @@ fn set_malloc_tunable(param: i32, env: &str, value: i32) {
 }
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu", not(feature = "mimalloc"))))]
-fn tune_allocator_for_one_shot_process() {}
+fn tune_allocator_for_process() {}
 
 /// Opt-in `mimalloc` feature: mimalloc serves every allocation instead of the
 /// platform allocator, and the glibc tunables above are not applied. Off by
@@ -4506,7 +4491,7 @@ fn tune_allocator_for_one_shot_process() {}
 static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> ExitCode {
-    tune_allocator_for_one_shot_process();
+    tune_allocator_for_process();
     match std::thread::Builder::new()
         .name("wellfriendpdf-cli".to_string())
         .stack_size(32 * 1024 * 1024)
@@ -10498,7 +10483,9 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
             Ok(())
         };
 
-        if page_nums.len() >= PARALLEL_RENDER_PAGE_THRESHOLD {
+        // With one worker the pages render on this thread: a separate page
+        // thread would only add a thread and a second allocator arena.
+        if page_nums.len() >= PARALLEL_RENDER_PAGE_THRESHOLD && rayon::current_num_threads() > 1 {
             // One thread per worker pulls the next page in order, keeps one
             // document cache for the whole run, and hands finished pages to
             // this thread, which reorders the few that arrive early and
@@ -10571,6 +10558,7 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
             write_result?;
         } else {
             let mut document_cache = RenderDocumentCache::single_pass();
+            document_cache.set_retained_byte_limit(RENDER_RETAINED_CACHE_BYTES);
             for &page_num in &page_nums {
                 write_page(page_num, encode_page(page_num, &mut document_cache))?;
             }

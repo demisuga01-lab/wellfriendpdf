@@ -35,6 +35,9 @@ kurbo = "=0.13.1"
 linesweeper = { version = "=0.4.0", default-features = false }
 md-5 = "0.10"
 png = "0.17"
+# The direct PNG writer (images::raster) uses the same compressor and CRC as png.
+fdeflate = "0.3"
+crc32fast = "1"
 qcms = { version = "0.3", default-features = true }
 wellfriendpdf-render-simd = { path = "../render-simd" }
 lcms2 = { version = "6.1.1", optional = true, default-features = true }

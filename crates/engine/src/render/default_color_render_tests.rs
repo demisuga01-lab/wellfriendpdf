@@ -543,6 +543,7 @@ mod default_colour_rendering {
                 Some(&first),
                 &first_key,
                 "source-domain regression",
+                true,
             )
             .unwrap();
         let first_window = state
@@ -585,6 +586,7 @@ mod default_colour_rendering {
                 Some(&second),
                 &second_key,
                 "source-domain regression",
+                true,
             )
             .unwrap();
         let second_window = state

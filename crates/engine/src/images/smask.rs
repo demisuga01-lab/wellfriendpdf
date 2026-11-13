@@ -42,8 +42,9 @@ impl SmaskLoader {
     }
 
     /// `main_raw` may be borrowed (a decoded image kept in a render cache):
-    /// the combined RGBA image is a new buffer either way, so the main image
-    /// is copied only if it must be resampled or refitted first.
+    /// the combined RGBA image is then a new buffer, and the main image is
+    /// copied only if it must be resampled or refitted first. An owned main
+    /// image is widened to RGBA in its own buffer.
     pub(crate) fn load_and_combine_with_limits_and_source_window(
         main_image: &ImageReference,
         main_raw: Cow<'_, RawImage>,
@@ -51,6 +52,26 @@ impl SmaskLoader {
         limits: &DecodeLimits,
         source_window: Option<RawImageDecodeWindow>,
     ) -> Result<Option<RawImage>> {
+        Ok(Self::load_and_combine_or_return_main(
+            main_image,
+            main_raw,
+            reader,
+            limits,
+            source_window,
+        )?
+        .ok())
+    }
+
+    /// As [`Self::load_and_combine_with_limits_and_source_window`], but an
+    /// image without a soft mask (no `/SMask`, or `/SMask /None`) comes back
+    /// as `Err(main_raw)`, so an owned main image is not lost.
+    pub(crate) fn load_and_combine_or_return_main<'a>(
+        main_image: &ImageReference,
+        main_raw: Cow<'a, RawImage>,
+        reader: &PdfReader,
+        limits: &DecodeLimits,
+        source_window: Option<RawImageDecodeWindow>,
+    ) -> Result<std::result::Result<RawImage, Cow<'a, RawImage>>> {
         let obj = reader.get_object(main_image.object_number, main_image.generation_number)?;
         let dict = match &obj {
             PdfObject::Stream { dict, .. } => dict.clone(),
@@ -63,11 +84,11 @@ impl SmaskLoader {
         };
 
         let Some(smask_value) = dict.get("SMask") else {
-            return Ok(None);
+            return Ok(Err(main_raw));
         };
         let smask_ref = match smask_value {
             PdfObject::Reference { number, generation } => (*number, *generation),
-            PdfObject::Name(name) if name == "None" => return Ok(None),
+            PdfObject::Name(name) if name == "None" => return Ok(Err(main_raw)),
             other => {
                 return Err(WellfriendError::MalformedPdf(format!(
                     "unsupported image SMask value {}",
@@ -174,7 +195,7 @@ impl SmaskLoader {
             ))
         })?;
 
-        Self::combine_rgba_cow(main_raw, smask_raw, matte).map(Some)
+        Self::combine_rgba_cow(main_raw, smask_raw, matte).map(Ok)
     }
 
     /// Combine a main image with a grayscale alpha mask into RGBA.
@@ -250,33 +271,61 @@ impl SmaskLoader {
         }
 
         let channels = main.channels as usize;
-        let mut rgba = Vec::with_capacity(pixel_count * 4);
-        for (i, &a) in mask.pixels[..pixel_count].iter().enumerate() {
-            let (r, g, b) = if channels == 1 {
-                let gray = main.pixels[i];
-                (gray, gray, gray)
-            } else {
-                let offset = i * 3;
-                (
-                    main.pixels[offset],
-                    main.pixels[offset + 1],
-                    main.pixels[offset + 2],
-                )
-            };
-            let (r, g, b) = match matte {
-                Some(matte) => (
-                    unmatte_channel(r, matte[0], a),
-                    unmatte_channel(g, matte[1], a),
-                    unmatte_channel(b, matte[2], a),
-                ),
-                None => (r, g, b),
-            };
-            rgba.extend_from_slice(&[r, g, b, a]);
-        }
+        let (width, height) = (main.width, main.height);
+        let alpha = &mask.pixels[..pixel_count];
+        let rgba_pixel = |r: u8, g: u8, b: u8, a: u8| match matte {
+            Some(matte) => [
+                unmatte_channel(r, matte[0], a),
+                unmatte_channel(g, matte[1], a),
+                unmatte_channel(b, matte[2], a),
+                a,
+            ],
+            None => [r, g, b, a],
+        };
+        let rgba = match main {
+            // Widen the image's own buffer from the last pixel back: pixel
+            // i's samples end at or before byte 4 * i, where its RGBA starts,
+            // so no sample is overwritten before it is read. This saves the
+            // image-size copy a borrowed image needs (35 MB for a 2980x2977
+            // RGB image).
+            Cow::Owned(owned) => {
+                let mut pixels = owned.pixels;
+                pixels.resize(pixel_count * 4, 0);
+                for i in (0..pixel_count).rev() {
+                    let (r, g, b) = if channels == 1 {
+                        let gray = pixels[i];
+                        (gray, gray, gray)
+                    } else {
+                        let offset = i * 3;
+                        (pixels[offset], pixels[offset + 1], pixels[offset + 2])
+                    };
+                    pixels[i * 4..i * 4 + 4].copy_from_slice(&rgba_pixel(r, g, b, alpha[i]));
+                }
+                pixels
+            }
+            Cow::Borrowed(main) => {
+                let mut rgba = Vec::with_capacity(pixel_count * 4);
+                for (i, &a) in alpha.iter().enumerate() {
+                    let (r, g, b) = if channels == 1 {
+                        let gray = main.pixels[i];
+                        (gray, gray, gray)
+                    } else {
+                        let offset = i * 3;
+                        (
+                            main.pixels[offset],
+                            main.pixels[offset + 1],
+                            main.pixels[offset + 2],
+                        )
+                    };
+                    rgba.extend_from_slice(&rgba_pixel(r, g, b, a));
+                }
+                rgba
+            }
+        };
 
         Ok(RawImage {
-            width: main.width,
-            height: main.height,
+            width,
+            height,
             channels: 4,
             bits_per_sample: 8,
             pixels: rgba,
@@ -792,6 +841,55 @@ mod tests {
         let error = SmaskLoader::combine_rgba(main, mask)
             .expect_err("pre-alpha main image must not silently drop alpha");
         assert!(format!("{error}").contains("pre-alpha main image"));
+    }
+
+    /// An owned main image is widened to RGBA in its own buffer; the result
+    /// must equal the copy made from a borrowed (cached) image.
+    #[test]
+    fn combine_in_place_matches_combine_from_borrowed_image() {
+        for channels in [1u8, 3] {
+            for matte in [None, Some([255, 0, 128])] {
+                let (width, height) = (37u32, 5u32);
+                let pixel_count = (width * height) as usize;
+                let main = RawImage {
+                    width,
+                    height,
+                    channels,
+                    bits_per_sample: 8,
+                    pixels: (0..pixel_count * channels as usize)
+                        .map(|i| (i * 37 % 256) as u8)
+                        .collect(),
+                };
+                let mask = RawImage {
+                    width,
+                    height,
+                    channels: 1,
+                    bits_per_sample: 8,
+                    pixels: (0..pixel_count).map(|i| (i * 11 % 256) as u8).collect(),
+                };
+                let borrowed =
+                    SmaskLoader::combine_rgba_cow(Cow::Borrowed(&main), mask.clone(), matte)
+                        .unwrap();
+                let owned =
+                    SmaskLoader::combine_rgba_cow(Cow::Owned(main.clone()), mask, matte).unwrap();
+                assert_eq!(owned.channels, 4);
+                assert_eq!(owned.pixels.len(), pixel_count * 4);
+                assert_eq!(
+                    owned.pixels, borrowed.pixels,
+                    "{channels} channels, {matte:?}"
+                );
+                for i in [0, 1, 2, pixel_count - 1] {
+                    let a = (i * 11 % 256) as u8;
+                    assert_eq!(owned.pixels[i * 4 + 3], a);
+                    if matte.is_none() && channels == 3 {
+                        assert_eq!(
+                            &owned.pixels[i * 4..i * 4 + 3],
+                            &main.pixels[i * 3..i * 3 + 3]
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
