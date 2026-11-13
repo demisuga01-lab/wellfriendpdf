@@ -686,6 +686,7 @@ round that added it.
 | Streaming page output instead of collecting every page | page by page | page by page | yes (streaming ZIP, reorder buffer) | 303-page atlas peak 5.4 GB -> 378 MB |
 | Parallel page rendering, one cache per worker | single-threaded per document | single-threaded | yes (one thread per worker, workers split one 256 MiB retained-cache budget) | 93 docs 11.8 s vs Poppler 101.8 s, PDFium 26.8 s; atlas at 8 workers 2.68 -> 0.98 GB (round 14) |
 | Image masks shrunk without an expanded copy | 1 bpp `CPDF_DIB` | `ImageStream` | yes (`StencilMask`, round 14) | freeculture 671 -> 245 MB |
+| Image masks kept at one bit per pixel | 1 bpp `CPDF_DIB` | `ImageStream` | yes (packed `RawImage`, round 15) | freeculture 245 -> 169 MB |
 | Huge decoded images not kept between pages | `kHugeImageSize` (60,000,000 bytes) | no image cache | yes (single-pass renders, round 14) | |
 | SIMD blending and colour conversion | AGG + Skia SIMD | limited | yes (`render-simd` crate) | |
 | Link-time optimisation in release builds | yes | distro-dependent | yes (`lto = "thin"`) | |
@@ -832,3 +833,22 @@ core, `run_tool.py`; the r13 comparator columns are unchanged):
 PDFium's max on this set is 97 MB, Poppler's 64 MB, MuPDF's 92 MB. The
 remaining freeculture peak is the 113 MB one-byte-per-pixel mask; decoding
 stencils to 1 bpp, as PDFium does, would remove most of it.
+
+**Round 15: masks at one bit per pixel.** Image masks are now decoded and
+cached packed, one bit per pixel (`RawImage::is_packed_bilevel`), as PDFium
+keeps a 1 bpc `CPDF_DIB`: CCITT masks are decoded straight to bits (full image
+or source window), unfiltered and Flate/LZW 1 bpc masks keep their stream bits,
+and other masks (JBIG2, ...) are packed after decoding. The mask painters read
+a bit as the sample 0 or 255 it expanded to, so the output is unchanged: every
+page of `tests/corpus/pdfs` at 50 dpi (596 pages) and the 424 pages at 150 dpi
+above hash identically to round 14. freeculture page 255 alone: 149 -> 54 MB.
+93-document Wellfriend column, same session (other jobs running, so the wall
+times are high for both):
+
+| Build | Docs rendered | Pages | Total wall (s) | CPU (s) | Peak RSS max / median (MB) | Largest |
+|---|---:|---:|---:|---:|---:|---|
+| round 14 | 91/93 | 629 | 23.0 | 13.9 | 246 / 37.6 | freeculture 246, images 146 |
+| round 15 | 91/93 | 629 | 21.3 | 13.6 | **169 / 38.2** | freeculture 169, images 147 |
+
+1 bpc DeviceGray images still decode to one byte per pixel; the general image
+painter reads 8-bit samples.

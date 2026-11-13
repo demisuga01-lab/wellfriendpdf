@@ -9846,6 +9846,65 @@ impl<'a> RenderState<'a> {
         Ok(raw)
     }
 
+    /// Decode an image mask, or the CCITT `window` of one, packed one bit per
+    /// pixel (`ImageDecoder::decode_image_mask_packed_with_limits`), and cache
+    /// it under its own key: the image cache holds an eighth of the bytes the
+    /// 8-bit decode held (a 9,258 x 12,259 scanned stencil is 14 MB instead
+    /// of 113 MB).
+    fn scheduled_decode_packed_mask_with_cache_key(
+        &mut self,
+        image_ref: &ImageReference,
+        window: Option<ccitt::CcittDecodeWindow>,
+        cache_key: &str,
+        context: &str,
+    ) -> Result<Arc<RawImage>> {
+        let cache_key = format!("{cache_key}|packed-1bpp");
+        if let Some(cached) = self.image_xobject_cache.get(&cache_key) {
+            let cached = Arc::clone(cached);
+            touch_image_xobject_cache_key(&mut self.image_xobject_cache_order, &cache_key);
+            self.image_xobject_cache_stats.hits =
+                self.image_xobject_cache_stats.hits.saturating_add(1);
+            return Ok(cached);
+        }
+        self.image_xobject_cache_stats.misses =
+            self.image_xobject_cache_stats.misses.saturating_add(1);
+        let estimated = match window {
+            Some(window) => u64::from(window.width)
+                .saturating_mul(u64::from(window.height))
+                .max(1),
+            None => estimate_image_ref_decode_bytes(image_ref),
+        };
+        let reader = self.engine.document().reader();
+        let limits = self.decode_limits.clone();
+        let color_options = self.image_color_options();
+        let raw = self
+            .decode_scheduler
+            .run(estimated, &self.cancel, context, || match window {
+                Some(window) => ImageDecoder::decode_ccitt_window_packed_with_limits(
+                    image_ref, reader, window, &limits,
+                ),
+                None => ImageDecoder::decode_image_mask_packed_with_limits(
+                    image_ref,
+                    reader,
+                    &limits,
+                    color_options,
+                ),
+            })?;
+        let raw = Arc::new(raw);
+        let raw_bytes = raw.byte_count();
+        let cache_max_bytes = self.cache_budget(RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES);
+        insert_image_xobject_cache_entry(
+            &mut self.image_xobject_cache,
+            &mut self.image_xobject_cache_order,
+            &mut self.image_xobject_cache_bytes,
+            cache_key,
+            Arc::clone(&raw),
+            raw_bytes,
+            cache_max_bytes,
+        );
+        Ok(raw)
+    }
+
     fn scheduled_decode_ccitt_window_with_cache_key(
         &mut self,
         image_ref: &ImageReference,
@@ -16149,15 +16208,27 @@ impl<'a> RenderState<'a> {
         };
         let native_reduction_target = native_reduction_target_from_plan(&decode_plan);
         let image_cache_key = decode_plan.cache_key.to_cache_string();
+        // Stencil masks are decoded one bit per pixel (PDFium's 1 bpp
+        // `CPDF_DIB`); the mask painters read either layout identically.
+        let packed_mask = image_ref.is_mask && color_space_override.is_none();
 
         let decoded = if let Some(window) = ccitt_window {
-            self.scheduled_decode_ccitt_window_with_cache_key(
-                &image_ref,
-                color_space_override.as_ref(),
-                window,
-                &image_cache_key,
-                "renderer CCITT image XObject window decode",
-            )
+            if packed_mask {
+                self.scheduled_decode_packed_mask_with_cache_key(
+                    &image_ref,
+                    Some(window),
+                    &image_cache_key,
+                    "renderer CCITT image XObject window decode",
+                )
+            } else {
+                self.scheduled_decode_ccitt_window_with_cache_key(
+                    &image_ref,
+                    color_space_override.as_ref(),
+                    window,
+                    &image_cache_key,
+                    "renderer CCITT image XObject window decode",
+                )
+            }
         } else if let Some(window) = raw_window {
             self.scheduled_decode_raw_window_with_cache_key(
                 &image_ref,
@@ -16192,6 +16263,13 @@ impl<'a> RenderState<'a> {
                     "renderer image XObject decode",
                 ),
             }
+        } else if packed_mask {
+            self.scheduled_decode_packed_mask_with_cache_key(
+                &image_ref,
+                None,
+                &image_cache_key,
+                "renderer image XObject decode",
+            )
         } else {
             self.scheduled_decode_image_with_cache_key(
                 &image_ref,
@@ -27208,11 +27286,40 @@ fn image_mask_to_stencil_rgba(
             "image mask has zero channels".to_string(),
         ));
     }
+    let painted = [color[0], color[1], color[2], color[3]];
+    let unpainted = [color[0], color[1], color[2], 0];
+    if raw.is_packed_bilevel() {
+        let width = raw.width as usize;
+        let row_bytes = raw.packed_row_bytes();
+        ensure_image_mask_buffer_len(raw.pixels.len(), row_bytes * raw.height as usize)?;
+        let mut pixels = vec![0u8; pixel_count * 4];
+        if width > 0 {
+            for (row, out_row) in raw
+                .pixels
+                .chunks_exact(row_bytes)
+                .zip(pixels.chunks_exact_mut(width * 4))
+            {
+                for (x, out) in out_row.chunks_exact_mut(4).enumerate() {
+                    let one = row[x >> 3] & (0x80 >> (x & 7)) != 0;
+                    out.copy_from_slice(if one == paint_ones {
+                        &painted
+                    } else {
+                        &unpainted
+                    });
+                }
+            }
+        }
+        return Ok(crate::images::decoder::RawImage {
+            width: raw.width,
+            height: raw.height,
+            channels: 4,
+            bits_per_sample: 8,
+            pixels,
+        });
+    }
     let channels = raw.channels as usize;
     ensure_image_mask_buffer_len(raw.pixels.len(), pixel_count * channels)?;
     let mut pixels = vec![0u8; pixel_count * 4];
-    let painted = [color[0], color[1], color[2], color[3]];
-    let unpainted = [color[0], color[1], color[2], 0];
     for (out, &sample) in pixels
         .chunks_exact_mut(4)
         .zip(raw.pixels.iter().step_by(channels))

@@ -2229,16 +2229,29 @@ impl ImagePainter {
 /// scanner resolution (say 9,000 x 12,000) is drawn a few hundred pixels
 /// wide; expanding it to RGBA first cost four bytes per source pixel, about
 /// 450 MB for one page.
+///
+/// The mask is either one byte per sample (a sample of 128 or more is a
+/// one) or packed one bit per pixel ([`RawImage::is_packed_bilevel`]), the
+/// way PDFium keeps a 1 bpc `CPDF_DIB`; both read as the same RGBA pixels.
 pub(crate) struct StencilMask<'a> {
     mask: &'a RawImage,
-    channels: usize,
+    layout: StencilLayout,
     painted: [u8; 4],
     unpainted: [u8; 4],
     paint_ones: bool,
 }
 
+#[derive(Clone, Copy)]
+enum StencilLayout {
+    /// One byte per sample, `channels` bytes per pixel.
+    Bytes { channels: usize },
+    /// One bit per pixel, most significant bit first, rows padded to bytes.
+    Packed { row_bytes: usize },
+}
+
 impl<'a> StencilMask<'a> {
-    /// `mask` must hold `width * height * channels` bytes (the caller
+    /// `mask` must hold `width * height * channels` bytes, or
+    /// `ceil(width / 8) * height` bytes when it is packed (the caller
     /// validates it the same way the RGBA expansion does).
     pub(crate) fn new(
         mask: &'a RawImage,
@@ -2246,13 +2259,24 @@ impl<'a> StencilMask<'a> {
         unpainted: [u8; 4],
         paint_ones: bool,
     ) -> Option<Self> {
-        let channels = mask.channels as usize;
-        let expected = (mask.width as usize)
-            .checked_mul(mask.height as usize)?
-            .checked_mul(channels)?;
-        (channels > 0 && mask.pixels.len() == expected).then_some(Self {
+        let layout = if mask.is_packed_bilevel() {
+            StencilLayout::Packed {
+                row_bytes: mask.packed_row_bytes(),
+            }
+        } else {
+            StencilLayout::Bytes {
+                channels: mask.channels as usize,
+            }
+        };
+        let expected = match layout {
+            StencilLayout::Bytes { channels } => (mask.width as usize)
+                .checked_mul(mask.height as usize)?
+                .checked_mul(channels)?,
+            StencilLayout::Packed { row_bytes } => row_bytes.checked_mul(mask.height as usize)?,
+        };
+        (mask.channels > 0 && mask.pixels.len() == expected).then_some(Self {
             mask,
-            channels,
+            layout,
             painted,
             unpainted,
             paint_ones,
@@ -2272,13 +2296,15 @@ impl<'a> StencilMask<'a> {
     /// The RGBA pixel the expansion would hold at `(x, y)`.
     #[inline]
     fn rgba(&self, x: usize, y: usize) -> [u8; 4] {
-        let sample = self.mask.pixels[(y * self.mask.width as usize + x) * self.channels];
-        let paint = if self.paint_ones {
-            sample >= 128
-        } else {
-            sample < 128
+        let one = match self.layout {
+            StencilLayout::Bytes { channels } => {
+                self.mask.pixels[(y * self.mask.width as usize + x) * channels] >= 128
+            }
+            StencilLayout::Packed { row_bytes } => {
+                self.mask.pixels[y * row_bytes + (x >> 3)] & (0x80 >> (x & 7)) != 0
+            }
         };
-        if paint {
+        if one == self.paint_ones {
             self.painted
         } else {
             self.unpainted
@@ -3458,6 +3484,9 @@ mod tests {
                 };
                 let stencil = StencilMask::new(&mask, painted, unpainted, paint_ones)
                     .expect("valid stencil");
+                let packed = RawImage::pack_bilevel(&mask).expect("one-channel mask packs");
+                let packed_stencil = StencilMask::new(&packed, painted, unpainted, paint_ones)
+                    .expect("valid packed stencil");
                 for ctm in &placements {
                     for paint_alpha in [1.0, 0.6] {
                         let mut expected = PixelBuffer::new_filled(60, 60, WHITE);
@@ -3469,19 +3498,21 @@ mod tests {
                             false,
                             paint_alpha,
                         );
-                        let mut direct = PixelBuffer::new_filled(60, 60, WHITE);
-                        assert!(ImagePainter::paint_stencil_mask(
-                            &mut direct,
-                            &stencil,
-                            ctm,
-                            &vp,
-                            paint_alpha
-                        ));
-                        assert_eq!(
-                            direct.to_rgba_bytes(),
-                            expected.to_rgba_bytes(),
-                            "{ctm:?} alpha {paint_alpha} color {color:?} ones {paint_ones}"
-                        );
+                        for stencil in [&stencil, &packed_stencil] {
+                            let mut direct = PixelBuffer::new_filled(60, 60, WHITE);
+                            assert!(ImagePainter::paint_stencil_mask(
+                                &mut direct,
+                                stencil,
+                                ctm,
+                                &vp,
+                                paint_alpha
+                            ));
+                            assert_eq!(
+                                direct.to_rgba_bytes(),
+                                expected.to_rgba_bytes(),
+                                "{ctm:?} alpha {paint_alpha} color {color:?} ones {paint_ones}"
+                            );
+                        }
                     }
                 }
                 // A magnified mask is left to the general painter.
@@ -3503,6 +3534,12 @@ mod tests {
             ..mask.clone()
         };
         assert!(StencilMask::new(&short, [0; 4], [0; 4], true).is_none());
+        let packed = RawImage::pack_bilevel(&mask).expect("one-channel mask packs");
+        let short_packed = RawImage {
+            pixels: packed.pixels[1..].to_vec(),
+            ..packed
+        };
+        assert!(StencilMask::new(&short_packed, [0; 4], [0; 4], true).is_none());
     }
 
     #[test]

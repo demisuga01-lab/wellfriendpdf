@@ -33,7 +33,98 @@ impl RawImage {
 
     /// Total bytes in the pixel buffer.
     pub fn byte_count(&self) -> usize {
+        if self.is_packed_bilevel() {
+            return self.packed_row_bytes() * self.height as usize;
+        }
         self.pixel_count() * self.channels as usize
+    }
+
+    /// True for a packed bilevel image: one channel at one bit per pixel,
+    /// most significant bit first, each row padded to a whole byte, a set bit
+    /// standing for the 8-bit sample 255 and a clear bit for 0. The decoder
+    /// only returns this layout from the image-mask decodes that ask for it
+    /// (PDFium keeps 1 bpc masks as a 1 bpp `CPDF_DIB` in the same way); every
+    /// other decode returns 8-bit samples. [`Self::row_stride`] and
+    /// [`Self::pixel`] describe 8-bit samples only; use
+    /// [`Self::unpack_bilevel`] to read such an image as bytes.
+    pub fn is_packed_bilevel(&self) -> bool {
+        self.bits_per_sample == 1 && self.channels == 1
+    }
+
+    /// Bytes per row of a packed bilevel image.
+    pub fn packed_row_bytes(&self) -> usize {
+        (self.width as usize).div_ceil(8)
+    }
+
+    /// Pack a one-channel 8-bit image to one bit per pixel: a sample of 128
+    /// or more becomes a set bit. Image masks are only ever read through that
+    /// threshold, so a packed mask paints exactly as its 8-bit samples do.
+    /// Returns `None` for any other layout or a buffer of the wrong size.
+    pub fn pack_bilevel(&self) -> Option<RawImage> {
+        if self.is_packed_bilevel() {
+            return Some(self.clone());
+        }
+        if self.channels != 1 || self.bits_per_sample != 8 {
+            return None;
+        }
+        let width = self.width as usize;
+        if self.pixels.len() != width.checked_mul(self.height as usize)? {
+            return None;
+        }
+        let row_bytes = width.div_ceil(8);
+        let mut pixels = vec![0u8; row_bytes * self.height as usize];
+        if width > 0 {
+            for (row, out) in self
+                .pixels
+                .chunks_exact(width)
+                .zip(pixels.chunks_exact_mut(row_bytes))
+            {
+                for (x, &sample) in row.iter().enumerate() {
+                    if sample >= 128 {
+                        out[x >> 3] |= 0x80 >> (x & 7);
+                    }
+                }
+            }
+        }
+        Some(RawImage {
+            width: self.width,
+            height: self.height,
+            channels: 1,
+            bits_per_sample: 1,
+            pixels,
+        })
+    }
+
+    /// Expand a packed bilevel image to 8-bit 0/255 samples (any other
+    /// image is returned unchanged).
+    pub fn unpack_bilevel(&self) -> RawImage {
+        if !self.is_packed_bilevel() {
+            return self.clone();
+        }
+        let width = self.width as usize;
+        let row_bytes = self.packed_row_bytes();
+        let mut pixels = Vec::with_capacity(width.saturating_mul(self.height as usize));
+        if row_bytes > 0 {
+            for row in self.pixels.chunks(row_bytes).take(self.height as usize) {
+                pixels.extend((0..width).map(|x| {
+                    let set = row
+                        .get(x >> 3)
+                        .is_some_and(|byte| byte & (0x80 >> (x & 7)) != 0);
+                    if set {
+                        255
+                    } else {
+                        0
+                    }
+                }));
+            }
+        }
+        RawImage {
+            width: self.width,
+            height: self.height,
+            channels: 1,
+            bits_per_sample: 8,
+            pixels,
+        }
     }
 
     /// Row stride in bytes.
@@ -500,6 +591,187 @@ impl ImageDecoder {
         }
     }
 
+    /// Decode an image mask (`/ImageMask true`) for painting, keeping its
+    /// samples packed one bit per pixel ([`RawImage::is_packed_bilevel`]) as
+    /// PDFium keeps a 1 bpc mask: CCITT masks are decoded straight to bits
+    /// and unfiltered or Flate/LZW/RunLength 1 bpc masks keep their stream
+    /// bits, so neither ever holds a byte per pixel; any other mask (JBIG2,
+    /// DCT, ...) is decoded as by [`Self::decode_with_limits`] and then
+    /// packed. A mask is only ever read through the 128 threshold of
+    /// [`RawImage::pack_bilevel`], so it paints exactly as the 8-bit decode
+    /// does. When the image turns out not to be a stencil this returns the
+    /// 8-bit decode unchanged.
+    pub(crate) fn decode_image_mask_packed_with_limits<'a>(
+        image: &ImageReference,
+        reader: &PdfReader,
+        limits: &DecodeLimits,
+        color_options: impl Into<ImageColorOptions<'a>>,
+    ) -> Result<RawImage> {
+        let color_options: ImageColorOptions<'a> = color_options.into();
+        if image.object_number == 0 {
+            return Err(WellfriendError::UnsupportedFeature(
+                "inline image decoding via decode() is not supported; use decode_inline() with the raw pixel bytes"
+                    .to_string(),
+            ));
+        }
+        let obj = reader.get_object(image.object_number, image.generation_number)?;
+        let (dict, raw) = match obj {
+            PdfObject::Stream { dict, raw } => (dict, raw),
+            _ => {
+                return Err(WellfriendError::MalformedPdf(format!(
+                    "image object {} is not a stream",
+                    image.object_number
+                )))
+            }
+        };
+        let stream_obj = PdfObject::Stream {
+            dict: dict.clone(),
+            raw,
+        };
+        let decoded = decode_stream_lossless_with_limits(&stream_obj, reader, limits)?;
+        let stencil = image.is_mask
+            && matches!(
+                dict.get("ImageMask").or_else(|| dict.get("IM")),
+                Some(PdfObject::Boolean(true))
+            );
+        if stencil && image.width > 0 && image.height > 0 {
+            match &decoded.status {
+                StreamDecodeStatus::StoppedAtImageFilter(filter)
+                    if matches!(filter.as_str(), "CCITTFaxDecode" | "CCF") =>
+                {
+                    Self::ensure_monochrome_terminal_color_space(filter, &image.color_space)?;
+                    let decode_params = image_decode_params(&dict, Some(reader), filter)?;
+                    let params =
+                        ccitt_decode_params(decode_params.as_ref(), image.width, image.height)?;
+                    let packed = ccitt::decode_packed(&decoded.data, params)?;
+                    if (packed.width, packed.height) == (image.width, image.height) {
+                        // `finish_monochrome_decoded_image` keeps such a
+                        // mask's samples as they are.
+                        return Ok(packed);
+                    }
+                    // The codec size differs from /Width and /Height: fit it
+                    // as the 8-bit decode does.
+                    let fitted = Self::finish_monochrome_decoded_image(
+                        packed.unpack_bilevel(),
+                        image.width,
+                        image.height,
+                        &format!("image {}", image.xobject_name),
+                        &image.color_space,
+                        &dict,
+                        ImageColorContext::with_reader(reader, color_options)
+                            .with_source(dict.get("ColorSpace").or_else(|| dict.get("CS"))),
+                    )?;
+                    return Ok(fitted.pack_bilevel().unwrap_or(fitted));
+                }
+                StreamDecodeStatus::Complete
+                    if image.bits_per_component == 1
+                        && (image.width as usize)
+                            .div_ceil(8)
+                            .checked_mul(image.height as usize)
+                            .is_some() =>
+                {
+                    return Self::packed_one_bit_mask(image, &dict, reader, decoded.data);
+                }
+                _ => {}
+            }
+        }
+        let raw = Self::finish_decoded_image_stream(
+            decoded,
+            image,
+            &dict,
+            &dict,
+            reader,
+            limits,
+            color_options,
+            None,
+        )?;
+        Ok(if stencil {
+            raw.pack_bilevel().unwrap_or(raw)
+        } else {
+            raw
+        })
+    }
+
+    /// The bits of a 1 bpc stencil whose stream has no image filter, fitted
+    /// to its rows exactly as `build_raw_image` fits them before expanding
+    /// each bit to a 0/255 sample (the caller checks that the row size does
+    /// not overflow, so the fit always applies).
+    fn packed_one_bit_mask(
+        image: &ImageReference,
+        dict: &PdfDictionary,
+        reader: &PdfReader,
+        data: Vec<u8>,
+    ) -> Result<RawImage> {
+        let (width, height) = (image.width, image.height);
+        let data = if image.filter.is_empty() {
+            let channels =
+                Self::raw_source_channel_count(true, &image.color_space, dict, Some(reader))?;
+            normalise_unfiltered_image_line_ending(data, width, height, channels, 1)
+        } else {
+            data
+        };
+        ensure_decode_budget(width, height, 1)?;
+        let pad = white_pad_byte(true, &image.color_space, 1, dict);
+        let data = fit_packed_image_data(data, width, height, 1, 1, pad);
+        debug_assert_eq!(data.len(), (width as usize).div_ceil(8) * height as usize);
+        Ok(RawImage {
+            width,
+            height,
+            channels: 1,
+            bits_per_sample: 1,
+            pixels: data,
+        })
+    }
+
+    /// [`Self::decode_ccitt_window_with_limits`] into a packed bilevel image
+    /// (see [`Self::decode_image_mask_packed_with_limits`]).
+    pub(crate) fn decode_ccitt_window_packed_with_limits(
+        image: &ImageReference,
+        reader: &PdfReader,
+        window: ccitt::CcittDecodeWindow,
+        limits: &DecodeLimits,
+    ) -> Result<RawImage> {
+        if image.object_number == 0 {
+            return Err(WellfriendError::UnsupportedFeature(
+                "inline CCITT window decoding via image reference is not supported".to_string(),
+            ));
+        }
+        let obj = reader.get_object(image.object_number, image.generation_number)?;
+        let (dict, raw) = match obj {
+            PdfObject::Stream { dict, raw } => (dict, raw),
+            _ => {
+                return Err(WellfriendError::MalformedPdf(format!(
+                    "image object {} is not a stream",
+                    image.object_number
+                )));
+            }
+        };
+        let stream_obj = PdfObject::Stream {
+            dict: dict.clone(),
+            raw,
+        };
+        let decoded = decode_stream_lossless_with_limits(&stream_obj, reader, limits)?;
+        match decoded.status {
+            StreamDecodeStatus::StoppedAtImageFilter(filter)
+                if matches!(filter.as_str(), "CCITTFaxDecode" | "CCF") =>
+            {
+                Self::ensure_monochrome_terminal_color_space(&filter, &image.color_space)?;
+                let decode_params = image_decode_params(&dict, Some(reader), &filter)?;
+                let params =
+                    ccitt_decode_params(decode_params.as_ref(), image.width, image.height)?;
+                ccitt::decode_window_packed(&decoded.data, params, window)
+            }
+            StreamDecodeStatus::StoppedAtImageFilter(filter) => {
+                Err(WellfriendError::UnsupportedFeature(format!(
+                    "CCITT window decode cannot handle final image filter {filter}"
+                )))
+            }
+            StreamDecodeStatus::Complete => Err(WellfriendError::UnsupportedFeature(
+                "CCITT window decode requires a CCITTFaxDecode image filter".to_string(),
+            )),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn decode_raw_window_with_limits_and_color_transform_options<'a>(
         image: &ImageReference,
@@ -670,14 +942,39 @@ impl ImageDecoder {
             raw,
         };
         let decoded = decode_stream_lossless_with_limits(&stream_obj, reader, limits)?;
+        Self::finish_decoded_image_stream(
+            decoded,
+            &effective_image,
+            &dict,
+            &effective_dict,
+            reader,
+            limits,
+            color_options,
+            source_space,
+        )
+    }
 
+    /// The image-filter and sample stage of
+    /// [`Self::decode_with_limits_and_color_space_override`], after the
+    /// stream's non-image filters have run.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_decoded_image_stream<'a>(
+        decoded: crate::filters::DecodedStream,
+        effective_image: &ImageReference,
+        dict: &PdfDictionary,
+        effective_dict: &PdfDictionary,
+        reader: &PdfReader,
+        limits: &DecodeLimits,
+        color_options: ImageColorOptions<'a>,
+        source_space: Option<&PdfObject>,
+    ) -> Result<RawImage> {
         match decoded.status {
             StreamDecodeStatus::Complete => {
-                let data = if image.filter.is_empty() {
+                let data = if effective_image.filter.is_empty() {
                     let channels = Self::raw_source_channel_count(
                         effective_image.is_mask,
                         &effective_image.color_space,
-                        &effective_dict,
+                        effective_dict,
                         Some(reader),
                     )?;
                     normalise_unfiltered_image_line_ending(
@@ -696,7 +993,7 @@ impl ImageDecoder {
                     effective_image.height,
                     effective_image.bits_per_component,
                     &effective_image.color_space,
-                    &effective_dict,
+                    effective_dict,
                     ImageColorContext::with_reader(reader, color_options).with_source(
                         source_space.or_else(|| dict.get("ColorSpace").or_else(|| dict.get("CS"))),
                     ),
@@ -706,9 +1003,9 @@ impl ImageDecoder {
                 Self::decode_remaining_image_filter(
                     &decoded.data,
                     &filter,
-                    &effective_image,
+                    effective_image,
                     reader,
-                    &effective_dict,
+                    effective_dict,
                     limits,
                     color_options,
                     source_space.or_else(|| dict.get("ColorSpace").or_else(|| dict.get("CS"))),
@@ -4676,6 +4973,212 @@ mod tests {
             format!("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
         );
         PdfReader::from_bytes(pdf).unwrap()
+    }
+
+    /// A one-page PDF whose object 4 is an image stream with `entries` and
+    /// `data` (`/Length` is added).
+    fn reader_with_image_stream(entries: &str, data: &[u8]) -> PdfReader {
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut off = [0usize; 5];
+        off[1] = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        off[2] = pdf.len();
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+        off[3] = pdf.len();
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>\nendobj\n",
+        );
+        off[4] = pdf.len();
+        pdf.extend_from_slice(
+            format!(
+                "4 0 obj\n<< /Type /XObject /Subtype /Image {entries} /Length {} >>\nstream\n",
+                data.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(data);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+        let xref = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 5\n0000000000 65535 f \n");
+        for offset in off.iter().take(5).skip(1) {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+        );
+        PdfReader::from_bytes(pdf).unwrap()
+    }
+
+    #[test]
+    fn packed_mask_decode_holds_the_8_bit_mask_samples() {
+        fn bits(pattern: &str) -> Vec<u8> {
+            let bits: Vec<bool> = pattern
+                .bytes()
+                .filter(|b| matches!(b, b'0' | b'1'))
+                .map(|b| b == b'1')
+                .collect();
+            bits.chunks(8)
+                .map(|chunk| {
+                    chunk
+                        .iter()
+                        .enumerate()
+                        .fold(0u8, |byte, (i, bit)| byte | (u8::from(*bit) << (7 - i)))
+                })
+                .collect()
+        }
+        fn flate(data: &[u8]) -> Vec<u8> {
+            use std::io::Write;
+            let mut encoder =
+                flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            encoder.write_all(data).unwrap();
+            encoder.finish().unwrap()
+        }
+        const CCITT_8X2: &str = "/Filter /CCITTFaxDecode /DecodeParms << /K 0 /Columns 8 /Rows 2";
+        let ccitt_rows = bits("0111 10 1000 0111 10 1000");
+        let odd_rows: Vec<u8> = (0..22u8).map(|i| i.wrapping_mul(37) ^ 0x5A).collect();
+        // (dictionary entries, stream data, width, height, filter, packed
+        // straight from the stream)
+        let cases: Vec<(String, Vec<u8>, u32, u32, Vec<String>, bool)> = vec![
+            // Unfiltered, odd width (row padding bits), complete.
+            (String::new(), odd_rows.clone(), 11, 11, vec![], true),
+            // Unfiltered and short: padded with "no paint".
+            (String::new(), odd_rows[..7].to_vec(), 11, 11, vec![], true),
+            // Short with an inverted /Decode: the pad byte flips.
+            (
+                "/Decode [1 0]".to_string(),
+                odd_rows[..5].to_vec(),
+                11,
+                11,
+                vec![],
+                true,
+            ),
+            // Trailing bytes and a trailing line ending.
+            (
+                String::new(),
+                [&odd_rows[..], b"\r\n"].concat(),
+                11,
+                11,
+                vec![],
+                true,
+            ),
+            (
+                "/Filter /FlateDecode".to_string(),
+                flate(&odd_rows),
+                11,
+                11,
+                vec!["FlateDecode".to_string()],
+                true,
+            ),
+            (
+                format!("{CCITT_8X2} >>"),
+                ccitt_rows.clone(),
+                8,
+                2,
+                vec!["CCITTFaxDecode".to_string()],
+                true,
+            ),
+            // The codec rows differ from /Height: fitted as the 8-bit decode fits them.
+            (
+                format!("{CCITT_8X2} >>"),
+                ccitt_rows.clone(),
+                8,
+                3,
+                vec!["CCITTFaxDecode".to_string()],
+                false,
+            ),
+            (
+                format!("{CCITT_8X2} /BlackIs1 true >>"),
+                ccitt_rows,
+                8,
+                2,
+                vec!["CCITTFaxDecode".to_string()],
+                true,
+            ),
+        ];
+        for (entries, data, width, height, filter, direct) in cases {
+            let entries = format!(
+                "/Width {width} /Height {height} /ImageMask true /BitsPerComponent 1 {entries}"
+            );
+            let reader = reader_with_image_stream(&entries, &data);
+            let image_ref = ImageReference {
+                page_number: 1,
+                xobject_name: "Mask".to_string(),
+                object_number: 4,
+                generation_number: 0,
+                width,
+                height,
+                bits_per_component: 1,
+                color_space: "DeviceGray".to_string(),
+                filter,
+                is_inline: false,
+                is_mask: true,
+                is_smask: false,
+                inline_data: None,
+            };
+            let limits = DecodeLimits::default();
+            let expected = ImageDecoder::decode_with_limits(&image_ref, &reader, &limits).unwrap();
+            let packed = ImageDecoder::decode_image_mask_packed_with_limits(
+                &image_ref,
+                &reader,
+                &limits,
+                ColorTransformOptions::default(),
+            )
+            .unwrap();
+            assert!(packed.is_packed_bilevel(), "{entries}");
+            assert!(packed.is_valid(), "{entries}");
+            assert_eq!(
+                packed.byte_count(),
+                packed.packed_row_bytes() * height as usize
+            );
+            assert_eq!(packed.unpack_bilevel().pixels, expected.pixels, "{entries}");
+            if direct {
+                assert_eq!(
+                    expected.pack_bilevel().unwrap().unpack_bilevel().pixels,
+                    expected.pixels
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pack_bilevel_round_trips_and_refuses_other_layouts() {
+        let gray = RawImage {
+            width: 10,
+            height: 3,
+            channels: 1,
+            bits_per_sample: 8,
+            pixels: (0..30u8)
+                .map(|i| if i % 3 == 0 { 255 } else { 0 })
+                .collect(),
+        };
+        let packed = gray.pack_bilevel().unwrap();
+        assert_eq!(packed.pixels.len(), 6);
+        assert_eq!(packed.byte_count(), 6);
+        assert_eq!(packed.unpack_bilevel().pixels, gray.pixels);
+        assert_eq!(packed.pack_bilevel().unwrap().pixels, packed.pixels);
+        // Mid-grey samples follow the 128 threshold masks are read with.
+        let grey = RawImage {
+            pixels: vec![127, 128, 0, 200, 1, 254, 50, 129, 3, 255],
+            height: 1,
+            ..gray.clone()
+        };
+        assert_eq!(
+            grey.pack_bilevel().unwrap().unpack_bilevel().pixels,
+            vec![0, 255, 0, 255, 0, 255, 0, 255, 0, 255]
+        );
+        let rgb = RawImage {
+            channels: 3,
+            pixels: vec![0; 90],
+            ..gray.clone()
+        };
+        assert!(rgb.pack_bilevel().is_none());
+        let short = RawImage {
+            pixels: vec![0; 29],
+            ..gray
+        };
+        assert!(short.pack_bilevel().is_none());
+        // An image that is not packed unpacks to itself.
+        assert_eq!(rgb.unpack_bilevel().pixels.len(), 90);
     }
 
     fn icc_color_space_ref() -> PdfObject {
