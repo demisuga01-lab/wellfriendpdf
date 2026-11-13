@@ -5653,7 +5653,7 @@ fn parse_stamp_position_py(value: &str) -> PyResult<wellfriendpdf_engine::StampP
 
 fn parse_rgb_color_py(value: &str) -> PyResult<wellfriendpdf_engine::RgbColor> {
     let hex = value.strip_prefix('#').unwrap_or(value);
-    if hex.len() != 6 {
+    if hex.len() != 6 || !hex.is_ascii() {
         return Err(PyValueError::new_err(format!(
             "color '{value}' must be #RRGGBB"
         )));
