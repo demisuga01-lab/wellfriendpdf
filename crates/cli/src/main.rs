@@ -228,10 +228,6 @@ fn classify_error(err: &(dyn Error + 'static)) -> CliExitCode {
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
-// Each subcommand's arguments are built only when that subcommand runs:
-// building every subcommand's arguments on each start cost about 3 MB of
-// heap and touched 1 MB more of the binary's code (round 16).
-#[command(defer = true)]
 enum Commands {
     /// Report runtime capabilities for Standard mode and its optional capabilities
     Capabilities(RuntimeReportArgs),
