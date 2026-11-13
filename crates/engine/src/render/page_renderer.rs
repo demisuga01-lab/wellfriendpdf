@@ -84,9 +84,10 @@ use crate::render::transform::{Transform2D, Viewport};
 use crate::render::vector_fallback::{
     form_program_is_opaque_normal_group_subset, transparency_group_color_space_is_vector_inert,
 };
-use crate::render::widget_synthesis;
 use crate::render::vector_quality::{snapped_fill_rect, VectorRasterOptions};
+use crate::render::widget_synthesis;
 use crate::render::RoundByte;
+use std::borrow::Cow;
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
@@ -6902,6 +6903,9 @@ const RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
 /// PDFium's `kHugeImageSize`: [`RenderDocumentCache::single_pass`] does not
 /// keep decoded images this large between pages.
 const SINGLE_PASS_RETAINED_IMAGE_BYTE_LIMIT: usize = 60_000_000;
+/// Soft-masked images of this many decoded bytes or more are not cached
+/// decoded (see `handle_do_image_inner`).
+const SMASK_IMAGE_RETAIN_MAX_BYTES: u64 = 4 * 1024 * 1024;
 const TRANSPARENT_PAGE_GROUP_CACHE_ENTRIES: usize = 512;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
@@ -9784,15 +9788,20 @@ impl<'a> RenderState<'a> {
             color_space_override,
             &cache_key,
             context,
+            true,
         )
     }
 
+    /// Decode an image, or take it from the decoded-image cache. With
+    /// `retain` false a freshly decoded image is not cached, so the caller
+    /// holds the only reference to it.
     fn scheduled_decode_image_with_cache_key(
         &mut self,
         image_ref: &ImageReference,
         color_space_override: Option<&(String, PdfObject)>,
         cache_key: &str,
         context: &str,
+        retain: bool,
     ) -> Result<Arc<RawImage>> {
         if self.image_xobject_cache.contains_key(cache_key) {
             touch_image_xobject_cache_key(&mut self.image_xobject_cache_order, cache_key);
@@ -9832,6 +9841,9 @@ impl<'a> RenderState<'a> {
                 }
             })?;
         let raw = Arc::new(raw);
+        if !retain {
+            return Ok(raw);
+        }
         let raw_bytes = raw.byte_count();
         let cache_max_bytes = self.cache_budget(RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES);
         insert_image_xobject_cache_entry(
@@ -10517,12 +10529,12 @@ impl<'a> RenderState<'a> {
         )
     }
 
-    fn scheduled_load_smask(
+    fn scheduled_load_smask<'m>(
         &self,
         image_ref: &ImageReference,
-        raw: &RawImage,
+        raw: Cow<'m, RawImage>,
         source_region: ImageSourceRegion,
-    ) -> Result<Option<RawImage>> {
+    ) -> Result<std::result::Result<RawImage, Cow<'m, RawImage>>> {
         let source_window = raw_window_from_source_region(source_region);
         let estimated_width = source_window
             .map(|window| window.width)
@@ -10541,9 +10553,9 @@ impl<'a> RenderState<'a> {
             &self.cancel,
             "renderer soft mask image decode",
             || {
-                SmaskLoader::load_and_combine_with_limits_and_source_window(
+                SmaskLoader::load_and_combine_or_return_main(
                     image_ref,
-                    std::borrow::Cow::Borrowed(raw),
+                    raw,
                     self.engine.document().reader(),
                     &limits,
                     source_window,
@@ -16211,6 +16223,12 @@ impl<'a> RenderState<'a> {
         // Stencil masks are decoded one bit per pixel (PDFium's 1 bpp
         // `CPDF_DIB`); the mask painters read either layout identically.
         let packed_mask = image_ref.is_mask && color_space_override.is_none();
+        // A soft-masked image is painted from an RGBA copy, and its soft mask
+        // is decoded again on every paint. A large one is therefore not
+        // cached decoded: the RGBA image is then widened in the decoded
+        // image's own buffer instead of copied.
+        let retain_decoded = !(dict.contains_key("SMask")
+            && estimate_image_ref_decode_bytes(&image_ref) >= SMASK_IMAGE_RETAIN_MAX_BYTES);
 
         let decoded = if let Some(window) = ccitt_window {
             if packed_mask {
@@ -16261,6 +16279,7 @@ impl<'a> RenderState<'a> {
                     color_space_override.as_ref(),
                     &image_cache_key,
                     "renderer image XObject decode",
+                    retain_decoded,
                 ),
             }
         } else if packed_mask {
@@ -16276,12 +16295,14 @@ impl<'a> RenderState<'a> {
                 color_space_override.as_ref(),
                 &image_cache_key,
                 "renderer image XObject decode",
+                retain_decoded,
             )
         };
 
         match decoded {
             Ok(raw) => {
                 let owned_raw;
+                let shared_raw: Arc<RawImage>;
                 // A stencil mask filled with a pattern becomes a coverage mask
                 // the pattern is painted through (Poppler, PDFium).
                 let pattern_stencil = image_ref.is_mask && self.is_pattern_fill();
@@ -16329,12 +16350,25 @@ impl<'a> RenderState<'a> {
                         }
                     }
                 } else if dict.contains_key("SMask") {
-                    match self.scheduled_load_smask(&image_ref, raw.as_ref(), source_region) {
-                        Ok(Some(masked)) => {
+                    // An image no cache holds is handed over, so the RGBA
+                    // image can reuse its buffer.
+                    let main = match Arc::try_unwrap(raw) {
+                        Ok(owned) => Cow::Owned(owned),
+                        Err(shared) => {
+                            shared_raw = shared;
+                            Cow::Borrowed(shared_raw.as_ref())
+                        }
+                    };
+                    match self.scheduled_load_smask(&image_ref, main, source_region) {
+                        Ok(Ok(masked)) => {
                             owned_raw = Some(masked);
                             owned_raw.as_ref().expect("soft mask owned raw")
                         }
-                        Ok(None) => raw.as_ref(),
+                        Ok(Err(Cow::Owned(unmasked))) => {
+                            owned_raw = Some(unmasked);
+                            owned_raw.as_ref().expect("unmasked owned raw")
+                        }
+                        Ok(Err(Cow::Borrowed(unmasked))) => unmasked,
                         Err(err) => {
                             self.record_fatal_render_error(format!(
                                 "image XObject /{name} SMask failed: {err}"
@@ -35158,7 +35192,13 @@ mod tests {
         );
 
         assert!(state
-            .scheduled_decode_image_with_cache_key(&image_ref, None, "planned:a", "test image")
+            .scheduled_decode_image_with_cache_key(
+                &image_ref,
+                None,
+                "planned:a",
+                "test image",
+                true
+            )
             .is_ok());
         assert_eq!(state.image_xobject_cache_stats.hits, 1);
         assert_eq!(state.image_xobject_cache_stats.misses, 0);
