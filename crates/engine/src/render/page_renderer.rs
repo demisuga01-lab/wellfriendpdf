@@ -413,6 +413,8 @@ const RENDER_PLAN_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const RENDER_PLAN_CACHE_MAX_ENTRY_BYTES: usize = 32 * 1024 * 1024;
 const PREPARED_TEXT_CACHE_MAX_ENTRIES: usize = 65_536;
 const PREPARED_TEXT_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Decoded-string bytes a single-pass render keeps from one page to the next.
+const SINGLE_PASS_PREPARED_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone)]
 struct PreparedTextCacheEntry {
@@ -645,6 +647,10 @@ pub struct RenderDocumentCache {
     /// Decoded images at or above this size are not kept between pages
     /// (see [`Self::single_pass`]).
     retained_image_byte_limit: usize,
+    /// Single-pass renders: hashes of the decoded-image, scaled-image and
+    /// form-program keys that earlier pages used (see
+    /// [`Self::drop_single_pass_unrepeated_entries`]).
+    single_pass_seen_keys: HashSet<u64>,
     transparent_page_group_cache: HashMap<String, bool>,
     transparent_page_group_cache_order: VecDeque<String>,
     clip_dag_stats: ClipDagStats,
@@ -778,6 +784,7 @@ impl RenderDocumentCache {
             retain_page_programs: true,
             retained_byte_limit: usize::MAX,
             retained_image_byte_limit: usize::MAX,
+            single_pass_seen_keys: HashSet::new(),
             transparent_page_group_cache: HashMap::new(),
             transparent_page_group_cache_order: VecDeque::new(),
             clip_dag_stats: ClipDagStats::default(),
@@ -959,6 +966,10 @@ impl RenderDocumentCache {
         kept.retain_page_programs = self.retain_page_programs;
         kept.retained_byte_limit = self.retained_byte_limit;
         kept.retained_image_byte_limit = self.retained_image_byte_limit;
+        std::mem::swap(
+            &mut kept.single_pass_seen_keys,
+            &mut self.single_pass_seen_keys,
+        );
         std::mem::swap(&mut kept.glyph_cache, &mut self.glyph_cache);
         std::mem::swap(&mut kept.glyph_mask_cache, &mut self.glyph_mask_cache);
         std::mem::swap(&mut kept.type3_mask_cache, &mut self.type3_mask_cache);
@@ -1151,6 +1162,102 @@ impl RenderDocumentCache {
             .retain(|key| self.image_xobject_cache.contains_key(key));
     }
 
+    /// A single-pass render paints every page once, so a decoded image, a
+    /// scaled image or a form program that only one page uses is never
+    /// needed again: PDFium keeps decoded images per page
+    /// (`CPDF_PageImageCache`) and Poppler keeps none. At the end of each
+    /// page such entries leave the cache unless an earlier page used the
+    /// same key; a key's first page is remembered (as a 64-bit hash), so an
+    /// image repeated on later pages (a logo, a background) is decoded once
+    /// more and then kept. On freeculture.pdf (352 pages) the three caches
+    /// held 49 MB of entries that were never hit again. The decoded-string
+    /// cache is cut to [`SINGLE_PASS_PREPARED_TEXT_BYTES`].
+    fn drop_single_pass_unrepeated_entries(&mut self) {
+        const MAX_SEEN_KEYS: usize = 1 << 20;
+        if self.retain_page_programs {
+            return;
+        }
+        if self.single_pass_seen_keys.len() > MAX_SEEN_KEYS {
+            self.single_pass_seen_keys.clear();
+        }
+        let seen = &mut self.single_pass_seen_keys;
+        let mut first_page = |kind: u8, key: &str| {
+            let mut hasher = DefaultHasher::new();
+            kind.hash(&mut hasher);
+            key.hash(&mut hasher);
+            seen.insert(hasher.finish())
+        };
+        let unrepeated: Vec<String> = self
+            .image_xobject_cache
+            .keys()
+            .filter(|key| first_page(0, key))
+            .cloned()
+            .collect();
+        for key in &unrepeated {
+            if let Some(removed) = self.image_xobject_cache.remove(key) {
+                self.image_xobject_cache_bytes = self
+                    .image_xobject_cache_bytes
+                    .saturating_sub(removed.byte_count());
+                self.image_xobject_cache_stats.evictions =
+                    self.image_xobject_cache_stats.evictions.saturating_add(1);
+            }
+        }
+        if !unrepeated.is_empty() {
+            self.image_xobject_cache_order
+                .retain(|key| self.image_xobject_cache.contains_key(key));
+        }
+        let unrepeated: Vec<String> = self
+            .scaled_image_cache
+            .keys()
+            .filter(|key| first_page(1, key))
+            .cloned()
+            .collect();
+        for key in &unrepeated {
+            if let Some(removed) = self.scaled_image_cache.remove(key) {
+                self.scaled_image_cache_bytes = self
+                    .scaled_image_cache_bytes
+                    .saturating_sub(removed.byte_count());
+                self.scaled_image_cache_stats.evictions =
+                    self.scaled_image_cache_stats.evictions.saturating_add(1);
+            }
+        }
+        if !unrepeated.is_empty() {
+            self.scaled_image_cache_order
+                .retain(|key| self.scaled_image_cache.contains_key(key));
+        }
+        let unrepeated: Vec<String> = self
+            .form_xobject_program_cache
+            .keys()
+            .filter(|key| first_page(2, key))
+            .cloned()
+            .collect();
+        for key in &unrepeated {
+            if let Some(removed) = self.form_xobject_program_cache.remove(key) {
+                self.form_xobject_program_cache_bytes = self
+                    .form_xobject_program_cache_bytes
+                    .saturating_sub(form_xobject_program_cache_entry_bytes(&removed));
+                self.form_xobject_program_cache_stats.evictions = self
+                    .form_xobject_program_cache_stats
+                    .evictions
+                    .saturating_add(1);
+            }
+        }
+        if !unrepeated.is_empty() {
+            self.form_xobject_program_cache_order
+                .retain(|key| self.form_xobject_program_cache.contains_key(key));
+        }
+        // Decoded strings: a page keeps what it decodes, later pages only
+        // the most recent few megabytes (running headers and footers, form
+        // labels); body text is rarely repeated.
+        if let Ok(mut text) = self.prepared_text_cache.lock() {
+            while text.bytes > SINGLE_PASS_PREPARED_TEXT_BYTES {
+                if !text.evict_one() {
+                    break;
+                }
+            }
+        }
+    }
+
     fn enforce_bounded_maps(&mut self, budget: RenderResourceBudget) {
         const FONT_BYTES_BUDGET: usize = 64 * 1024 * 1024;
         const FONT_RESOLVER_ENTRIES: usize = 2_048;
@@ -1162,6 +1269,7 @@ impl RenderDocumentCache {
         const DISPLAY_LIST_CACHE_BYTES: usize = 128 * 1024 * 1024;
         let max_cache_bytes = budget_to_usize(budget.max_cache_bytes).min(self.retained_byte_limit);
         self.drop_retained_huge_images();
+        self.drop_single_pass_unrepeated_entries();
         if self.function_cache.is_poisoned() {
             self.function_cache =
                 Arc::new(Mutex::new(crate::render::function::FunctionCache::default()));
@@ -9335,6 +9443,7 @@ impl<'a> RenderState<'a> {
         let retain_page_programs = cache.retain_page_programs;
         let retained_byte_limit = cache.retained_byte_limit;
         let retained_image_byte_limit = cache.retained_image_byte_limit;
+        let single_pass_seen_keys = std::mem::take(&mut cache.single_pass_seen_keys);
         let display_list_cache = std::mem::take(&mut cache.display_list_cache);
         let display_list_cache_order = std::mem::take(&mut cache.display_list_cache_order);
         let display_list_cache_bytes = cache.display_list_cache_bytes;
@@ -9435,6 +9544,7 @@ impl<'a> RenderState<'a> {
             retain_page_programs,
             retained_byte_limit,
             retained_image_byte_limit,
+            single_pass_seen_keys,
             transparent_page_group_cache,
             transparent_page_group_cache_order,
             clip_dag_stats,
@@ -9512,6 +9622,7 @@ impl<'a> RenderState<'a> {
         let retain_page_programs = cache.retain_page_programs;
         let retained_byte_limit = cache.retained_byte_limit;
         let retained_image_byte_limit = cache.retained_image_byte_limit;
+        let single_pass_seen_keys = std::mem::take(&mut cache.single_pass_seen_keys);
         let display_list_cache = std::mem::take(&mut cache.display_list_cache);
         let display_list_cache_order = std::mem::take(&mut cache.display_list_cache_order);
         let display_list_cache_bytes = cache.display_list_cache_bytes;
@@ -9610,6 +9721,7 @@ impl<'a> RenderState<'a> {
             retain_page_programs,
             retained_byte_limit,
             retained_image_byte_limit,
+            single_pass_seen_keys,
             transparent_page_group_cache,
             transparent_page_group_cache_order,
             clip_dag_stats,
@@ -39525,6 +39637,70 @@ mod tests {
     }
 
     #[test]
+    fn single_pass_cache_keeps_only_images_later_pages_use_again() {
+        fn raw(width: u32) -> Arc<RawImage> {
+            Arc::new(RawImage {
+                width,
+                height: 1,
+                channels: 1,
+                bits_per_sample: 8,
+                pixels: Vec::new(),
+            })
+        }
+        fn insert(cache: &mut RenderDocumentCache, key: &str) {
+            insert_image_xobject_cache_entry(
+                &mut cache.image_xobject_cache,
+                &mut cache.image_xobject_cache_order,
+                &mut cache.image_xobject_cache_bytes,
+                key.to_string(),
+                raw(100),
+                100,
+                usize::MAX,
+            );
+            cache
+                .scaled_image_cache
+                .insert(format!("scaled:{key}"), raw(10));
+            cache
+                .scaled_image_cache_order
+                .push_back(format!("scaled:{key}"));
+            cache.scaled_image_cache_bytes += 10;
+        }
+        let budget = RenderResourceBudget::default();
+        let mut cache = RenderDocumentCache::single_pass();
+        // Page 1 uses a logo and a scan; page 2 the logo again and another scan.
+        insert(&mut cache, "logo");
+        insert(&mut cache, "scan-1");
+        cache.enforce_bounded_maps(budget);
+        assert!(cache.image_xobject_cache.is_empty());
+        assert!(cache.scaled_image_cache.is_empty());
+        assert_eq!(
+            (
+                cache.image_xobject_cache_bytes,
+                cache.scaled_image_cache_bytes
+            ),
+            (0, 0)
+        );
+        insert(&mut cache, "logo");
+        insert(&mut cache, "scan-2");
+        cache.enforce_bounded_maps(budget);
+        let mut kept: Vec<_> = cache.image_xobject_cache.keys().cloned().collect();
+        kept.sort();
+        assert_eq!(kept, ["logo"]);
+        assert_eq!(cache.image_xobject_cache_order, ["logo"]);
+        assert_eq!(cache.image_xobject_cache_bytes, 100);
+        assert!(cache.scaled_image_cache.contains_key("scaled:logo"));
+        assert_eq!(cache.scaled_image_cache.len(), 1);
+        assert_eq!(cache.scaled_image_cache_bytes, 10);
+
+        // Caches that render pages again keep everything.
+        let mut retained = RenderDocumentCache::resources_only();
+        insert(&mut retained, "scan-1");
+        retained.enforce_bounded_maps(budget);
+        assert!(retained.image_xobject_cache.contains_key("scan-1"));
+        assert!(retained.scaled_image_cache.contains_key("scaled:scan-1"));
+    }
+
+    #[test]
     fn single_pass_cache_drops_huge_images_and_keeps_its_retained_byte_limit() {
         // Only the dimensions count: byte_count() is width * height * channels.
         fn raw(bytes: usize) -> Arc<RawImage> {
@@ -39550,6 +39726,15 @@ mod tests {
         let budget = RenderResourceBudget::default();
 
         let mut cache = RenderDocumentCache::single_pass();
+        // Images only one page used leave at its end (see
+        // `single_pass_cache_keeps_only_images_later_pages_use_again`); these
+        // keys are used again on a second page.
+        insert(&mut cache, "small", 1024);
+        insert(&mut cache, "huge", SINGLE_PASS_RETAINED_IMAGE_BYTE_LIMIT);
+        insert(&mut cache, "second", 1024);
+        cache.enforce_bounded_maps(budget);
+        assert!(cache.image_xobject_cache.is_empty());
+        assert_eq!(cache.image_xobject_cache_bytes, 0);
         insert(&mut cache, "small", 1024);
         insert(&mut cache, "huge", SINGLE_PASS_RETAINED_IMAGE_BYTE_LIMIT);
         cache.enforce_bounded_maps(budget);
