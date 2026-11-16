@@ -1008,7 +1008,10 @@ mod redaction_verification_tests {
 
     #[test]
     fn remaining_glyphs_refuse_the_save() {
-        assert_eq!(verify_redaction(Ok(3)).unwrap_err().code, "EDITOR_REDACTION_INCOMPLETE");
+        assert_eq!(
+            verify_redaction(Ok(3)).unwrap_err().code,
+            "EDITOR_REDACTION_INCOMPLETE"
+        );
     }
 
     #[test]

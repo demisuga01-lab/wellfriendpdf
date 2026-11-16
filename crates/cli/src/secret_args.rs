@@ -276,10 +276,8 @@ mod tests {
     }
 
     fn secrets_file(name: &str, body: &str, mode: u32) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "wfpdf-secrets-{}-{name}.json",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("wfpdf-secrets-{}-{name}.json", std::process::id()));
         std::fs::write(&path, body).unwrap();
         #[cfg(unix)]
         {
@@ -296,7 +294,13 @@ mod tests {
         let p = secrets_file("ok", r#"{"user_pw":"s3cret","password":"open"}"#, 0o600);
         let out = expand(
             &root(),
-            os(&["wellfriendpdf", "encrypt", "--secrets-file", p.to_str().unwrap(), "in.pdf"]),
+            os(&[
+                "wellfriendpdf",
+                "encrypt",
+                "--secrets-file",
+                p.to_str().unwrap(),
+                "in.pdf",
+            ]),
         )
         .unwrap();
         let out: Vec<String> = out.into_iter().map(|a| a.into_string().unwrap()).collect();
@@ -314,7 +318,12 @@ mod tests {
         let p = secrets_file("loose", r#"{"password":"x"}"#, 0o644);
         let e = expand(
             &root(),
-            os(&["wellfriendpdf", "encrypt", "--secrets-file", p.to_str().unwrap()]),
+            os(&[
+                "wellfriendpdf",
+                "encrypt",
+                "--secrets-file",
+                p.to_str().unwrap(),
+            ]),
         )
         .unwrap_err();
         assert!(e.0.contains("0600"), "{e}");
@@ -326,7 +335,12 @@ mod tests {
         let p = secrets_file("wrongcmd", r#"{"password":"TOPSECRET-VALUE"}"#, 0o600);
         let e = expand(
             &root(),
-            os(&["wellfriendpdf", "info", "--secrets-file", p.to_str().unwrap()]),
+            os(&[
+                "wellfriendpdf",
+                "info",
+                "--secrets-file",
+                p.to_str().unwrap(),
+            ]),
         )
         .unwrap_err();
         assert!(!e.0.contains("TOPSECRET"), "{e}");
@@ -353,13 +367,23 @@ mod tests {
         let p = secrets_file("unknown", r#"{"output":"x"}"#, 0o600);
         assert!(expand(
             &root(),
-            os(&["wellfriendpdf", "encrypt", "--secrets-file", p.to_str().unwrap()])
+            os(&[
+                "wellfriendpdf",
+                "encrypt",
+                "--secrets-file",
+                p.to_str().unwrap()
+            ])
         )
         .is_err());
         let q = secrets_file("num", r#"{"password":1}"#, 0o600);
         assert!(expand(
             &root(),
-            os(&["wellfriendpdf", "encrypt", "--secrets-file", q.to_str().unwrap()])
+            os(&[
+                "wellfriendpdf",
+                "encrypt",
+                "--secrets-file",
+                q.to_str().unwrap()
+            ])
         )
         .is_err());
         let _ = std::fs::remove_file(p);

@@ -2395,7 +2395,6 @@ fn phase4_office_conversions_run_across_cli_surface() {
     remove_path(&from_docx);
 }
 
-
 // --- Passwords off the command line -------------------------------------
 
 #[cfg(unix)]
@@ -2467,7 +2466,12 @@ fn the_secrets_requirement_refuses_passwords_on_argv_without_echoing_them() {
 #[test]
 fn a_secret_for_a_command_without_password_options_is_a_usage_error() {
     let s = secrets("secrets_misplaced.json", r#"{"owner-pw":"NEVER-PRINTED"}"#);
-    let res = run(&["info", fx("flate.pdf").to_str().unwrap(), "--secrets-file", s.to_str().unwrap()]);
+    let res = run(&[
+        "info",
+        fx("flate.pdf").to_str().unwrap(),
+        "--secrets-file",
+        s.to_str().unwrap(),
+    ]);
     assert_eq!(res.status.code(), Some(2));
     assert!(!String::from_utf8_lossy(&res.stderr).contains("NEVER-PRINTED"));
     let _ = std::fs::remove_file(&s);
