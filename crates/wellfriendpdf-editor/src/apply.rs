@@ -933,6 +933,23 @@ fn changed_region(before: &PageTextLayout, after: &PageTextLayout) -> Option<[f6
     region
 }
 
+/// A redaction is saved only when the rewritten page's text can be read back
+/// and nothing remains under the area. A page that cannot be read back is
+/// refused rather than trusted: the check must fail closed.
+fn verify_redaction(remaining: Result<usize, String>) -> Result<(), EditorError> {
+    match remaining {
+        Ok(0) => Ok(()),
+        Ok(remaining) => Err(EditorError::new(
+            "EDITOR_REDACTION_INCOMPLETE",
+            format!("{remaining} glyphs remain under the redaction area; nothing was saved"),
+        )),
+        Err(_) => Err(EditorError::new(
+            "EDITOR_REDACTION_UNVERIFIED",
+            "the redacted page could not be read back to confirm its text is gone; nothing was saved",
+        )),
+    }
+}
+
 fn redact(
     input: &[u8],
     page: u32,
@@ -967,19 +984,36 @@ fn redact(
         },
     )?;
     let out = editor.save_to_bytes(EditMode::FullRewrite)?;
-    let after = PageTextLayout::from_bytes(&out, page as usize)
-        .ok()
-        .map(|l| inside(&l));
-    if let Some(remaining) = after.filter(|count| *count > 0) {
-        return Err(EditorError::new(
-            "EDITOR_REDACTION_INCOMPLETE",
-            format!("{remaining} glyphs remain under the redaction area; nothing was saved"),
-        ));
-    }
+    verify_redaction(
+        PageTextLayout::from_bytes(&out, page as usize)
+            .map(|l| inside(&l))
+            .map_err(|e| e.to_string()),
+    )?;
     report.redacted_glyphs = before;
     report.changed_region = Some(area);
     report
         .notes
         .push("Content under the area was removed from the page, not covered.".into());
     Ok(out)
+}
+
+#[cfg(test)]
+mod redaction_verification_tests {
+    use super::verify_redaction;
+
+    #[test]
+    fn a_page_with_no_text_left_under_the_area_is_accepted() {
+        assert!(verify_redaction(Ok(0)).is_ok());
+    }
+
+    #[test]
+    fn remaining_glyphs_refuse_the_save() {
+        assert_eq!(verify_redaction(Ok(3)).unwrap_err().code, "EDITOR_REDACTION_INCOMPLETE");
+    }
+
+    #[test]
+    fn a_page_that_cannot_be_read_back_is_refused_not_trusted() {
+        let error = verify_redaction(Err("content stream could not be parsed".into())).unwrap_err();
+        assert_eq!(error.code, "EDITOR_REDACTION_UNVERIFIED");
+    }
 }

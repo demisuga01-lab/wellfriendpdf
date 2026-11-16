@@ -5,7 +5,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+
+mod secret_args;
 
 /// Whether this binary was compiled with the optional `ocr` feature (the
 /// Tesseract OCR backend). Reported by `--version` so a user can tell, without
@@ -58,6 +60,15 @@ struct Cli {
     /// several jobs at once passes each job its share of the cores.
     #[arg(long, global = true, value_name = "N")]
     threads: Option<usize>,
+    /// Read the password options (password, user-pw, owner-pw,
+    /// insert-password) from a JSON object in this file (mode 0600) instead of
+    /// the command line, which other processes of the same user can read.
+    #[arg(long = "secrets-file", global = true, value_name = "PATH")]
+    secrets_file: Option<PathBuf>,
+    /// Like --secrets-file, but read the JSON object from this inherited file
+    /// descriptor (3 or more), which is consumed and closed.
+    #[arg(long = "secrets-fd", global = true, value_name = "FD")]
+    secrets_fd: Option<i32>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -4219,7 +4230,16 @@ fn main() -> ExitCode {
 }
 
 fn run_cli() -> ExitCode {
-    let cli = Cli::parse();
+    // Password options may arrive through --secrets-file / --secrets-fd so they
+    // never appear in /proc/<pid>/cmdline; they are spliced in memory here.
+    let args = match secret_args::expand(&Cli::command(), std::env::args_os().collect()) {
+        Ok(args) => args,
+        Err(err) => {
+            eprintln!("wellfriendpdf: usage error: {err}");
+            return ExitCode::from(CliExitCode::Usage.code());
+        }
+    };
+    let cli = Cli::parse_from(args);
     if let Err(err) = configure_worker_threads(cli.threads) {
         eprintln!("wellfriendpdf: internal error: could not start worker threads: {err}");
         return ExitCode::from(CliExitCode::Internal.code());
