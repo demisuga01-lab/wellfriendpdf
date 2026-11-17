@@ -764,14 +764,43 @@ impl FontInfo {
 
 // ---- library fonts embedded for edited text ----
 
-/// A library face embedded in full as a composite font (Identity-H, codes
-/// are glyph ids), with widths and a ToUnicode map for the glyphs used.
+/// A library face embedded as a composite font (Identity-H, codes are glyph
+/// ids), with widths and a ToUnicode map for the glyphs used. A TrueType
+/// face is embedded as a subset of those glyphs (renumbered); other faces
+/// in full.
 pub(crate) struct EmbeddedFont {
     pub font: ObjectId,
     /// Cap height per unit of size.
     pub cap_height: f64,
     units_per_em: f64,
     face_bytes: Vec<u8>,
+    /// Source glyph id to the subset's glyph id (`None`: embedded in full).
+    remap: Option<HashMap<u16, u16>>,
+}
+
+/// The glyphs `used` of a TrueType face as a subset program, and each source
+/// glyph's new id; `None` when the face is not TrueType or cannot be subset.
+fn subset_program(bytes: &[u8], used: &BTreeMap<u16, String>) -> Option<(Vec<u8>, HashMap<u16, u16>)> {
+    let mut remapper = subsetter::GlyphRemapper::new();
+    remapper.remap(0);
+    for gid in used.keys() {
+        remapper.remap(*gid);
+    }
+    let program = subsetter::subset(bytes, 0, &remapper).ok()?;
+    ttf_parser::Face::parse(&program, 0).ok()?;
+    let remap = used.keys().filter_map(|gid| remapper.get(*gid).map(|new| (*gid, new))).collect::<HashMap<_, _>>();
+    (remap.len() == used.len()).then_some((program, remap))
+}
+
+/// The six-letter subset tag of a subset font (from the glyphs it holds).
+fn subset_tag(id: &str, used: &BTreeMap<u16, String>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(id.as_bytes());
+    for gid in used.keys() {
+        hasher.update(gid.to_be_bytes());
+    }
+    hasher.finalize().iter().take(6).map(|b| char::from(b'A' + b % 26)).collect()
 }
 
 fn sanitize_name(name: &str) -> String {
@@ -788,19 +817,23 @@ impl EmbeddedFont {
         let mut advance = 0.0;
         let mut missing = Vec::new();
         for c in text.chars() {
-            match face.glyph_index(c).filter(|g| g.0 != 0) {
-                Some(gid) => {
-                    out.extend_from_slice(&gid.0.to_be_bytes());
-                    advance += f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) / self.units_per_em;
-                }
-                None if c.is_whitespace() => {
-                    if let Some(gid) = face.glyph_index(' ') {
-                        out.extend_from_slice(&gid.0.to_be_bytes());
-                        advance += f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) / self.units_per_em;
+            let gid = face.glyph_index(c).filter(|g| g.0 != 0).or_else(|| c.is_whitespace().then(|| face.glyph_index(' ')).flatten());
+            let Some(gid) = gid else {
+                missing.push(c);
+                continue;
+            };
+            let code = match &self.remap {
+                Some(remap) => match remap.get(&gid.0) {
+                    Some(new) => *new,
+                    None => {
+                        missing.push(c);
+                        continue;
                     }
-                }
-                None => missing.push(c),
-            }
+                },
+                None => gid.0,
+            };
+            out.extend_from_slice(&code.to_be_bytes());
+            advance += f64::from(face.glyph_hor_advance(gid).unwrap_or(0)) / self.units_per_em;
         }
         if missing.is_empty() { Ok((out, advance)) } else { Err(missing) }
     }
@@ -824,18 +857,25 @@ pub(crate) fn embed(document: &mut Document, bytes: &[u8], id: &str, text: &str)
         .find_map(|n| n.to_string())
         .filter(|n| !n.is_empty() && n.is_ascii())
         .unwrap_or_else(|| id.to_owned());
-    let base_font = sanitize_name(&postscript);
     let mut used: BTreeMap<u16, String> = BTreeMap::new();
     for c in text.chars().chain(std::iter::once(' ')) {
         if let Some(gid) = face.glyph_index(c).filter(|g| g.0 != 0) {
             used.entry(gid.0).or_insert_with(|| c.to_string());
         }
     }
+    let truetype = face.raw_face().table(ttf_parser::Tag::from_bytes(b"glyf")).is_some();
+    // A TrueType face is embedded as a subset of the glyphs the text uses.
+    let subset = if truetype { subset_program(bytes, &used) } else { None };
+    let base_font = match &subset {
+        Some(_) => format!("{}+{}", subset_tag(id, &used), sanitize_name(&postscript)),
+        None => sanitize_name(&postscript),
+    };
+    let cid = |gid: u16| subset.as_ref().map_or(gid, |(_, remap)| remap[&gid]);
     let widths: Vec<Object> = used
         .keys()
         .flat_map(|gid| {
             let w = scale(f64::from(face.glyph_hor_advance(ttf_parser::GlyphId(*gid)).unwrap_or(0)));
-            [Object::Integer(i64::from(*gid)), Object::Array(vec![Object::Integer(w as i64)])]
+            [Object::Integer(i64::from(cid(*gid))), Object::Array(vec![Object::Integer(w as i64)])]
         })
         .collect();
     let mut cmap = String::from(
@@ -846,7 +886,7 @@ pub(crate) fn embed(document: &mut Document, bytes: &[u8], id: &str, text: &str)
         cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
         for (gid, text) in chunk {
             let hex: String = text.encode_utf16().map(|u| format!("{u:04X}")).collect();
-            cmap.push_str(&format!("<{gid:04X}> <{hex}>\n"));
+            cmap.push_str(&format!("<{:04X}> <{hex}>\n", cid(**gid)));
         }
         cmap.push_str("endbfchar\n");
     }
@@ -855,15 +895,14 @@ pub(crate) fn embed(document: &mut Document, bytes: &[u8], id: &str, text: &str)
     let _ = to_unicode.compress();
     let to_unicode = document.add_object(to_unicode);
 
-    let raw = face.raw_face();
-    let truetype = raw.table(ttf_parser::Tag::from_bytes(b"glyf")).is_some();
+    let program_bytes = subset.as_ref().map_or_else(|| bytes.to_vec(), |(program, _)| program.clone());
     let mut program_dict = Dictionary::new();
     if truetype {
-        program_dict.set("Length1", Object::Integer(bytes.len() as i64));
+        program_dict.set("Length1", Object::Integer(program_bytes.len() as i64));
     } else {
         program_dict.set("Subtype", Object::Name(b"OpenType".to_vec()));
     }
-    let mut program = Stream::new(program_dict, bytes.to_vec());
+    let mut program = Stream::new(program_dict, program_bytes);
     let _ = program.compress();
     let program = document.add_object(program);
 
@@ -925,6 +964,7 @@ pub(crate) fn embed(document: &mut Document, bytes: &[u8], id: &str, text: &str)
         cap_height: cap,
         units_per_em: upem,
         face_bytes: bytes.to_vec(),
+        remap: subset.map(|(_, remap)| remap),
     })
 }
 
@@ -941,6 +981,30 @@ mod tests {
         assert_eq!(map.get(&0xA1).map(String::as_str), Some("fi"));
         assert_eq!(map.get(&0x12).map(String::as_str), Some("C"));
         assert_eq!(map.get(&0x21).map(String::as_str), Some("b"));
+    }
+
+    #[test]
+    fn a_library_face_is_embedded_as_a_subset_of_the_typed_glyphs() {
+        const BOLD: &[u8] = include_bytes!("../../wellfriendpdf-edit/fonts/LiberationSans-Bold.ttf");
+        let mut document = Document::with_version("1.7");
+        let embedded = embed(&mut document, BOLD, "liberation-sans-bold", "WELLREAD").unwrap();
+        let (codes, advance) = embedded.encode("READ WELL").unwrap();
+        assert_eq!(codes.len(), 18, "two bytes per character");
+        assert!(codes.chunks(2).all(|c| u16::from_be_bytes([c[0], c[1]]) < 10), "renumbered glyphs: {codes:?}");
+        assert!(advance > 4.0);
+        assert!(embedded.encode("Z").is_err(), "a glyph outside the subset is refused");
+        let font = document.get_dictionary(embedded.font).unwrap();
+        let base = font.get(b"BaseFont").unwrap().as_name().unwrap();
+        assert_eq!(base[6], b'+', "a subset tag: {}", String::from_utf8_lossy(base));
+        let program = document
+            .objects
+            .values()
+            .find_map(|o| o.as_stream().ok().filter(|s| s.dict.has(b"Length1")))
+            .unwrap();
+        let length = program.dict.get(b"Length1").unwrap().as_i64().unwrap() as usize;
+        assert!(length < BOLD.len() / 5, "the subset is far smaller than the face: {length} of {}", BOLD.len());
+        let decoded = program.decompressed_content().unwrap_or_else(|_| program.content.clone());
+        assert!(ttf_parser::Face::parse(&decoded, 0).is_ok(), "the subset is a valid TrueType program");
     }
 
     #[test]
