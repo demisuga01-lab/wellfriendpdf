@@ -272,6 +272,39 @@ pub enum EditorOperation {
         selector: ContentObjectSelector,
         edit: ObjectEdit,
     },
+    /// Set the text a text run shows (QF-5213), at its text matrix with its
+    /// size, colour, rendering mode, spacing and rotation. The run's own
+    /// font is kept when it has a glyph for every character (a subset font
+    /// usually lacks some); otherwise `fallbackFont` (the closest library
+    /// face, chosen by weight, width and serif/sans) is embedded and the
+    /// report names it. `font` sets the text in that library face instead
+    /// ("replace with editable text" for Type 3 and unmapped fonts).
+    #[serde(rename_all = "camelCase")]
+    EditObjectText {
+        selector: ContentObjectSelector,
+        text: String,
+        /// The run's current text (when it has one), checked before editing.
+        #[serde(default)]
+        expected: Option<String>,
+        #[serde(default)]
+        font: Option<String>,
+        #[serde(default)]
+        fallback_font: Option<String>,
+    },
+    /// Replace any object (outlined text, a Type 3 logo, an image, a group)
+    /// with editable text in the library face `font` at the object's place:
+    /// cap height to its height and scaled to its width unless `size` is
+    /// given; its fill colour unless `color` is given (QF-5213).
+    #[serde(rename_all = "camelCase")]
+    ReplaceObjectWithText {
+        selector: ContentObjectSelector,
+        text: String,
+        font: String,
+        #[serde(default)]
+        size: Option<f64>,
+        #[serde(default)]
+        color: Option<Rgb>,
+    },
     /// Add a text box with an embedded library font. `rect` is the box; text
     /// wraps at its width and starts at its top edge.
     #[serde(rename_all = "camelCase")]
@@ -488,6 +521,8 @@ impl EditorOperation {
             Self::ReplaceImage { .. } => "replaceImage",
             Self::EditVector { .. } => "editVector",
             Self::EditObject { .. } => "editObject",
+            Self::EditObjectText { .. } => "editObjectText",
+            Self::ReplaceObjectWithText { .. } => "replaceObjectWithText",
             Self::AddText { .. } => "addText",
             Self::AddImage { .. } => "addImage",
             Self::AddShape { .. } => "addShape",
@@ -545,9 +580,28 @@ impl EditorOperation {
             Self::SetFormField { page, .. } => page.unwrap_or(0),
             Self::ReplaceImage { .. } => 0,
             Self::EditVector { selector, .. } => selector.page_number,
-            Self::EditObject { selector, .. } => selector.page_number,
+            Self::EditObject { selector, .. }
+            | Self::EditObjectText { selector, .. }
+            | Self::ReplaceObjectWithText { selector, .. } => selector.page_number,
         }
     }
+}
+
+fn object_selector(selector: &ContentObjectSelector) -> Result<(), EditorError> {
+    page(selector.page_number)?;
+    if selector.start > selector.end
+        || selector.end - selector.start > 100_000
+        || selector.expected_sha256.len() != 64
+        || !selector.expected_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err(invalid("the object selector is malformed"));
+    }
+    if selector.forms.len() > MAX_FORM_DEPTH
+        || selector.forms.iter().any(|step| step.name.is_empty() || step.name.len() > 127 || step.name.chars().any(|c| c.is_control()))
+    {
+        return Err(invalid("the object's form path is malformed"));
+    }
+    Ok(())
 }
 
 fn invalid(message: impl Into<String>) -> EditorError {
@@ -790,22 +844,10 @@ pub fn validate_operation(
             *image_bytes += decode_image(image)?.len();
         }
         EditorOperation::EditObject { selector, edit } => {
-            page(selector.page_number)?;
-            if selector.start > selector.end
-                || selector.end - selector.start > 100_000
-                || selector.expected_sha256.len() != 64
-                || !selector.expected_sha256.bytes().all(|b| b.is_ascii_hexdigit())
-            {
-                return Err(invalid("the object selector is malformed"));
-            }
-            if selector.forms.len() > MAX_FORM_DEPTH
-                || selector.forms.iter().any(|step| step.name.is_empty() || step.name.len() > 127 || step.name.chars().any(|c| c.is_control()))
-            {
-                return Err(invalid("the object's form path is malformed"));
-            }
+            object_selector(selector)?;
             match edit {
                 ObjectEdit::Transform { matrix: m } => matrix(m)?,
-                ObjectEdit::Delete => {}
+                ObjectEdit::Delete | ObjectEdit::BringToFront | ObjectEdit::SendToBack => {}
                 ObjectEdit::Recolor { fill, stroke } => {
                     if fill.is_none() && stroke.is_none() {
                         return Err(invalid("a recolour needs a fill or stroke colour"));
@@ -816,6 +858,41 @@ pub fn validate_operation(
                             return Err(invalid("recolour takes RGB or CMYK colours"));
                         }
                     }
+                }
+            }
+        }
+        EditorOperation::EditObjectText { selector, text: t, expected, font, fallback_font } => {
+            object_selector(selector)?;
+            text(t, true)?;
+            if t.chars().count() > 2_000 {
+                return Err(invalid("a text object's text is limited to 2000 characters"));
+            }
+            if t.contains('\n') {
+                return Err(invalid("a text object is one line; use the paragraph editor for several lines"));
+            }
+            if let Some(expected) = expected {
+                text(expected, true)?;
+            }
+            for id in [font, fallback_font].into_iter().flatten() {
+                font_id(id)?;
+            }
+        }
+        EditorOperation::ReplaceObjectWithText { selector, text: t, font, size, color: c } => {
+            object_selector(selector)?;
+            text(t, false)?;
+            if t.chars().count() > 2_000 || t.contains('\n') {
+                return Err(invalid("replacement text is one line of at most 2000 characters"));
+            }
+            font_id(font)?;
+            if let Some(size) = size {
+                if !size.is_finite() || !(1.0..=500.0).contains(size) {
+                    return Err(invalid("font size must be within 1..500 pt"));
+                }
+            }
+            if let Some(c) = c {
+                color(c)?;
+                if c.spot().is_some() {
+                    return Err(invalid("replacement text takes RGB or CMYK colours"));
                 }
             }
         }

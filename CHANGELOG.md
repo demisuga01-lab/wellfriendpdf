@@ -5,6 +5,16 @@ stability policy in `docs/stability.md`.
 
 ## Unreleased
 
+- Editor deep editing: the content reader lists every text run (simple,
+  composite and Type 3 fonts, with glyph hit boxes), group and optional
+  content span next to images, paths and shadings; symbolic subset TrueType
+  fonts without an encoding decode through their embedded cmap.
+  `editObjectText` sets a run's text in place (its own font when it has the
+  letters, else the closest library face, named in the report);
+  `replaceObjectWithText` replaces any object with editable text;
+  `editObject` brings to front and sends to back, and delete drops the fonts,
+  images, forms and shadings only the object used, so removed text no longer
+  extracts. Deep-edit corpus and tests in `tests/corpus/pdfs/deep-edit`.
 - DOCX and EPUB embed each distinct image once, for its largest placement:
   baseline JPEGs are copied, PNG-predicted Flate images are wrapped as PNG
   without inflating, the rest are decoded (at reduced resolution when far
