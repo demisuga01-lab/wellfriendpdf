@@ -2567,13 +2567,13 @@ pub fn edit_object_with(input: &[u8], selector: &ContentObjectSelector, action: 
                     vec![Splice { start, end: end + 1, operations: isolated_run(run, &range, prefix, body)? }]
                 }
                 None => {
-                    // Placed on the object's box: cap height to its height,
-                    // horizontally scaled to its width.
+                    // Placed on the object's box: cap height to its height and
+                    // scaled to its width, never wider than the box.
                     let [x0, y0, x1, y1] = object.bounds;
                     let (width, height) = ((x1 - x0).max(1.0), (y1 - y0).max(1.0));
-                    let chosen = size.unwrap_or(height / embedded.cap_height.max(0.3)).clamp(1.0, 500.0);
-                    let natural = advance * chosen;
-                    let scale = if size.is_none() && natural > 0.0 { (width / natural * 100.0).clamp(50.0, 200.0) } else { 100.0 };
+                    let (chosen, scale) = fit_box(width, height, advance, embedded.cap_height, *size);
+                    // A text set smaller than the box height sits in its middle.
+                    let y0 = y0 + ((height - chosen * embedded.cap_height.max(0.3)) / 2.0).max(0.0);
                     let mut ops = vec![op("q", vec![])];
                     if let Some(m) = relative(object.insert_ctm, IDENTITY)? {
                         ops.push(op("cm", matrix_object(m)));
@@ -2645,9 +2645,38 @@ pub fn edit_object_with(input: &[u8], selector: &ContentObjectSelector, action: 
     Ok(outcome)
 }
 
+/// Size (points) and horizontal scaling (`Tz`, percent) of replacement text
+/// of `advance` (per unit size) in a `width` × `height` box: its cap height
+/// fills the height, then the size shrinks until the text, compressed to at
+/// most 75 %, fits the width; the scaling then fits the width exactly (50 to
+/// 200 %). A given size keeps 100 %.
+fn fit_box(width: f64, height: f64, advance: f64, cap_height: f64, size: Option<f64>) -> (f64, f64) {
+    if let Some(size) = size {
+        return (size.clamp(1.0, 500.0), 100.0);
+    }
+    let by_height = height / cap_height.max(0.3);
+    let by_width = if advance > 0.0 { width / (advance * 0.75) } else { by_height };
+    let chosen = by_height.min(by_width).clamp(1.0, 500.0);
+    let natural = advance * chosen;
+    let scale = if natural > 0.0 { (width / natural * 100.0).clamp(50.0, 200.0) } else { 100.0 };
+    (chosen, scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replacement_text_fits_the_box_it_replaces() {
+        // A wide outlined logo: the cap height fills the box, slightly compressed.
+        let (size, scale) = fit_box(400.0, 70.0, 5.0, 0.7, None);
+        assert!((size - 100.0).abs() < 1e-9 && (scale - 80.0).abs() < 1e-9 && 5.0 * size * scale / 100.0 <= 400.0 + 1e-6);
+        // A square group: the size shrinks so the text stays inside the width.
+        let (size, scale) = fit_box(400.0, 155.0, 6.5, 0.69, None);
+        assert!(6.5 * size * scale / 100.0 <= 400.0 + 1e-6, "{size} {scale}");
+        assert!(size * 0.69 <= 155.0);
+        assert_eq!(fit_box(10.0, 10.0, 5.0, 0.7, Some(24.0)), (24.0, 100.0));
+    }
 
     #[test]
     fn a_pen_offset_reads_along_rotated_lines() {

@@ -491,6 +491,13 @@ fn grouped_vector_art_is_one_object_and_annotations_stay_annotations() {
     assert_eq!(document.get_dictionary(page).unwrap().get(b"Annots").unwrap().as_array().unwrap().len(), 2);
     let (back, _) = edit(VECTOR, group, json!({ "kind": "sendToBack" }));
     undo_restores(VECTOR, &back);
+    // Replaced with text, the group's box holds the whole word (a square box
+    // shrinks the size rather than letting the text run off the page).
+    let (words, _) = run(VECTOR, json!({ "op": "replaceObjectWithText", "selector": group.selector, "text": "WELLFRIEND", "font": "liberation-sans-bold" }));
+    let after = objects(&words);
+    let placed = text_run(&after, "WELLFRIEND");
+    assert!(placed.bounds[0] >= group.bounds[0] - 1.0 && placed.bounds[2] <= group.bounds[2] + 1.0, "inside the group's box: {:?} vs {:?}", placed.bounds, group.bounds);
+    assert!(placed.bounds[1] >= group.bounds[1] - 40.0 && placed.bounds[3] <= group.bounds[3] + 40.0, "{:?}", placed.bounds);
 }
 
 // ---- runs inside one text object ----
