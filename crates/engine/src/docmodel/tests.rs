@@ -540,6 +540,42 @@ fn h1_repeated_top_text_becomes_header() {
 }
 
 #[test]
+fn h1b_numbered_chapter_headings_at_the_top_stay_headings() {
+    // One "Chapter N" heading at the top of each page: the digit-free key is
+    // the same, but each is its own heading and must reach Markdown/EPUB.
+    let mut dims = BTreeMap::new();
+    let mut blocks = Vec::new();
+    for p in 1..=8usize {
+        dims.insert(p, (595.0, 842.0));
+        let mut b = running_block(p - 1, p, &format!("Chapter {p}"), 780.0, 808.0);
+        b.classified = ClassifiedType::Heading { level: 1 };
+        blocks.push(b);
+    }
+    detect_running_elements(&mut blocks, &dims, 8);
+    for b in &blocks {
+        assert_eq!(b.classified, ClassifiedType::Heading { level: 1 }, "page {}", b.page);
+        assert!(!b.header_footer, "page {}", b.page);
+    }
+}
+
+#[test]
+fn h1c_a_repeated_heading_sized_running_head_is_still_a_header() {
+    // The same heading-sized text on every page is a running head.
+    let mut dims = BTreeMap::new();
+    let mut blocks = Vec::new();
+    for p in 1..=4usize {
+        dims.insert(p, (612.0, 792.0));
+        let mut b = running_block(p - 1, p, "Annual Report", 760.0, 775.0);
+        b.classified = ClassifiedType::Heading { level: 2 };
+        blocks.push(b);
+    }
+    detect_running_elements(&mut blocks, &dims, 4);
+    for b in &blocks {
+        assert_eq!(b.classified, ClassifiedType::Header, "page {}", b.page);
+    }
+}
+
+#[test]
 fn h2_incrementing_footer_numbers_become_pagenumber() {
     let mut dims = BTreeMap::new();
     let mut blocks = Vec::new();

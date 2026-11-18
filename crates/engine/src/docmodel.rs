@@ -2679,7 +2679,18 @@ fn detect_running_elements(
     let need = ((page_count as f64 * 0.5).ceil() as usize).max(2);
     let mut running_idxs: BTreeSet<usize> = BTreeSet::new();
     for (key, pages) in &groups {
-        if pages.len() >= need {
+        // Numbered headings ("Chapter 1", "Chapter 2", ...) at the top of
+        // their pages share a digit-free key with a running head, but each
+        // one is a different heading: every member classified as a heading
+        // and no two with the same text is body content, not furniture.
+        // A real running head repeats its text ("Chapter 3" on every page of
+        // chapter 3) or is body-sized.
+        let texts: BTreeSet<&str> = members[key].iter().map(|&i| blocks[i].text.trim()).collect();
+        let numbered_headings = texts.len() == members[key].len()
+            && members[key]
+                .iter()
+                .all(|&i| matches!(blocks[i].classified, ClassifiedType::Heading { .. }));
+        if pages.len() >= need && !numbered_headings {
             let total = page_count;
             let conf = (0.5 + 0.4 * (pages.len() as f64 / total.max(1) as f64)).min(0.98);
             for &i in &members[key] {
