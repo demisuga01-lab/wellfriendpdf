@@ -161,16 +161,21 @@ fn every_image_placement_and_path_group_is_listed() {
             "Path:1:inForm",
             "Image:1:inForm",
             "Path:1:inForm",
+            // QF-5211: a q … Q drawing two or more objects is a group too.
+            "Group:0:group",
+            "Group:0:group",
+            "Group:0:group",
         ]
     );
     let red = &listed[0];
     assert_eq!(red.bounds.map(f64::round), [300.0, 600.0, 340.0, 640.0]);
     assert_eq!(listed[7].bounds.map(f64::round), [50.0, 100.0, 100.0, 150.0]);
     assert_eq!(listed[9].bounds.map(f64::round), [250.0, 100.0, 300.0, 150.0]);
-    // The recognisers certify none of them; page_objects lists all eleven.
+    // The recognisers certify none of them; page_objects lists all eleven
+    // and the three groups.
     let page = page_objects(&source, 1).unwrap();
     assert_eq!(page.images.len() + page.vectors.len(), 0);
-    assert_eq!(page.objects.len(), 11);
+    assert_eq!(page.objects.len(), 14);
     assert_eq!((page.unsupported_images, page.unsupported_vectors), (0, 0));
 }
 
@@ -182,7 +187,7 @@ fn an_inline_image_moves_with_its_samples() {
     assert_eq!(pixel(&moved, 470.0, 620.0), (255, 0, 0), "the inline image is drawn at its new place");
     assert_eq!(pixel(&moved, 320.0, 620.0), (255, 255, 255), "and no longer at the old one");
     let after = objects(&moved);
-    assert_eq!(after.len(), 11);
+    assert_eq!(after.len(), 14);
     assert_eq!(after[0].bounds.map(f64::round), [450.0, 600.0, 490.0, 640.0]);
     // The ASCIIHex inline image after it is untouched.
     assert_eq!(after[1].selector.expected_sha256, objects(&source)[1].selector.expected_sha256);
@@ -190,7 +195,7 @@ fn an_inline_image_moves_with_its_samples() {
     let resized = edit(&source, &objects(&source)[1], json!({ "kind": "transform", "matrix": { "a": 2, "b": 0, "c": 0, "d": 2, "e": -400, "f": -600 } }));
     assert_eq!(objects(&resized)[1].bounds.map(f64::round), [400.0, 600.0, 460.0, 660.0]);
     let deleted = edit(&source, &objects(&source)[0], json!({ "kind": "delete" }));
-    assert_eq!(objects(&deleted).len(), 10);
+    assert_eq!(objects(&deleted).len(), 13);
     assert_eq!(pixel(&deleted, 320.0, 620.0), (255, 255, 255));
 }
 
@@ -200,7 +205,7 @@ fn a_form_placed_twice_is_copied_for_the_edited_placement() {
     let second = objects(&source)[9].clone();
     let moved = edit(&source, &second, json!({ "kind": "transform", "matrix": { "a": 1, "b": 0, "c": 0, "d": 1, "e": 10, "f": 5 } }));
     let after = objects(&moved);
-    assert_eq!(after.len(), 11);
+    assert_eq!(after.len(), 14);
     assert_eq!(after[7].bounds.map(f64::round), [50.0, 100.0, 100.0, 150.0], "the other placement keeps the original");
     assert_eq!(after[9].bounds.map(f64::round), [260.0, 105.0, 310.0, 155.0]);
     assert_ne!(after[9].selector.forms[0].object, after[7].selector.forms[0].object, "a copy of the form");
@@ -208,9 +213,10 @@ fn a_form_placed_twice_is_copied_for_the_edited_placement() {
     // Moving past the form box grows the copy's box so nothing is cut off.
     let far = edit(&moved, &after[9], json!({ "kind": "transform", "matrix": { "a": 1, "b": 0, "c": 0, "d": 1, "e": 0, "f": 80 } }));
     assert_eq!(pixel(&far, 285.0, 220.0), (0, 0, 200), "drawn beyond the old box");
-    // Deleting the path of the first placement leaves the second alone.
+    // Deleting the path of the first placement leaves the second alone (and
+    // the first placement, now one object, is no longer a group).
     let deleted = edit(&source, &objects(&source)[8], json!({ "kind": "delete" }));
-    assert_eq!(summary(&objects(&deleted)).len(), 10);
+    assert_eq!(summary(&objects(&deleted)).len(), 12);
     assert_eq!(pixel(&deleted, 60.0, 170.0), (255, 255, 255));
     assert_eq!(pixel(&deleted, 260.0, 170.0), (0, 0, 255));
 }
@@ -221,7 +227,8 @@ fn a_path_that_clips_and_paints_keeps_its_clip() {
     let listed = objects(&source);
     let deleted = edit(&source, &listed[4], json!({ "kind": "delete" }));
     let after = objects(&deleted);
-    assert_eq!(after.len(), 10);
+    // The red square's group now draws one object: two groups remain.
+    assert_eq!(after.len(), 12);
     assert!(after[4].has("clipped"), "the blue bar is still clipped: {:?}", summary(&after));
     assert_eq!(pixel(&deleted, 340.0, 520.0), (0, 0, 255));
     assert_eq!(pixel(&deleted, 380.0, 520.0), (255, 255, 255), "outside the kept clip");
@@ -249,7 +256,7 @@ fn pattern_paths_and_shadings_are_recoloured_moved_and_deleted() {
     assert_eq!(objects(&moved)[6].bounds.map(f64::round), [100.0, 100.0, 300.0, 200.0], "the shading moved with its clip");
     assert_eq!(pixel(&moved, 200.0, 350.0), (255, 255, 255));
     let deleted = edit(&source, shading, json!({ "kind": "delete" }));
-    assert_eq!(objects(&deleted).len(), 10);
+    assert_eq!(objects(&deleted).len(), 13);
     assert_eq!(pixel(&deleted, 200.0, 350.0), (255, 255, 255));
     // The masked image under a clip.
     let image = &listed[2];
@@ -320,6 +327,11 @@ fn every_operation() -> Vec<(&'static str, Vec<u8>, EditorOperation)> {
     let paragraph = layout.paragraphs.iter().find(|p| layout.text_in(p.range).starts_with("Revenue")).unwrap();
     let kinds = every_kind();
     let kinds_objects = super_objects(&kinds);
+    let report_objects = super_objects(&report);
+    let report_heading = report_objects
+        .iter()
+        .find(|o| o.selector.kind == ContentObjectKind::Text && o.text.as_deref().is_some_and(|t| t.starts_with("Annual Summary")))
+        .unwrap();
     let png64 = base64::engine::general_purpose::STANDARD.encode(png());
     let other = base64::engine::general_purpose::STANDARD.encode(report_pdf(2));
     let field = page_objects(FORM, 1)
@@ -337,6 +349,8 @@ fn every_operation() -> Vec<(&'static str, Vec<u8>, EditorOperation)> {
         ("replaceImage", r(&report), op(json!({ "op": "replaceImage", "selector": image_object, "image": { "mimeType": "image/png", "base64": png64 } }))),
         ("editVector", r(&report), op(json!({ "op": "editVector", "selector": vector, "mutation": { "kind": "RECOLOR", "destination_fill_color": { "red": 1.0, "green": 0.0, "blue": 0.0 }, "destination_stroke_color": null } }))),
         ("editObject", r(&kinds), op(json!({ "op": "editObject", "selector": kinds_objects[9].selector, "edit": { "kind": "transform", "matrix": { "a": 1, "b": 0, "c": 0, "d": 1, "e": 10, "f": 5 } } }))),
+        ("editObjectText", r(&report), op(json!({ "op": "editObjectText", "selector": report_heading.selector, "text": "Annual Review 1", "fallbackFont": "liberation-sans-bold" }))),
+        ("replaceObjectWithText", r(&kinds), op(json!({ "op": "replaceObjectWithText", "selector": kinds_objects[3].selector, "text": "Pattern", "font": "liberation-sans-bold" }))),
         ("addText", r(&report), op(json!({ "op": "addText", "page": 1, "rect": { "x": 72.0, "y": 300.0, "width": 300.0, "height": 40.0 }, "text": "Approved", "font": "liberation-sans-bold", "size": 14.0, "color": { "r": 0.0, "g": 0.2, "b": 0.6 } }))),
         ("addImage", r(&report), op(json!({ "op": "addImage", "page": 1, "rect": { "x": 450.0, "y": 600.0, "width": 60.0, "height": 60.0 }, "image": { "mimeType": "image/png", "base64": png64 } }))),
         ("addShape", r(&report), op(json!({ "op": "addShape", "page": 1, "shape": "ellipse", "rect": { "x": 400.0, "y": 200.0, "width": 80.0, "height": 40.0 }, "stroke": { "r": 0.0, "g": 0.0, "b": 0.0 }, "lineWidth": 2.0 }))),
@@ -376,6 +390,7 @@ fn every_operation_kind_has_an_exact_object_level_inverse() {
         "replaceText", "transformImage", "deleteImage", "replaceImage", "editVector", "editObject", "addText", "addImage",
         "addShape", "addLine", "addWhiteout", "addLink", "redact", "restyleText", "cropImage", "setImageOpacity", "rotatePage",
         "deletePage", "movePage", "insertBlankPage", "insertPages", "addAnnotation", "setFormField", "addTextLayer", "convertOcrText",
+        "editObjectText", "replaceObjectWithText",
     ]
     .to_vec();
     expected.sort_unstable();

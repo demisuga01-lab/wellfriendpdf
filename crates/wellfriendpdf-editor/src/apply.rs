@@ -16,6 +16,7 @@ use crate::fonts::{ascent_ratio, covers, FontSource};
 use crate::ops::{
     decode_image, decode_pdf, Align, EditorOperation, FieldValueKind, OperationList, Rect, Rgb, ShapeKind, SpotColor,
 };
+use crate::content_objects::ObjectAction;
 use crate::{overlay, scratch};
 
 /// What one applied operation did, for the UI and the version record.
@@ -175,9 +176,37 @@ pub fn apply_operation(
             out
         }
         EditorOperation::EditObject { selector, edit } => {
-            let (out, changed) = crate::content_objects::edit_object(input, selector, edit)?;
-            report.changed_region = Some(changed);
-            out
+            object_outcome(input, selector, &ObjectAction::Edit(edit), fonts, &mut report)?
+        }
+        EditorOperation::EditObjectText {
+            selector,
+            text,
+            expected,
+            font,
+            fallback_font,
+        } => {
+            let action = ObjectAction::SetText {
+                text,
+                expected: expected.as_deref(),
+                font: font.as_deref(),
+                fallback: fallback_font.as_deref(),
+            };
+            object_outcome(input, selector, &action, fonts, &mut report)?
+        }
+        EditorOperation::ReplaceObjectWithText {
+            selector,
+            text,
+            font,
+            size,
+            color,
+        } => {
+            let action = ObjectAction::ReplaceWithText {
+                text,
+                font,
+                size: *size,
+                color: color.as_ref(),
+            };
+            object_outcome(input, selector, &action, fonts, &mut report)?
         }
         EditorOperation::EditVector { selector, mutation } => {
             let (_, out) = scratch::run(input, None, |p| {
@@ -472,6 +501,122 @@ pub fn apply_operation(
     Ok((bytes, report))
 }
 
+/// Apply an object action and record what it did in the report.
+fn object_outcome(
+    input: &[u8],
+    selector: &crate::content_objects::ContentObjectSelector,
+    action: &ObjectAction<'_>,
+    fonts: &dyn FontSource,
+    report: &mut OperationReport,
+) -> Result<Vec<u8>, EditorError> {
+    let outcome = crate::content_objects::edit_object_with(input, selector, action, fonts)?;
+    report.changed_region = Some(outcome.changed);
+    report.notes.extend(outcome.notes);
+    report.fonts_added.extend(outcome.fonts_added);
+    Ok(outcome.bytes)
+}
+
+/// QF-5213: a one-line text edit the paragraph transaction refuses (a logo
+/// under a clip, a page whose other fonts do not decode, a subset font
+/// without the typed letters) is made on the text run that draws the line:
+/// the run is set again at its text matrix, with its size, colour, render
+/// mode and spacing, in its own font or the closest library face.
+#[allow(clippy::too_many_arguments)]
+fn replace_in_text_object(
+    input: &[u8],
+    page: u32,
+    before: &PageTextLayout,
+    start: usize,
+    end: usize,
+    expected: &str,
+    text: &str,
+    fallback_font: Option<&str>,
+    fonts: &dyn FontSource,
+    report: &mut OperationReport,
+) -> Result<Vec<u8>, EditorError> {
+    let unavailable = || EditorError::new("EDITOR_TEXT_NOT_EDITABLE", "this text could not be edited in place");
+    let line = before
+        .lines
+        .iter()
+        .find(|line| line.range[0] <= start && end <= line.range[1] && (start < line.range[1] || start == end))
+        .ok_or_else(unavailable)?;
+    // The edited glyphs' box, and the run of text drawn there.
+    let mut target: Option<[f64; 4]> = None;
+    for glyph in &before.glyphs {
+        let inside = if start < end {
+            glyph.range[0] >= start && glyph.range[1] <= end
+        } else {
+            glyph.range[1] == start || glyph.range[0] == start
+        };
+        if inside && !glyph.text.trim().is_empty() {
+            target = Some(match target {
+                None => glyph.bbox,
+                Some(t) => union(t, glyph.bbox),
+            });
+        }
+    }
+    let target = target.unwrap_or(line.bbox);
+    let document = overlay::load(input)?;
+    let listed = crate::content_objects::page_content_objects(&document, page)?;
+    drop(document);
+    let overlap = |a: [f64; 4], b: [f64; 4]| {
+        let w = a[2].min(b[2]) - a[0].max(b[0]);
+        let h = a[3].min(b[3]) - a[1].max(b[1]);
+        if w > 0.0 && h > 0.0 { w * h } else { 0.0 }
+    };
+    let candidate = listed
+        .objects
+        .iter()
+        .filter(|o| o.selector.kind == crate::content_objects::ContentObjectKind::Text && o.text.is_some() && !o.has("textClip"))
+        .map(|o| (overlap(o.bounds, target), o))
+        .filter(|(area, _)| *area > 0.0)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, o)| o)
+        .ok_or_else(unavailable)?;
+    let current = candidate.text.clone().unwrap_or_default();
+    let chars: Vec<char> = current.chars().collect();
+    let line_text: Vec<char> = before.text_in(line.range).chars().collect();
+    let offset = start - line.range[0];
+    let needle: Vec<char> = expected.chars().collect();
+    // Where the edit falls in the run's text: by the run's place in the
+    // line, else the only occurrence of the replaced text.
+    let found = |hay: &[char], pat: &[char]| -> Vec<usize> {
+        if pat.is_empty() || pat.len() > hay.len() {
+            return Vec::new();
+        }
+        (0..=hay.len() - pat.len()).filter(|&i| hay[i..i + pat.len()] == pat[..]).collect()
+    };
+    let local = found(&line_text, &chars)
+        .into_iter()
+        .map(|at| offset as isize - at as isize)
+        .find(|local| {
+            *local >= 0
+                && (*local as usize) + needle.len() <= chars.len()
+                && chars[*local as usize..*local as usize + needle.len()] == needle[..]
+        })
+        .map(|local| local as usize)
+        .or_else(|| {
+            let hits = found(&chars, &needle);
+            (hits.len() == 1).then(|| hits[0])
+        })
+        .ok_or_else(unavailable)?;
+    let typed: Vec<char> = text.chars().collect();
+    let replaced: String = chars[..local].iter().chain(typed.iter()).chain(chars[local + needle.len()..].iter()).collect();
+    let action = ObjectAction::SetText {
+        text: &replaced,
+        expected: Some(&current),
+        font: None,
+        fallback: fallback_font,
+    };
+    let outcome = crate::content_objects::edit_object_with(input, &candidate.selector, &action, fonts)?;
+    report.changed_region = Some(outcome.changed);
+    report.notes.extend(outcome.notes);
+    report.notes.push("The line was edited in place as a text object (this paragraph cannot be re-flowed).".into());
+    report.fonts_added.extend(outcome.fonts_added);
+    report.caret = Some(start + text.chars().count());
+    Ok(outcome.bytes)
+}
+
 /// Draw an `addText` box (its overflow policy is `crate::overflow::add_text`).
 pub(crate) fn add_text(
     input: &[u8],
@@ -696,10 +841,14 @@ fn replace_text(
         });
     }
     if !before.editable {
-        return Err(EditorError::new(
-            "EDITOR_TEXT_NOT_EDITABLE",
-            "this page's text cannot be edited in place (its fonts do not decode to exact text)",
-        ));
+        // Another font on the page does not decode: the line's own text run
+        // may still be edited (QF-5213).
+        return replace_in_text_object(input, page as u32, &before, start, end, expected, text, fallback_font, fonts, report).map_err(|_| {
+            EditorError::new(
+                "EDITOR_TEXT_NOT_EDITABLE",
+                "this page's text cannot be edited in place (its fonts do not decode to exact text)",
+            )
+        });
     }
     // A smaller size re-sets the whole paragraph (the in-place transaction
     // keeps the source size).
@@ -776,13 +925,17 @@ fn replace_text(
         // A paragraph that grows more than the transaction can reflow in
         // place is re-set as new text; whether it then fits is the overflow
         // policy's to decide (the transaction's refusal stands otherwise).
-        Err(error) if text.chars().count() > expected.chars().count() => {
-            return crate::restyle::reset_replacement(
-                input, &before, page as u32, start, end, text, fallback_font, fonts, fit, report,
-            )
-            .map_err(|reset| if reset.code == crate::overflow::OVERFLOW { reset } else { error });
+        Err(error) => {
+            if text.chars().count() > expected.chars().count() {
+                match crate::restyle::reset_replacement(input, &before, page as u32, start, end, text, fallback_font, fonts, fit, report) {
+                    Ok(bytes) => return Ok(bytes),
+                    Err(reset) if reset.code == crate::overflow::OVERFLOW => return Err(reset),
+                    Err(_) => {}
+                }
+            }
+            // QF-5213: the line's text run is edited in place instead.
+            return replace_in_text_object(input, page as u32, &before, start, end, expected, text, fallback_font, fonts, report).map_err(|_| error);
         }
-        Err(error) => return Err(error),
     };
     if !result.fonts_added.is_empty() {
         report.notes.push(match &used_library {
@@ -933,6 +1086,23 @@ fn changed_region(before: &PageTextLayout, after: &PageTextLayout) -> Option<[f6
     region
 }
 
+/// A redaction is saved only when the rewritten page's text can be read back
+/// and nothing remains under the area. A page that cannot be read back is
+/// refused rather than trusted: the check must fail closed.
+fn verify_redaction(remaining: Result<usize, String>) -> Result<(), EditorError> {
+    match remaining {
+        Ok(0) => Ok(()),
+        Ok(remaining) => Err(EditorError::new(
+            "EDITOR_REDACTION_INCOMPLETE",
+            format!("{remaining} glyphs remain under the redaction area; nothing was saved"),
+        )),
+        Err(_) => Err(EditorError::new(
+            "EDITOR_REDACTION_UNVERIFIED",
+            "the redacted page could not be read back to confirm its text is gone; nothing was saved",
+        )),
+    }
+}
+
 fn redact(
     input: &[u8],
     page: u32,
@@ -967,19 +1137,36 @@ fn redact(
         },
     )?;
     let out = editor.save_to_bytes(EditMode::FullRewrite)?;
-    let after = PageTextLayout::from_bytes(&out, page as usize)
-        .ok()
-        .map(|l| inside(&l));
-    if let Some(remaining) = after.filter(|count| *count > 0) {
-        return Err(EditorError::new(
-            "EDITOR_REDACTION_INCOMPLETE",
-            format!("{remaining} glyphs remain under the redaction area; nothing was saved"),
-        ));
-    }
+    verify_redaction(
+        PageTextLayout::from_bytes(&out, page as usize)
+            .map(|l| inside(&l))
+            .map_err(|e| e.to_string()),
+    )?;
     report.redacted_glyphs = before;
     report.changed_region = Some(area);
     report
         .notes
         .push("Content under the area was removed from the page, not covered.".into());
     Ok(out)
+}
+
+#[cfg(test)]
+mod redaction_verification_tests {
+    use super::verify_redaction;
+
+    #[test]
+    fn a_page_with_no_text_left_under_the_area_is_accepted() {
+        assert!(verify_redaction(Ok(0)).is_ok());
+    }
+
+    #[test]
+    fn remaining_glyphs_refuse_the_save() {
+        assert_eq!(verify_redaction(Ok(3)).unwrap_err().code, "EDITOR_REDACTION_INCOMPLETE");
+    }
+
+    #[test]
+    fn a_page_that_cannot_be_read_back_is_refused_not_trusted() {
+        let error = verify_redaction(Err("content stream could not be parsed".into())).unwrap_err();
+        assert_eq!(error.code, "EDITOR_REDACTION_UNVERIFIED");
+    }
 }

@@ -3161,3 +3161,80 @@ fn xfa_fill_sets_clicks_saves_and_renders() {
         remove_path(path);
     }
 }
+
+// --- Passwords off the command line -------------------------------------
+
+#[cfg(unix)]
+fn secrets(name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = tmp(name);
+    std::fs::write(&path, body).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[test]
+fn encrypt_and_open_take_passwords_from_a_secrets_file_not_argv() {
+    let out = tmp("secrets_encrypt_out.pdf");
+    let enc = secrets("secrets_enc.json", r#"{"user-pw":"argv-free-secret"}"#);
+    let res = run(&[
+        "encrypt",
+        fx("flate.pdf").to_str().unwrap(),
+        "--secrets-file",
+        enc.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
+    assert_ok(&res, "encrypt via secrets file");
+    let no_pw = run(&["extract-text", out.to_str().unwrap()]);
+    assert!(!no_pw.status.success(), "the output must be encrypted");
+    let open = secrets("secrets_open.json", r#"{"password":"argv-free-secret"}"#);
+    let with_pw = run(&[
+        "extract-text",
+        out.to_str().unwrap(),
+        "--secrets-file",
+        open.to_str().unwrap(),
+    ]);
+    assert_ok(&with_pw, "extract-text via secrets file");
+    let wrong = secrets("secrets_wrong.json", r#"{"password":"not-it"}"#);
+    let bad = run(&[
+        "extract-text",
+        out.to_str().unwrap(),
+        "--secrets-file",
+        wrong.to_str().unwrap(),
+    ]);
+    assert!(!bad.status.success(), "a wrong password must not open it");
+    for p in [&out, &enc, &open, &wrong] {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn the_secrets_requirement_refuses_passwords_on_argv_without_echoing_them() {
+    let res = wellfriendpdf()
+        .env("WELLFRIEND_PDF_REQUIRE_SECRETS_FILE", "1")
+        .args([
+            "extract-text",
+            fx("flate.pdf").to_str().unwrap(),
+            "--password",
+            "VISIBLE-ON-ARGV",
+        ])
+        .output()
+        .expect("run wellfriendpdf");
+    assert_eq!(res.status.code(), Some(2), "usage error expected");
+    let stderr = String::from_utf8_lossy(&res.stderr);
+    assert!(stderr.contains("--secrets-file"), "{stderr}");
+    assert!(!stderr.contains("VISIBLE-ON-ARGV"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_secret_for_a_command_without_password_options_is_a_usage_error() {
+    let s = secrets("secrets_misplaced.json", r#"{"owner-pw":"NEVER-PRINTED"}"#);
+    let res = run(&["info", fx("flate.pdf").to_str().unwrap(), "--secrets-file", s.to_str().unwrap()]);
+    assert_eq!(res.status.code(), Some(2));
+    assert!(!String::from_utf8_lossy(&res.stderr).contains("NEVER-PRINTED"));
+    let _ = std::fs::remove_file(&s);
+}

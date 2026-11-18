@@ -25,6 +25,7 @@ pub mod pages;
 pub mod protocol;
 pub mod restyle;
 pub mod text_layer;
+mod text_fonts;
 mod scratch;
 pub mod windows;
 

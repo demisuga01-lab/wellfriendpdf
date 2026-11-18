@@ -4727,6 +4727,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "subsetter",
  "tempfile",
  "ttf-parser",
  "wellfriendpdf-edit",
