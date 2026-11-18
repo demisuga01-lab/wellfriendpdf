@@ -8,11 +8,17 @@ use wellfriendpdf_engine::{AuthorPageSize, ContentEngine, PageTextLayout, PdfBui
 
 const SERIF: &[u8] = include_bytes!("../../wellfriendpdf-edit/fonts/LiberationSerif-Regular.ttf");
 
+/// The font library for this test binary, written once: tests run in parallel
+/// and rewriting the file while another test read it gave that test an empty font.
 fn fonts_dir() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("wf-editor-fonts-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("liberation-serif-regular.ttf"), SERIF).unwrap();
-    dir
+    static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("wf-editor-fonts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("liberation-serif-regular.ttf"), SERIF).unwrap();
+        dir
+    })
+    .clone()
 }
 
 fn book(pages: usize) -> Vec<u8> {
